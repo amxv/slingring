@@ -55,7 +55,9 @@ Add it to your assistant as a remote MCP server. URL-key connections use **No au
 - `send_message(chatgpt_url, message, request_id?)` follows up in an existing chat and preserves its reasoning effort.
 - `get_job_status(request_id)` reads the Mac's journal without submitting anything, including when an earlier MCP caller timed out.
 
-For potentially slow requests, **choose and keep a unique `request_id` before calling**. If the client times out, query `get_job_status` rather than sending again. `submitted` means a confirmed start, `not_submitted` means a definite pre-submit failure, `in_progress` means the Mac is still working, and `uncertain` or `unknown` must never be blindly retried. See private `~/.config/slingring/events.log` for safe startup stage/timing diagnostics.
+After accepting an MCP request, Slingring waits up to five seconds for a result. If the task is still queued or starting, it returns an `accepted: true`, `outcome: in_progress` receipt with the request ID. That receipt does not claim that a message was sent. Query `get_job_status` with the same ID to obtain the confirmed conversation link or failure.
+
+**Choose and keep a unique `request_id` before calling**, so you can also recover if the client times out before receiving its receipt. Query status rather than sending again. `submitted` means a confirmed start, `not_submitted` means a definite pre-submit failure, and `uncertain` or `unknown` must never be blindly retried. See private `~/.config/slingring/events.log` for safe startup stage/timing diagnostics.
 
 Follow-ups wait for the voice button and no stop control before filling the composer. They never interrupt a response. Use an exact conversation URL without a query or fragment; other routes are unsupported. All three tools are also available through local `slingring mcp`, implemented with the official Rust MCP SDK. Images are available for local `new-task` and `send-message` CLI commands only; remote and stdio MCP tool arguments remain text-only.
 

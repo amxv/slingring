@@ -27,11 +27,17 @@ Ask it to use `new_task` with your prompt and, optionally, a reasoning level. Fo
 
 `new_task` accepts `prompt`, optional `reasoning_effort`, and optional `request_id`. Leave effort out, or leave it blank, to use the default configured on your Mac. Choose a fresh unique `request_id` before starting any job that may outlast your MCP client's timeout.
 
-To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, and optionally a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. It returns the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
+To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, and optionally a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. Its confirmed result contains the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
 
 Both write tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests.
 
-### If your agent times out
+### If the task is still starting
+
+The Mac waits up to five seconds after accepting an MCP request for a confirmed result or failure. If it needs longer, the call returns a receipt containing `request_id`, `job_id`, `accepted: true`, `outcome: in_progress`, the current job phase, and `recovery_tool: get_job_status`. The accepted task continues in the Mac's queue. **Acceptance does not mean a message was submitted.**
+
+Ask the assistant to query `get_job_status` with that ID until the outcome is terminal. Open the returned conversation URL after `submitted`. This keeps browser startup and busy conversations from consuming the calling client's entire timeout.
+
+### If your agent times out before getting a receipt
 
 The Mac may **keep working after the calling agent stops waiting**. A caller's timeout does not establish that the message failed or was sent. Instead of resubmitting, use the read-only `get_job_status` tool with the exact `request_id` you chose before the call:
 
@@ -41,7 +47,7 @@ The Mac may **keep working after the calling agent stops waiting**. A caller's t
 
 The result distinguishes `in_progress`, `submitted`, `not_submitted`, `uncertain`, and `unknown` (missing/evicted record). Only `not_submitted` confirms nothing was sent; a missing record is **not** proof of failure. For a terminal failure, consult the recorded phase/error and the Mac's private `events.log`. Locally, run `slingring jobs --request-id review-20261103-001 --json`. Never repeat a message merely because a call timed out.
 
-The default **local CLI** browser-start budget is 180 seconds after queue admission, excluding local queue waiting. The **remote relay** waits up to 240 seconds, with a 230-second Mac-side end-to-end deadline including queue wait; the browser budget may be shorter. Your MCP client may have a smaller independent timeout. Slingring does not override that client's timeout. See [CLI and MCP reference](/docs/command-reference) for details.
+The **local CLI** still waits for a confirmed start and has a default 180-second browser-start budget, excluding local queue waiting. MCP uses the five-second receipt window after admission. The relay retains a 240-second HTTP safety limit and the Mac a 230-second remote job deadline, including queue wait, for compatibility with earlier installed versions; the configured browser budget may be shorter. Client and network timeouts remain outside Slingring's control. Accepted MCP tasks are not canceled when a caller disconnects. Their payload stays in memory and is never replayed after a daemon crash. See [CLI and MCP reference](/docs/command-reference) for details.
 
 ## Keep your Mac available
 

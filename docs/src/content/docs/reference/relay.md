@@ -58,3 +58,7 @@ Clients supporting headers may use `/mcp` with `Authorization: Bearer CLIENT_TOK
 The Mac initiates one outbound TLS WebSocket. A sparse heartbeat maintains connection health; it is not a job poll. The relay does not persist prompts. Offline requests fail rather than accumulating a backlog. Reconnecting never automatically resubmits a task.
 
 The Worker authenticates both sides, checks browser Origins, bounds request size and outstanding requests, and strips URL credentials before forwarding to the Durable Object. Logs must not contain prompts or secret URLs. Disconnects and timeouts after submission are uncertain, not safe retry signals.
+
+Current Macs return an accepted `in_progress` receipt after a five-second wait when a task is still preparing, then expose its outcome through `get_job_status`. The relay can forward these receipts without changing client URLs or credentials. Its 240-second HTTP safety limit remains for compatibility with older Macs; the current Mac still applies a 230-second remote job deadline including queue wait.
+
+Status/control requests have eight reserved relay slots separate from the 32 write slots, and status dispatch on the Mac does not wait for a submission. Read-only recovery therefore remains available when write capacity is full, subject to its own bound and device/network availability. Accepted task payloads remain only in Mac memory, so a crash never triggers a replay.
