@@ -14,6 +14,7 @@ async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=nul
   const native={onMessage:{addListener:fn=>{nativeListener=fn;}},onDisconnect:{addListener:()=>{}},postMessage:message=>{
     events.push(message);
     if(message.type==='hello')post({type:'task',job:'test-job',prompt:'test message',effort:null,image_count:0,chatgpt_url:target,...task});
+    if(message.type==='upload')post({type:'uploaded',ok:true});
     if(message.type==='will_submit')post({type:'continue'});
     if(message.type==='started')post({type:'ack'});
     if(['failed','released'].includes(message.type))resolve(message);
@@ -28,7 +29,7 @@ async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=nul
     sendMessage:async (id,message)=>{
       assert.equal(id,5);contentRequests.push(message);order.push(message.action);
       if(message.action==='ensure_chat')return bootstrapError ? {ok:false,code:bootstrapError,submitted:false} : {ok:true};
-      if(message.action==='prepare')return {ok:true,effort:null};
+      if(message.action==='prepare')return {ok:true,effort:null,upload_selector:'input[type="file"][multiple]'};
       const ack=await new Promise(done=>runtimeListener({kind:'slingring',event:'will_submit',id:'test-job'},sender,done));
       if(!ack?.ok)return {ok:false,submitted:false,code:'submission_not_authorized'};
       return {ok:true,url:resultUrl,evidence:'thinking',effort:null,submitted:true};
@@ -61,6 +62,16 @@ test('new_task still navigates home and allows its newly created conversation UR
   assert.equal(r.contentRequests.some(m=>m.action==='ensure_chat'),false);
 });
 
+test('local follow-up images use the existing native upload handshake before submission',async()=>{
+  const r=await run({task:{image_count:2}});
+  assert.deepEqual(r.navigations,['about:blank','https://chatgpt.com/',target]);
+  assert.equal(r.contentRequests.find(m=>m.action==='prepare').image_count,2);
+  assert.equal(r.events.filter(e=>e.type==='upload').length,1);
+  assert.equal(r.events.find(e=>e.type==='upload').selector,'input[type="file"][multiple]');
+  assert.equal(r.events.filter(e=>e.type==='will_submit').length,1);
+  assert.equal(r.terminal.type,'released');
+});
+
 test('failed Chat bootstrap never navigates to the target or prepares a message',async()=>{
   const r=await run({bootstrapError:'chat_mode_unverified'});
   assert.deepEqual(r.navigations,['about:blank','https://chatgpt.com/']);
@@ -75,11 +86,18 @@ test('an expired job deadline prevents bootstrap navigation and any content acti
   assert.equal(r.navigations.length,0);assert.equal(r.contentRequests.length,0);
 });
 
-test('bridge rejects malformed targets or follow-up effort/images before creating a browser tab',async()=>{
+test('bridge rejects malformed targets or follow-up effort overrides before creating a browser tab',async()=>{
   for(const task of [{chatgpt_url:target+'\n'},{chatgpt_url:target+'?x=1'},{chatgpt_url:'https://chatgpt.com/c/'+ 'a'.repeat(129)},
-    {chatgpt_url:false},{chatgpt_url:''},{effort:'High'},{image_count:1}]) {
+    {chatgpt_url:false},{chatgpt_url:''},{effort:'High'}]) {
     const r=await run({task});assert.equal(r.terminal.type,'failed');assert.equal(r.terminal.code,'invalid_followup');
     assert.equal(r.terminal.submitted,false);assert.equal(r.navigations.length,0);
+  }
+});
+
+test('bridge rejects malformed or excessive local image counts before opening a tab',async()=>{
+  for(const image_count of [-1,17,1.5,'1',null]) {
+    const r=await run({task:{image_count}});
+    assert.equal(r.terminal.code,'invalid_image_count');assert.equal(r.navigations.length,0);
   }
 });
 

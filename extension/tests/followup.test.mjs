@@ -177,10 +177,40 @@ test('malformed or mismatched follow-up targets fail before filling',async()=>{
   const q=page({url:target+'?changed=1'});assert.equal((await q.prepare()).code,'conversation_changed');q.close();
 });
 
-test('follow-up rejects effort and image overrides',async()=>{
-  for(const override of [{effort:'Medium'},{image_count:1}]) {
+test('follow-up rejects effort override',async()=>{
+  for(const override of [{effort:'Medium'}]) {
     const p=page();assert.equal((await p.prepare(override)).code,'invalid_followup');assert.equal(p.clicks,0);p.close();
   }
+});
+
+test('local image follow-up uses existing conversation and waits for an uploaded preview',async()=>{
+  const p=page();
+  p.d.querySelector('form').insertAdjacentHTML('beforeend',
+    '<input type="file" multiple aria-label="Attach photos" accept="image/*">');
+  const prepared=await p.prepare({image_count:1});
+  assert.equal(prepared.ok,true);
+  assert.equal(prepared.upload_selector,'input[type="file"][multiple][aria-label="Attach photos"]');
+  assert.equal(p.clicks,0);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend',
+    '<button aria-label="Remove photo">Remove uploaded photo</button>');
+  const result=await p.submit();
+  assert.equal(result.ok,true);assert.equal(result.url,target);assert.equal(p.clicks,1);
+  assert.equal(p.events.filter(e=>e.event==='will_submit').length,1);
+  p.close();
+});
+
+test('follow-up images must finish uploading, and cannot disappear during authorization',async()=>{
+  const p=page();
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  const absent=await p.submit();assert.equal(absent.code,'images_not_ready');
+  assert.equal(p.clicks,0);assert.equal(p.events.filter(e=>e.event==='will_submit').length,0);p.close();
+
+  const q=page({onAck:({d})=>d.querySelector('[aria-label="Remove photo"]').remove()});
+  q.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await q.prepare({image_count:1})).ok,true);
+  q.d.querySelector('form').insertAdjacentHTML('beforeend','<button aria-label="Remove photo">Remove</button>');
+  assert.equal((await q.submit()).code,'attachments_changed');assert.equal(q.clicks,0);q.close();
 });
 
 test('navigation before submit or during the native ACK prevents clicking send',async()=>{

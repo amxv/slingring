@@ -2,7 +2,7 @@ use crate::{
     cli::{BrowserAction, Command, ConfigAction, ProfileAction, RemoteAction, ServiceAction},
     config::{self, Config},
     daemon::{self, Request},
-    model::{MAX_JSON, MAX_PROMPT, NewTask},
+    model::{MAX_PROMPT, NewTask, SendMessage},
     service,
 };
 use anyhow::{Context, Result, ensure};
@@ -19,6 +19,51 @@ pub fn bounded_read(reader: impl Read, max: usize) -> Result<String> {
     reader.take((max + 1) as u64).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= max, "input exceeds size limit");
     String::from_utf8(bytes).context("input must be UTF-8")
+}
+fn read_message(
+    positional: Option<String>,
+    file: Option<String>,
+    stdin: bool,
+    label: &str,
+) -> Result<String> {
+    match (positional, file, stdin) {
+        (Some(value), None, false) => Ok(value),
+        (None, Some(path), false) if path != "-" => {
+            bounded_read(std::fs::File::open(path)?, MAX_PROMPT)
+        }
+        (None, Some(_), false) | (None, None, true) => bounded_read(std::io::stdin(), MAX_PROMPT),
+        _ => anyhow::bail!("provide a {label}, --{label}-file FILE, or --stdin"),
+    }
+}
+async fn submit_local(
+    root: &Path,
+    request: Request,
+    id: String,
+    json: bool,
+    remote: bool,
+) -> Result<()> {
+    service::start(root, !remote).await?;
+    match daemon::call(root, &request).await {
+        Ok(value) => {
+            if json {
+                output(value)
+            } else {
+                println!("{}", value["url"].as_str().context("missing task URL")?);
+                Ok(())
+            }
+        }
+        Err(error) => {
+            if json {
+                let job = crate::queue::records(root)
+                    .ok()
+                    .and_then(|jobs| jobs.into_iter().find(|j| j.id == id));
+                output(
+                    json!({"job_id":id,"error":error.to_string(),"job":job.map(|j|j.public())}),
+                )?;
+            }
+            Err(error)
+        }
+    }
 }
 async fn reload(root: &Path) -> Result<()> {
     if daemon::running(root).await {
@@ -60,16 +105,7 @@ pub async fn run(command: Command) -> Result<()> {
             request_id,
             json,
         } => {
-            let prompt = match (prompt, prompt_file, stdin) {
-                (Some(p), None, false) => p,
-                (None, Some(p), false) if p != "-" => {
-                    bounded_read(std::fs::File::open(p)?, MAX_PROMPT)?
-                }
-                (None, Some(_), false) | (None, None, true) => {
-                    bounded_read(std::io::stdin(), MAX_PROMPT)?
-                }
-                _ => anyhow::bail!("provide a prompt, --prompt-file FILE, or --stdin"),
-            };
+            let prompt = read_message(prompt, prompt_file, stdin, "prompt")?;
             let config = Config::load(&root)?;
             let task = NewTask {
                 prompt,
@@ -78,36 +114,47 @@ pub async fn run(command: Command) -> Result<()> {
             }
             .resolve(&config)?;
             let id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            service::start(&root, !config.remote_enabled).await?;
-            match daemon::call(
+            submit_local(
                 &root,
-                &Request::Submit {
+                Request::Submit {
                     id: id.clone(),
                     task,
                 },
+                id,
+                json,
+                config.remote_enabled,
             )
             .await
-            {
-                Ok(value) => {
-                    if json {
-                        output(value)
-                    } else {
-                        println!("{}", value["url"].as_str().context("missing task URL")?);
-                        Ok(())
-                    }
-                }
-                Err(error) => {
-                    if json {
-                        let job = crate::queue::records(&root)
-                            .ok()
-                            .and_then(|jobs| jobs.into_iter().find(|j| j.id == id));
-                        output(
-                            json!({"job_id":id,"error":error.to_string(),"job":job.map(|j|j.public())}),
-                        )?;
-                    }
-                    Err(error)
-                }
+        }
+        Command::SendMessage {
+            chatgpt_url,
+            message,
+            message_file,
+            stdin,
+            images,
+            request_id,
+            json,
+        } => {
+            let message = read_message(message, message_file, stdin, "message")?;
+            let task = SendMessage {
+                chatgpt_url,
+                message,
+                image_paths: images,
             }
+            .resolve()?;
+            let id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let remote = Config::load(&root)?.remote_enabled;
+            submit_local(
+                &root,
+                Request::SubmitFollowup {
+                    id: id.clone(),
+                    task,
+                },
+                id,
+                json,
+                remote,
+            )
+            .await
         }
         Command::Setup {
             profile,
@@ -258,7 +305,7 @@ pub async fn run(command: Command) -> Result<()> {
             output(status(&root).await?)
         }
         Command::Remote { action } => remote(&root, action).await,
-        Command::Mcp => stdio_mcp(&root).await,
+        Command::Mcp => crate::mcp_sdk::stdio_server(&root).await,
         _ => anyhow::bail!("unsupported command"),
     }
 }
@@ -312,40 +359,4 @@ async fn remote(root: &Path, action: RemoteAction) -> Result<()> {
             Ok(())
         }
     }
-}
-async fn stdio_mcp(root: &Path) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let mut input = BufReader::new(tokio::io::stdin());
-    let mut output = tokio::io::stdout();
-    loop {
-        if input.fill_buf().await?.is_empty() {
-            break;
-        }
-        let bytes = daemon::line(&mut input, MAX_JSON).await?;
-        let response = match serde_json::from_slice::<Value>(&bytes) {
-            Err(_) => Some(crate::mcp::error(Value::Null, -32700, "Parse error")),
-            Ok(request) => match crate::mcp::metadata(&request) {
-                Some(response) => response,
-                None => {
-                    service::start(root, true).await?;
-                    let reply = daemon::call(
-                        root,
-                        &Request::Mcp {
-                            body: request,
-                            key: uuid::Uuid::new_v4().to_string(),
-                        },
-                    )
-                    .await?;
-                    reply.get("response").filter(|v| !v.is_null()).cloned()
-                }
-            },
-        };
-        if let Some(value) = response {
-            let mut bytes = serde_json::to_vec(&value)?;
-            bytes.push(b'\n');
-            output.write_all(&bytes).await?;
-            output.flush().await?;
-        }
-    }
-    Ok(())
 }

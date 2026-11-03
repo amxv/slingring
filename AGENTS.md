@@ -9,7 +9,7 @@ Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversation
 - Stop buttons and loading indicators are not activity. Watch the visible transcript: the current SPA leaves a hidden pre-submit `main` mounted.
 - Do not read, log, return, or store generated answer text. The DOM adapter may classify content presence to detect streaming.
 - One serial queue, bounded at 32, for local and remote calls. Prompt/message/image content stays in memory. Journal metadata, including follow-up target URLs, is private, bounded, and never automatically replayed after a crash.
-- Image paths are CLI-only. MCP `new_task` accepts only `prompt` and optional `reasoning_effort`; MCP `send_message` accepts only `chatgpt_url` and `message`. Reject unknown fields. Follow-ups have no separate CLI command.
+- Image paths are CLI-only for both `new-task` and `send-message`. MCP `new_task` accepts only `prompt` and optional `reasoning_effort`; MCP `send_message` accepts only `chatgpt_url` and `message`. Reject unknown fields. The local stdio MCP server uses the official `rmcp` Rust SDK; keep the existing remote relay compatible.
 - Follow-ups preserve the chat's reasoning effort and require an exact `https://chatgpt.com/c/` URL with a 1..128-character ASCII alphanumeric/hyphen ID, no query or fragment. Recheck the target before sending. Wait for visible voice readiness without a stop control before filling; never interrupt a response. Detect activity for the newly submitted turn, not historical messages.
 - Never retry an uncertain submission. Only close the owned named browser session. Reuse it while queued jobs remain; close it on drain or failure.
 - No idle browser, polling daemon, Redis, or `cloudflared`. Remote mode has one Rust runtime thread and outbound WSS; local-only mode exits at idle.
@@ -17,7 +17,7 @@ Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversation
 
 ## Source map
 
-`src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: `new_task` and `send_message`, with owner-requested readOnlyHint=true/openWorldHint=false metadata. Both tools send messages; hints never bypass authorization. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
+`src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: remote-compatible `new_task` and `send_message` request dispatch; `src/mcp_sdk.rs`: official Rust SDK server for stdio. Both tools advertise owner-requested readOnlyHint=true/openWorldHint=false and send messages; hints never bypass authorization. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
 
 The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browser PID through the already-owned CDP browser connection, then verify the headless process and isolated temporary user-data directory. Never guess another browser's profile. Do not enable CDP Runtime event streaming.
 

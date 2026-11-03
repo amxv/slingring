@@ -33,6 +33,8 @@ Claude Code or another local agent can call the CLI directly. For a longer brief
 ```bash
 slingring new-task --prompt-file ./brief.md --reasoning-effort "Extra High" --json
 slingring new-task "Compare these designs" --image first.png --image second.png
+slingring send-message https://chatgpt.com/c/YOUR-CHAT-ID "Compare the revised image" --image revised.png
+slingring send-message https://chatgpt.com/c/YOUR-CHAT-ID --message-file ./follow-up.md --image revised.png
 ```
 
 Choose Instant, Medium, High, Extra High, or Pro when your account exposes it. Omitted or blank effort uses the configured default. Change it in Configure → Default Reasoning or with `slingring config set default-effort High`.
@@ -50,7 +52,7 @@ Add it to your assistant as a remote MCP server. URL-key connections use **No au
 - `new_task(prompt, reasoning_effort?)` starts a conversation.
 - `send_message(chatgpt_url, message)` sends a follow-up to an existing `https://chatgpt.com/c/...` conversation and preserves its reasoning effort.
 
-Follow-ups wait for the voice button and no stop control before filling the composer. They never interrupt a response. Use an exact conversation URL without a query or fragment; other routes are unsupported. Both tools are also available through local `slingring mcp`. Follow-ups have no separate CLI command; image paths remain CLI-only for new tasks.
+Follow-ups wait for the voice button and no stop control before filling the composer. They never interrupt a response. Use an exact conversation URL without a query or fragment; other routes are unsupported. Both tools are also available through local `slingring mcp`, implemented with the official Rust MCP SDK. Images are available for local `new-task` and `send-message` CLI commands only; remote and stdio MCP tool arguments remain text-only.
 
 Remote access needs an awake, online Mac and your own Cloudflare relay. Local use needs neither a cloud service nor a background app. See [relay provisioning](https://slingring.ashray.xyz/docs/reference/relay) for that optional setup.
 

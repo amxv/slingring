@@ -58,8 +58,9 @@ async function run() {
   native.postMessage({type:"hello",token,job});
   const task=await ready;
   if(task.job!==job || typeof task.prompt!=="string")throw Error("invalid_task");
+  if(!Number.isInteger(task.image_count) || task.image_count<0 || task.image_count>16)throw Error('invalid_image_count');
   if(task.chatgpt_url!=null){
-    if(!canonical(task.chatgpt_url) || task.effort!=null || task.image_count!==0)throw Error("invalid_followup");
+    if(!canonical(task.chatgpt_url) || task.effort!=null)throw Error("invalid_followup");
     targetUrl=task.chatgpt_url;
   }
   const deadline=task.deadline_ms || Date.now()+120000;

@@ -13,10 +13,11 @@
   function guardTarget(url) {
     if (!atTarget(url)) throw Error(url ? 'conversation_changed' : 'not_new_chat');
   }
-  function guardFollowup() {
+  function guardFollowup(checkUploaded=false) {
     if (!task.target) return;
     if (!dom.followupIdle()) throw Error('conversation_busy');
-    if (!dom.noAttachments()) throw Error('attachments_present');
+    if (!task.image_count && !dom.noAttachments()) throw Error('attachments_present');
+    if (checkUploaded && !dom.attachmentsReady(task.image_count)) throw Error('attachments_changed');
     if (task.effort!==dom.currentEffort()) throw Error('effort_changed');
   }
   async function handle(message) {
@@ -38,7 +39,7 @@
       if (task || preparing || submitted) throw Error("duplicate_prepare");
       const target=message.chatgpt_url ?? null;
       if (target!==null && !canonical(target)) throw Error('invalid_chat_url');
-      if (target && (message.effort!=null || message.image_count!==0)) throw Error('invalid_followup');
+      if (target && message.effort!=null) throw Error('invalid_followup');
       guardTarget(target);
       preparing = true;
       const deadline=message.deadline_ms || Date.now()+120000;
@@ -74,9 +75,10 @@
       guardTarget(task.target);
       guardFollowup();
       await dom.waitFor(()=>dom.attachmentsReady(task.image_count),45000,"images_not_ready");
+      guardFollowup(true);
       await dom.waitFor(dom.sendButton,15000,"send_button_unavailable");
       guardTarget(task.target);
-      guardFollowup();
+      guardFollowup(true);
       if (!dom.chatVerified()) throw Error("chat_mode_unverified");
       if (dom.text(dom.composer())!==dom.normal(task.prompt)) throw Error("prompt_changed");
       if (task.requested && dom.currentEffort()!==task.requested) throw Error("effort_changed");
@@ -89,7 +91,7 @@
       const button=dom.sendButton();
       const input=dom.composer();
       guardTarget(task.target);
-      guardFollowup();
+      guardFollowup(true);
       if (task.deadline-Date.now()<5000) throw Error('deadline_before_submission');
       if (!button?.isConnected || !input?.isConnected || !dom.chatVerified() || button.disabled ||
           dom.text(input)!==dom.normal(task.prompt) ||

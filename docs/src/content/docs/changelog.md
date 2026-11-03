@@ -6,6 +6,10 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## Unreleased
+
+Use the official `rmcp` Rust SDK for local stdio MCP protocol handling and transport, preserving the existing remote relay integration and strict two-tool, text-only MCP boundary. Add `slingring send-message` with local image attachments, file/stdin message input, and request-ID recovery. Follow-up images use the existing isolated browser upload path, with readiness and unchanged-conversation checks before submission. No generated answers are extracted.
+
 ## 0.3.0 · 3 November 2026
 
 Add the MCP-only `send_message(chatgpt_url, message)` tool for continuing an existing ChatGPT Chat conversation using the same isolated browser, Chrome profile, and serial queue as `new_task`. A follow-up waits for the voice control to signal readiness, never interrupts an ongoing response, preserves the current reasoning effort, and returns the same conversation URL once new thinking, working, or response activity begins. Generated answers are not extracted.

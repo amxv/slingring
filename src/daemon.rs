@@ -1,6 +1,6 @@
 use crate::{
     config::{self, Config},
-    model::{MAX_JSON, NewTask},
+    model::{MAX_JSON, NewTask, SendMessage},
     queue::{Browser, Queue},
 };
 use anyhow::{Context, Result, ensure};
@@ -24,6 +24,7 @@ use tokio::{
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Submit { id: String, task: NewTask },
+    SubmitFollowup { id: String, task: SendMessage },
     Mcp { body: Value, key: String },
     Status,
     Queue,
@@ -84,6 +85,10 @@ async fn client(stream: UnixStream, ctx: Arc<ContextState>) -> Result<()> {
     let operation = async {
         Ok(match request {
             Ok(Request::Submit { id, task }) => {
+                let config = Config::load(&ctx.root)?;
+                serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
+            }
+            Ok(Request::SubmitFollowup { id, task }) => {
                 let config = Config::load(&ctx.root)?;
                 serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
             }

@@ -6,6 +6,7 @@ pub mod core_cli;
 pub mod daemon;
 pub mod dependencies;
 pub mod mcp;
+pub mod mcp_sdk;
 pub mod model;
 pub mod native;
 pub mod profiles;

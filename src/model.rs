@@ -21,10 +21,13 @@ pub struct NewTask {
 pub struct SendMessage {
     pub chatgpt_url: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_paths: Vec<PathBuf>,
 }
 
 /// Both operations share the same queue, browser owner and submission guard.
-/// A follow-up deliberately has no model/effort override or local file access.
+/// A follow-up deliberately has no model/effort override. Local CLI callers
+/// may attach images; remote MCP callers cannot provide file paths.
 #[derive(Clone)]
 pub enum Task {
     New(NewTask),
@@ -43,13 +46,14 @@ impl From<SendMessage> for Task {
 }
 
 impl SendMessage {
-    pub fn resolve(self) -> Result<Self> {
+    pub fn resolve(mut self) -> Result<Self> {
         ensure!(
             canonical_url(&self.chatgpt_url),
             "chatgpt_url must be an exact https://chatgpt.com/c/<id> conversation URL without a query or fragment"
         );
         ensure!(!self.message.trim().is_empty(), "message cannot be empty");
         ensure!(self.message.len() <= MAX_PROMPT, "message exceeds 128 KiB");
+        validate_images(&mut self.image_paths)?;
         Ok(self)
     }
 }
@@ -82,7 +86,7 @@ impl Task {
     pub fn image_paths(&self) -> &[PathBuf] {
         match self {
             Self::New(task) => &task.image_paths,
-            Self::Message(_) => &[],
+            Self::Message(task) => &task.image_paths,
         }
     }
     pub fn fingerprint(&self, profile: &str) -> Result<String> {
@@ -94,6 +98,7 @@ impl Task {
                 hash.update(b"send_message\0");
                 hash.update(serde_json::to_vec(task)?);
                 hash.update(profile.as_bytes());
+                hash_image_contents(&task.image_paths, &mut hash)?;
                 Ok(format!("{:x}", hash.finalize()))
             }
         }
@@ -171,60 +176,67 @@ impl NewTask {
             Some(value) if !value.is_empty() => Some(effort(value)?),
             _ => config.default_effort.clone(),
         };
-        ensure!(
-            self.image_paths.len() <= 16,
-            "at most 16 images are allowed"
-        );
-        let mut total = 0;
-        for path in &mut self.image_paths {
-            *path = path
-                .canonicalize()
-                .map_err(|_| anyhow::anyhow!("image file is unavailable"))?;
-            let meta = path.metadata()?;
-            ensure!(
-                meta.is_file() && meta.len() > 0 && meta.len() <= 20 * 1024 * 1024,
-                "image must be a nonempty regular file up to 20 MiB"
-            );
-            total += meta.len();
-            ensure!(total <= 100 * 1024 * 1024, "combined images exceed 100 MiB");
-            ensure!(
-                matches!(
-                    path.extension()
-                        .and_then(|s| s.to_str())
-                        .map(str::to_ascii_lowercase)
-                        .as_deref(),
-                    Some("png" | "jpg" | "jpeg" | "webp" | "gif")
-                ),
-                "unsupported image extension"
-            );
-            let mut header = [0_u8; 12];
-            let len = std::fs::File::open(&path)?.read(&mut header)?;
-            let image = header.starts_with(b"\x89PNG\r\n\x1a\n")
-                || header.starts_with(b"\xff\xd8\xff")
-                || header.starts_with(b"GIF87a")
-                || header.starts_with(b"GIF89a")
-                || (len >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"WEBP");
-            ensure!(image, "file does not have a supported image signature");
-        }
+        validate_images(&mut self.image_paths)?;
         Ok(self)
     }
     pub fn fingerprint(&self, profile: &str) -> Result<String> {
         let mut hash = Sha256::new();
         hash.update(serde_json::to_vec(self)?);
         hash.update(profile.as_bytes());
-        for path in &self.image_paths {
-            let mut f = std::fs::File::open(path)?;
-            let mut bytes = [0_u8; 65536];
-            loop {
-                let n = f.read(&mut bytes)?;
-                if n == 0 {
-                    break;
-                }
-                hash.update(&bytes[..n]);
-            }
-        }
+        hash_image_contents(&self.image_paths, &mut hash)?;
         Ok(format!("{:x}", hash.finalize()))
     }
+}
+
+fn hash_image_contents(paths: &[PathBuf], hash: &mut Sha256) -> Result<()> {
+    for path in paths {
+        let mut f = std::fs::File::open(path)?;
+        let mut bytes = [0_u8; 65536];
+        loop {
+            let n = f.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&bytes[..n]);
+        }
+    }
+    Ok(())
+}
+
+fn validate_images(paths: &mut Vec<PathBuf>) -> Result<()> {
+    ensure!(paths.len() <= 16, "at most 16 images are allowed");
+    let mut total = 0;
+    for path in paths {
+        *path = path
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("image file is unavailable"))?;
+        let meta = path.metadata()?;
+        ensure!(
+            meta.is_file() && meta.len() > 0 && meta.len() <= 20 * 1024 * 1024,
+            "image must be a nonempty regular file up to 20 MiB"
+        );
+        total += meta.len();
+        ensure!(total <= 100 * 1024 * 1024, "combined images exceed 100 MiB");
+        ensure!(
+            matches!(
+                path.extension()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("png" | "jpg" | "jpeg" | "webp" | "gif")
+            ),
+            "unsupported image extension"
+        );
+        let mut header = [0_u8; 12];
+        let len = std::fs::File::open(path)?.read(&mut header)?;
+        let image = header.starts_with(b"\x89PNG\r\n\x1a\n")
+            || header.starts_with(b"\xff\xd8\xff")
+            || header.starts_with(b"GIF87a")
+            || header.starts_with(b"GIF89a")
+            || (len >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"WEBP");
+        ensure!(image, "file does not have a supported image signature");
+    }
+    Ok(())
 }
 
 pub fn canonical_url(url: &str) -> bool {

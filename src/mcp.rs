@@ -89,6 +89,7 @@ pub fn arguments(request: &Value) -> Result<Task, &'static str> {
         return Ok(SendMessage {
             chatgpt_url: chatgpt_url.into(),
             message: message.into(),
+            image_paths: Vec::new(),
         }
         .into());
     }

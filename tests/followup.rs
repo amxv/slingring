@@ -23,6 +23,7 @@ fn message(text: &str) -> SendMessage {
     SendMessage {
         chatgpt_url: CHAT.into(),
         message: text.into(),
+        image_paths: vec![],
     }
 }
 
@@ -155,6 +156,46 @@ fn message_limits_are_bytes_and_existing_effort_is_never_replaced_by_default() -
     assert_eq!(task.reasoning_effort(), None);
     assert_eq!(task.conversation_url(), Some(CHAT));
     assert!(task.image_paths().is_empty());
+    Ok(())
+}
+
+#[test]
+fn local_followup_images_are_validated_and_bound_to_request_fingerprints() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let image = dir.path().join("sample.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\nfirst")?;
+    let mut with_image = message("Describe this attachment");
+    with_image.image_paths.push(image.clone());
+    let task = Task::from(with_image.clone()).resolve(&Config::default())?;
+    assert_eq!(task.image_paths(), &[image.canonicalize()?]);
+    assert_eq!(task.conversation_url(), Some(CHAT));
+    assert_eq!(task.reasoning_effort(), None);
+    assert_ne!(
+        task.fingerprint("Profile 6")?,
+        Task::from(message("Describe this attachment")).fingerprint("Profile 6")?
+    );
+    let original = task.fingerprint("Profile 6")?;
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\nsecond")?;
+    assert_ne!(original, task.fingerprint("Profile 6")?);
+    let mut too_many = with_image.clone();
+    too_many.image_paths = vec![image.clone(); 17];
+    assert!(too_many.resolve().is_err());
+    let mut malformed = with_image;
+    std::fs::write(&image, b"not actually an image")?;
+    malformed.image_paths = vec![image];
+    assert!(malformed.resolve().is_err());
+    Ok(())
+}
+
+#[test]
+fn text_only_followup_serialization_remains_backward_compatible() -> Result<()> {
+    let serialized = serde_json::to_value(message("same text"))?;
+    assert_eq!(
+        serialized,
+        json!({"chatgpt_url":CHAT,"message":"same text"})
+    );
+    let decoded: SendMessage = serde_json::from_value(serialized)?;
+    assert!(decoded.image_paths.is_empty());
     Ok(())
 }
 
