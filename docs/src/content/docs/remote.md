@@ -49,7 +49,7 @@ The server implements MCP initialization, ping, tool discovery, and this one wri
 
 ## Failure and reconnect behavior
 
-Requests are bounded to 256 KiB and 32 outstanding calls. A disconnected Mac produces an explicit error. Transport reconnects use bounded exponential backoff; they never replay a task automatically. A sparse 120-second application heartbeat maintains and checks the connection. It is not a job poll.
+Requests are bounded to 256 KiB and 32 outstanding calls. A disconnected Mac produces an explicit error. Transport reconnects use bounded exponential backoff; they never replay a task automatically. A sparse 60-second application heartbeat maintains and checks the connection. It is not a job poll.
 
 Remote requests carry an end-to-end deadline. A queued request whose caller has gone away is cancelled before submission. If a request may already have reached ChatGPT, the result is uncertain instead of retried. Check the local journal before requesting another task. Clients with custom headers may use a unique `Idempotency-Key` to recover the same operation safely; reuse with different arguments is rejected.
 

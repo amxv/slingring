@@ -36,4 +36,4 @@ A Cloudflare Worker exposes Streamable HTTP MCP and authenticates requests with 
 
 The remote tool accepts exactly `prompt` and optional `reasoning_effort`. Filesystem paths and image attachments are CLI-only. The device and client tokens must be distinct. A private URL may carry the client token for assistants without custom header support; it must be treated as a secret.
 
-Transport health uses a sparse 120-second heartbeat and bounded reconnect backoff, not job polling. Mac sleep, logout, network loss, expired ChatGPT login, UI changes, or browser challenges may prevent a task from starting. No universal undetectability or service-terms guarantee is claimed.
+Transport health uses a sparse 60-second heartbeat and bounded reconnect backoff, not job polling. Mac sleep, logout, network loss, expired ChatGPT login, UI changes, or browser challenges may prevent a task from starting. No universal undetectability or service-terms guarantee is claimed.

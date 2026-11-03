@@ -6,6 +6,10 @@ category: Distribution
 summary: Release status and user-visible changes.
 ---
 
+## 0.1.1 · 3 November 2026
+
+Harden browser startup and reasoning-picker hydration, anchor activity detection to the active transcript, and reject loading-only states. Preserve a full per-task startup budget for locally queued requests, close a warm browser when abandoned queued work drains, and use smaller idle WebSocket buffers. Add regression fixtures, private-release installation support, and automatic relay-code deployment.
+
 ## 0.1.0 · 3 November 2026
 
 Initial private macOS release. Local CLI and remote Streamable HTTP MCP share one serial queue and a patched-browser runner. The CLI supports local image attachments; the single remote tool accepts only prompt and reasoning effort.

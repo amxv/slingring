@@ -220,8 +220,8 @@
     for (const area of assistant) {
       const status = [...area.querySelectorAll('button,[role="status"],[aria-live],[data-testid*="thinking"],[data-testid*="reasoning"]')]
         .map(activityLabel);
-      if (status.some(t=>/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for .*)?$/i.test(t) && t.length<120)) return "thinking";
-      if (status.some(t=>/^(Working|Analyzing|Searching|Reading|Running|Browsing)(\.{0,3}|…| for .*)?$/i.test(t) && t.length<120)) return "working";
+      if (status.some(t=>/^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(t) && t.length<120)) return "thinking";
+      if (status.some(t=>/^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(t) && t.length<120)) return "working";
       // Test for presence only. Never return, log, or serialize generated text.
       if ([...area.querySelectorAll('.markdown,.prose,[data-message-content],[data-markdown-text-style="assistant-message"]')]
         .some(meaningful)) return "streaming";
@@ -230,8 +230,8 @@
       for(const control of main.querySelectorAll('span,div')) {
         if(!outsideUser(control) || control.childElementCount > 1 || control.querySelector('[data-user-message-bubble]'))continue;
         const label=activityLabel(control);
-        if(/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for [0-9a-z ]+)?$/i.test(label))return 'thinking';
-        if(/^(Working|Analyzing|Searching|Reading|Running|Browsing)(\.{0,3}|…| for [0-9a-z ]+)?$/i.test(label))return 'working';
+        if(label.length < 120 && /^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(label))return 'thinking';
+        if(label.length < 120 && /^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(label))return 'working';
       }
       if([...main.querySelectorAll('[data-markdown-text-style]')].some(meaningful))return 'streaming';
     }
