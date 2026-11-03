@@ -64,14 +64,18 @@ function page({onAck,onSend,oldPrompt='Earlier prompt',url=target,modernEditor=f
     submit:()=>request({action:'submit',id:'task'})};
 }
 
-test('follow-up opens the exact existing chat, preserves effort, and confirms only new activity',async()=>{
+test('follow-up with blank effort does not read or modify any reasoning UI',async()=>{
   const p=page();
   p.api.ensureChat=()=>assert.fail('follow-up must not switch Chat/Work');
-  p.api.setEffort=()=>assert.fail('follow-up must not select a model or effort');
+  p.api.currentEffort=()=>assert.fail('omitted effort must not be read');
+  p.api.effortState=()=>assert.fail('omitted effort must not be observed');
+  p.api.setEffort=()=>assert.fail('omitted effort must not be set');
+  p.api.ensureEffort=()=>assert.fail('omitted effort must not be verified');
   assert.equal((await p.prepare()).ok,true);
   const result=await p.submit();
   assert.equal(result.ok,true);assert.equal(result.url,target);assert.equal(result.evidence,'thinking');
   assert.equal(p.clicks,1);
+  assert.equal(p.events.filter(e=>e.event==='effort_state').length,0);
   assert.equal(p.events.filter(e=>e.event==='will_submit').length,1);
   assert(!JSON.stringify(result).includes('PRIVATE OLD ANSWER'));
   p.close();
@@ -84,36 +88,14 @@ test('the observed existing-thread editor without mode controls or an ID support
   p.api.setEffort=()=>assert.fail('existing thread must keep its effort');
   assert.equal((await p.prepare()).ok,true);
   const result=await p.submit();assert.equal(result.ok,true);assert.equal(result.evidence,'thinking');
-  assert.equal(result.effort,'Medium');assert.equal(p.clicks,1);assert.equal(p.api.text(p.api.composer()),'');p.close();
+  assert.equal(result.effort,null);assert.equal(p.clicks,1);assert.equal(p.api.text(p.api.composer()),'');p.close();
 });
 
-test('home bootstrap only verifies Chat, without filling a prompt or choosing effort',async()=>{
-  const p=page({url:'https://chatgpt.com/'});let switched=0;
-  p.api.ensureChat=async()=>{switched++;};
-  p.api.fill=()=>assert.fail('bootstrap must not fill a prompt');
-  p.api.setEffort=()=>assert.fail('bootstrap must not select effort');
-  const result=await p.request({action:'ensure_chat',id:'task',deadline_ms:Date.now()+30000});
-  assert.equal(result.ok,true);assert.equal(switched,1);assert.equal(p.d.querySelector('textarea').value,'');
-  assert.equal(p.events.some(e=>e.event==='will_submit'),false);
-  assert.equal((await p.request({action:'ensure_chat',id:'task'})).code,'invalid_bootstrap_state');p.close();
-});
-
-test('home bootstrap rejects existing-thread URLs and expired jobs before any mode switch',async()=>{
-  const p=page();p.api.ensureChat=()=>assert.fail('must not switch mode on an existing thread');
-  assert.equal((await p.request({action:'ensure_chat',id:'task'})).code,'not_new_chat');p.close();
-  const q=page({url:'https://chatgpt.com/'});q.api.ensureChat=()=>assert.fail('expired job must not change mode');
-  assert.equal((await q.request({action:'ensure_chat',id:'task',deadline_ms:Date.now()-1})).code,'deadline_before_submission');q.close();
-});
-
-test('home bootstrap must finish on home with verified Chat and a live deadline',async()=>{
-  for(const [effect,code] of [
-    [p=>p.w.history.replaceState(null,'',target),'not_new_chat'],
-    [p=>{p.api.chatVerified=()=>false;},'chat_mode_unverified'],
-    [p=>{p.w.Date.now=()=>Date.now()+60000;},'deadline_before_submission']]) {
-    const p=page({url:'https://chatgpt.com/'});p.api.ensureChat=async()=>effect(p);
-    assert.equal((await p.request({action:'ensure_chat',id:'task',deadline_ms:Date.now()+30000})).code,code);
-    assert.equal(p.d.querySelector('textarea').value,'');assert.equal(p.clicks,0);p.close();
-  }
+test('there is no homepage bootstrap action on the follow-up content adapter',async()=>{
+  const p=page();p.api.ensureChat=()=>assert.fail('must not toggle mode during a follow-up');
+  assert.equal((await p.request({action:'ensure_chat',id:'task'})).code,'unknown_action');
+  assert.equal(p.d.querySelector('textarea').value,'');assert.equal(p.clicks,0);
+  p.close();
 });
 
 test('stop overrides a visible voice button; follow-up waits until idle without stopping the response',async()=>{
@@ -159,11 +141,12 @@ test('attachments and an active voice session prevent a follow-up',async()=>{
   assert.equal((await q.prepare()).code,'conversation_not_ready');assert.equal(q.clicks,0);q.close();
 });
 
-test('Work or an unloaded conversation is never switched or treated as ready',async()=>{
+test('existing URL and voice readiness do not depend on account home-mode preference',async()=>{
   const p=page(),chat=p.d.querySelector('#chat');chat.setAttribute('aria-pressed','false');
   p.d.querySelector('#work').setAttribute('aria-pressed','true');
   chat.addEventListener('click',()=>assert.fail('mode switched'));
-  assert.equal((await p.prepare()).code,'conversation_not_ready');assert.equal(p.clicks,0);p.close();
+  assert.equal((await p.prepare()).ok,true);
+  assert.equal((await p.submit()).ok,true);assert.equal(p.clicks,1);p.close();
   const q=page();q.d.querySelector('#old-user').remove();
   assert.equal((await q.prepare()).code,'conversation_not_ready');assert.equal(q.clicks,0);q.close();
 });
@@ -177,10 +160,17 @@ test('malformed or mismatched follow-up targets fail before filling',async()=>{
   const q=page({url:target+'?changed=1'});assert.equal((await q.prepare()).code,'conversation_changed');q.close();
 });
 
-test('follow-up rejects effort override',async()=>{
-  for(const override of [{effort:'Medium'}]) {
-    const p=page();assert.equal((await p.prepare(override)).code,'invalid_followup');assert.equal(p.clicks,0);p.close();
-  }
+test('follow-up accepts an explicit selected effort and records only safe level metadata',async()=>{
+  const p=page({modernEditor:true});
+  const prepare=await p.prepare({effort:'Medium'});
+  assert.equal(prepare.ok,true);assert.equal(prepare.effort,'Medium');
+  assert.equal((await p.submit()).ok,true);assert.equal(p.clicks,1);
+  const observations=p.events.filter(e=>e.event==='effort_state');
+  assert(observations.length>=1);
+  assert(observations.every(e=>e.expected==='Medium' && e.observed==='Medium' && e.kind==='known'));
+  assert(!JSON.stringify(observations).includes(prompt));p.close();
+  const q=page();assert.equal((await q.prepare({effort:'Hyper'})).code,'invalid_effort');
+  assert.equal(q.clicks,0);q.close();
 });
 
 test('local image follow-up uses existing conversation and waits for an uploaded preview',async()=>{
@@ -359,14 +349,41 @@ test('navigation before submit or during the native ACK prevents clicking send',
   assert.equal((await q.submit()).code,'conversation_changed');assert.equal(q.clicks,0);q.close();
 });
 
-test('busy state, new attachments, or effort changes during the ACK prevent clicking send',async()=>{
+test('busy state or new attachments during the ACK prevent clicking send',async()=>{
   for(const [html,code] of [
     ['<button data-testid="stop-button">Stop</button>','conversation_busy'],
-    ['<button aria-label="Remove file">Remove</button>','attachments_present'],
-    ['<button aria-label="Select ChatGPT model">Thinking effortHigh</button>','effort_changed']]) {
+    ['<button aria-label="Remove file">Remove</button>','attachments_present']]) {
     const p=page({onAck:({d})=>d.querySelector('form').insertAdjacentHTML('beforeend',html)});
     assert.equal((await p.prepare()).ok,true);assert.equal((await p.submit()).code,code);assert.equal(p.clicks,0);p.close();
   }
+});
+
+test('effort controls changing or disappearing during ACK never block Send',async()=>{
+  const changed=page({modernEditor:true,onAck:({d})=>{
+    d.querySelector('[aria-label="Select ChatGPT model"]').textContent='Thinking effortHigh';
+  }});
+  assert.equal((await changed.prepare({effort:'Medium'})).ok,true);
+  assert.equal((await changed.submit()).ok,true);
+  assert.equal(changed.clicks,1);
+  assert.equal(changed.events.some(e=>e.event==='effort_state' && e.phase==='after_authorization'),false);
+  changed.close();
+
+  const transient=page({modernEditor:true,onAck:({d})=>{
+    d.querySelector('[aria-label="Select ChatGPT model"]').remove();
+  }});
+  assert.equal((await transient.prepare({effort:'Medium'})).ok,true);
+  assert.equal((await transient.submit()).ok,true);assert.equal(transient.clicks,1);
+  assert.equal(transient.events.some(e=>e.event==='effort_state' && e.phase==='after_authorization'),false);
+  transient.close();
+});
+
+test('an explicitly requested but unavailable effort picker does not block the follow-up',async()=>{
+  const p=page(); // Legacy fixture has no model menu.
+  assert.equal((await p.prepare({effort:'Extra High'})).ok,true);
+  assert.equal((await p.submit()).ok,true);
+  assert.equal(p.clicks,1);
+  assert(p.events.some(e=>e.event==='effort_state' && e.expected==='Extra High' && e.kind==='missing'));
+  p.close();
 });
 
 test('old answers and old thinking for an identical prompt cannot confirm the follow-up',async()=>{

@@ -17,7 +17,7 @@ slingring browser install|status
 slingring new-task [PROMPT] [--stdin | --prompt-file FILE]
   [--reasoning-effort LEVEL] [--image PATH]... [--request-id ID] [--json]
 slingring send-message CHATGPT_URL [MESSAGE] [--stdin | --message-file FILE]
-  [--image PATH]... [--request-id ID] [--json]
+  [--reasoning-effort LEVEL] [--image PATH]... [--request-id ID] [--json]
 slingring config show [--json]
 slingring config set KEY VALUE
 slingring status [--json]
@@ -67,7 +67,7 @@ The default task-start timeout is 180 seconds, including follow-up readiness. Lo
 }
 ```
 
-`send_message` follows up on an existing conversation. It accepts two required strings and optional `request_id`, preserving the chat's reasoning effort:
+`send_message` follows up on an existing conversation. It accepts two required strings, optional `reasoning_effort`, and optional `request_id`. Omit `reasoning_effort` to leave the existing chat's setting entirely untouched. Set it explicitly to attempt a different level without making model-picker availability a condition of sending:
 
 ```json
 {
@@ -80,13 +80,13 @@ The default task-start timeout is 180 seconds, including follow-up readiness. Lo
 }
 ```
 
-Use the exact `https://chatgpt.com/c/ID` URL, where `ID` is 1..128 ASCII letters, digits, or hyphens. Queries, fragments, trailing slashes, other origins, and other routes, including Work, share, project, and custom GPT routes, are unsupported. The chat must be accessible to the configured Chrome account. MCP tools have no image or effort overrides for follow-ups; the local `send-message` CLI additionally accepts repeatable `--image PATH` files, preserving the current chat's reasoning effort.
+Use the exact `https://chatgpt.com/c/ID` URL, where `ID` is 1..128 ASCII letters, digits, or hyphens. Queries, fragments, trailing slashes, other origins, and other routes, including Work, share, project, and custom GPT routes, are unsupported. The chat must be accessible to the configured Chrome account. MCP follow-ups accept an optional effort override but no images; the local `send-message` CLI additionally accepts repeatable `--image PATH` files. Explicit effort selection is best-effort and might remain unverified if the model picker is missing or unavailable.
 
 ```bash
 slingring send-message 'https://chatgpt.com/c/YOUR-CHAT-ID' 'Review this screenshot' --image ./screenshot.png
 ```
 
-The tool establishes Chat mode on the home page before opening the target conversation. It waits for a visible voice button with no stop control before filling the message. It never interrupts an existing response. It checks the target again before sending and confirms submission only after fresh thinking, working, or response activity begins for the new turn. An earlier accepted receipt does not establish success, and neither do historical answers. If readiness is not reached within the startup budget, the follow-up fails without sending; uncertain results after submission authorization still require inspection. If the site replaces or virtualizes prior turns during submission, the conservative detector may leave the result uncertain even when the message was accepted.
+The follow-up opens the exact existing conversation URL directly, without visiting the homepage or changing Chat/Work mode. It waits for a visible voice button with no stop control before filling the message. It never interrupts an existing response. It checks the target again before sending and confirms submission only after fresh thinking, working, or response activity begins for the new turn. An earlier accepted receipt does not establish success, and neither do historical answers. If readiness is not reached within the startup budget, the follow-up fails without sending; uncertain results after submission authorization still require inspection. If the site replaces or virtualizes prior turns during submission, the conservative detector may leave the result uncertain even when the message was accepted.
 
 Both write tools reject unknown properties. Their advertised hints are `readOnlyHint: true`, `openWorldHint: false`, `destructiveHint: false`, and `idempotentHint: false`. These are client-facing metadata, not authorization controls: **both tools send a message through your account, creating or modifying a conversation**. Grant access accordingly.
 

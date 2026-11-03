@@ -23,6 +23,7 @@ fn message(text: &str) -> SendMessage {
     SendMessage {
         chatgpt_url: CHAT.into(),
         message: text.into(),
+        reasoning_effort: None,
         image_paths: vec![],
     }
 }
@@ -46,11 +47,12 @@ fn followup_tool_keeps_strict_fields_plus_explicit_recovery_id() {
     assert_eq!(tool["name"], "send_message");
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     let fields = tool["inputSchema"]["properties"].as_object().unwrap();
-    assert_eq!(fields.len(), 3);
+    assert_eq!(fields.len(), 4);
     assert!(
         fields.contains_key("chatgpt_url")
             && fields.contains_key("message")
             && fields.contains_key("request_id")
+            && fields.contains_key("reasoning_effort")
     );
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
     assert_eq!(tool["annotations"]["openWorldHint"], false);
@@ -69,7 +71,7 @@ fn followup_tool_keeps_strict_fields_plus_explicit_recovery_id() {
 
     for field in [
         "prompt",
-        "reasoning_effort",
+        "runtime_flags",
         "image_paths",
         "images",
         "profile",
@@ -130,27 +132,46 @@ fn followups_require_an_exact_canonical_private_conversation_url() {
     ] {
         let mut followup = message("hello");
         followup.chatgpt_url = target.into();
-        assert!(followup.resolve().is_err(), "accepted {target:?}");
+        assert!(
+            followup.resolve(&Config::default()).is_err(),
+            "accepted {target:?}"
+        );
     }
     for id in ["a".into(), "Ab09-cD".into(), "a".repeat(128)] {
         let mut followup = message("hello");
         followup.chatgpt_url = format!("https://chatgpt.com/c/{id}");
-        assert!(followup.resolve().is_ok());
+        assert!(followup.resolve(&Config::default()).is_ok());
     }
     let mut too_long = message("hello");
     too_long.chatgpt_url = format!("https://chatgpt.com/c/{}", "a".repeat(129));
-    assert!(too_long.resolve().is_err());
+    assert!(too_long.resolve(&Config::default()).is_err());
 }
 
 #[test]
-fn message_limits_are_bytes_and_existing_effort_is_never_replaced_by_default() -> Result<()> {
+fn message_limits_and_omitted_effort_leave_existing_chat_unchanged() -> Result<()> {
     for text in ["", " \t\r\n"] {
-        assert!(message(text).resolve().is_err());
+        assert!(message(text).resolve(&Config::default()).is_err());
     }
-    assert!(message(&"x".repeat(MAX_PROMPT)).resolve().is_ok());
-    assert!(message(&"x".repeat(MAX_PROMPT + 1)).resolve().is_err());
-    assert!(message(&"é".repeat(MAX_PROMPT / 2)).resolve().is_ok());
-    assert!(message(&"é".repeat(MAX_PROMPT / 2 + 1)).resolve().is_err());
+    assert!(
+        message(&"x".repeat(MAX_PROMPT))
+            .resolve(&Config::default())
+            .is_ok()
+    );
+    assert!(
+        message(&"x".repeat(MAX_PROMPT + 1))
+            .resolve(&Config::default())
+            .is_err()
+    );
+    assert!(
+        message(&"é".repeat(MAX_PROMPT / 2))
+            .resolve(&Config::default())
+            .is_ok()
+    );
+    assert!(
+        message(&"é".repeat(MAX_PROMPT / 2 + 1))
+            .resolve(&Config::default())
+            .is_err()
+    );
     let config = Config {
         default_effort: Some("Pro".into()),
         ..Config::default()
@@ -160,6 +181,41 @@ fn message_limits_are_bytes_and_existing_effort_is_never_replaced_by_default() -
     assert_eq!(task.reasoning_effort(), None);
     assert_eq!(task.conversation_url(), Some(CHAT));
     assert!(task.image_paths().is_empty());
+    Ok(())
+}
+
+#[test]
+fn explicit_followup_effort_is_opt_in_and_part_of_idempotency() -> Result<()> {
+    let config = Config {
+        default_effort: Some("Pro".into()),
+        ..Config::default()
+    };
+    let plain = Task::from(message("one follow-up")).resolve(&config)?;
+    assert_eq!(plain.reasoning_effort(), None);
+    let mut explicit = message("one follow-up");
+    explicit.reasoning_effort = Some("xhigh".into());
+    let chosen = Task::from(explicit.clone()).resolve(&config)?;
+    assert_eq!(chosen.reasoning_effort(), Some("Extra High"));
+    assert_ne!(
+        plain.fingerprint("Profile 6")?,
+        chosen.fingerprint("Profile 6")?
+    );
+    let mut invalid = message("one follow-up");
+    invalid.reasoning_effort = Some("Ultra".into());
+    assert!(Task::from(invalid).resolve(&config).is_err());
+    // Follow-up effort is best-effort. A missing picker must not invalidate a
+    // confirmed URL and fresh activity *after* the message was submitted.
+    chosen.validate_result(&TaskResult {
+        job_id: "chosen".into(),
+        url: CHAT.into(),
+        reasoning_effort: None,
+        evidence: "thinking".into(),
+    })?;
+    let parsed = slingring::mcp::arguments(&request(json!({
+        "chatgpt_url":CHAT,"message":"one follow-up","reasoning_effort":"High"
+    })))
+    .map_err(anyhow::Error::msg)?;
+    assert_eq!(parsed.resolve(&config)?.reasoning_effort(), Some("High"));
     Ok(())
 }
 
@@ -183,11 +239,11 @@ fn local_followup_images_are_validated_and_bound_to_request_fingerprints() -> Re
     assert_ne!(original, task.fingerprint("Profile 6")?);
     let mut too_many = with_image.clone();
     too_many.image_paths = vec![image.clone(); 17];
-    assert!(too_many.resolve().is_err());
+    assert!(too_many.resolve(&Config::default()).is_err());
     let mut malformed = with_image;
     std::fs::write(&image, b"not actually an image")?;
     malformed.image_paths = vec![image];
-    assert!(malformed.resolve().is_err());
+    assert!(malformed.resolve(&Config::default()).is_err());
     Ok(())
 }
 
@@ -209,7 +265,7 @@ fn result_must_belong_to_requested_chat_and_fingerprints_bind_every_input() -> R
     let mut result = TaskResult {
         job_id: "followup".into(),
         url: CHAT.into(),
-        reasoning_effort: Some("Medium".into()),
+        reasoning_effort: Some("Extra High".into()),
         evidence: "thinking".into(),
     };
     task.validate_result(&result)?;

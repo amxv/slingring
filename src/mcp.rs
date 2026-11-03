@@ -28,11 +28,12 @@ pub fn tool() -> Value {
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
 }
 pub fn message_tool() -> Value {
-    json!({"name":"send_message","description":"Submit a follow-up once to an existing ChatGPT Chat. Within about five seconds of admission, return either a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue after this call returns; use get_job_status(request_id), never resubmit to poll. Supply a fresh unique request_id before sending for timeout recovery. Preserve the chat's effort, do not interrupt a response and never automatically retry uncertain submissions.",
+    json!({"name":"send_message","description":"Submit a follow-up once to an exact existing ChatGPT Chat URL, without visiting the homepage. Optional reasoning_effort selects Instant, Medium, High, Extra High or Pro on a best-effort basis. If omitted, leave the chat's reasoning setting untouched: no selector reads or changes. A missing/rehydrating effort UI must not block submission; a requested level may remain unverified if unavailable, but this never changes the conversation target. Within about five seconds of admission, return either a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue after this call returns; use get_job_status(request_id), never resubmit to poll. Supply a fresh unique request_id before sending for timeout recovery. Wait for idle voice readiness, do not interrupt a response and never automatically retry uncertain submissions.",
         "inputSchema":{"type":"object","properties":{
             "chatgpt_url":{"type":"string","minLength":23,"maxLength":150,
                 "pattern":"^https://chatgpt\\.com/c/[A-Za-z0-9-]{1,128}$"},
             "message":{"type":"string","minLength":1,"maxLength":131072},
+            "reasoning_effort":{"type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]},
             "request_id":request_id_schema()},
             "required":["chatgpt_url","message"],"additionalProperties":false},
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
@@ -139,11 +140,10 @@ pub fn arguments(request: &Value) -> Result<Task, &'static str> {
         .as_object()
         .ok_or("arguments must be an object")?;
     if name == "send_message" {
-        if args
-            .keys()
-            .any(|k| k != "chatgpt_url" && k != "message" && k != "request_id")
-        {
-            return Err("Only chatgpt_url, message and request_id are accepted");
+        if args.keys().any(|k| {
+            k != "chatgpt_url" && k != "message" && k != "reasoning_effort" && k != "request_id"
+        }) {
+            return Err("Only chatgpt_url, message, reasoning_effort and request_id are accepted");
         }
         let chatgpt_url = args
             .get("chatgpt_url")
@@ -153,9 +153,15 @@ pub fn arguments(request: &Value) -> Result<Task, &'static str> {
             .get("message")
             .and_then(Value::as_str)
             .ok_or("message must be a string")?;
+        let reasoning_effort = match args.get("reasoning_effort") {
+            None => None,
+            Some(Value::String(value)) => Some(value.clone()),
+            _ => return Err("reasoning_effort must be a string"),
+        };
         return Ok(SendMessage {
             chatgpt_url: chatgpt_url.into(),
             message: message.into(),
+            reasoning_effort,
             image_paths: Vec::new(),
         }
         .into());

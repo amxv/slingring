@@ -337,6 +337,46 @@ fn trace(stage: &str) {
         eprintln!("slingring browser: {stage}");
     }
 }
+fn effort_code(value: Option<&str>) -> Option<&'static str> {
+    match value {
+        Some("Instant") => Some("instant"),
+        Some("Medium") => Some("medium"),
+        Some("High") => Some("high"),
+        Some("Extra High") => Some("extra_high"),
+        Some("Pro") => Some("pro"),
+        None => Some("missing"),
+        _ => None,
+    }
+}
+/// Browser payloads are untrusted. Emit only static vocabulary, never model
+/// picker text, page data, user messages, URLs, or arbitrary error strings.
+fn safe_effort_observation(event: &Value) -> Option<(&'static str, String)> {
+    let phase = match event["phase"].as_str()? {
+        "prepare" => "prepare",
+        "before_authorization" => "before_authorization",
+        "after_authorization" => "after_authorization",
+        _ => return None,
+    };
+    let expected = effort_code(event["expected"].as_str())?;
+    if expected == "missing" {
+        return None;
+    }
+    let observed = effort_code(event["observed"].as_str())?;
+    let kind = match event["kind"].as_str()? {
+        "known" => "known",
+        "missing" => "missing",
+        "ambiguous" => "ambiguous",
+        "unrecognized" => "unrecognized",
+        _ => return None,
+    };
+    if (observed == "missing" && kind == "known") || (observed != "missing" && kind != "known") {
+        return None;
+    }
+    Some((
+        phase,
+        format!("expected_{expected}_observed_{observed}_{kind}"),
+    ))
+}
 
 fn handoff_started(
     result: TaskResult,
@@ -379,8 +419,9 @@ pub async fn run_with_progress(
 ) -> Result<TaskResult> {
     trace("launch");
     progress("browser_launch");
-    let deadline = tokio::time::Instant::now()
-        + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
+    let started_at = tokio::time::Instant::now();
+    let deadline =
+        started_at + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
     let extension = native::assets(&root)?;
     if let Err(error) = agent(config, &["open", "about:blank"]).await {
@@ -472,7 +513,11 @@ pub async fn run_with_progress(
     native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt(),"tab_url":bootstrap,
         "chatgpt_url":task.conversation_url(),"effort":task.reasoning_effort(),"image_count":task.image_paths().len(),"timeout_ms":config.start_timeout_secs*1000,
         "deadline_ms":crate::queue::now()+deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64})).await?;
-    progress("chat_mode_verification");
+    progress(if task.conversation_url().is_some() {
+        "conversation_loading"
+    } else {
+        "chat_mode_verification"
+    });
     let mut submitted = false;
     let mut target = None;
     let mut conversation_url = task.conversation_url().map(str::to_string);
@@ -501,6 +546,18 @@ pub async fn run_with_progress(
             trace(kind);
         }
         match event["type"].as_str() {
+            Some("effort_state") => {
+                if let Some((phase, detail)) = safe_effort_observation(&event) {
+                    crate::diagnostics::event(
+                        &root,
+                        task_id,
+                        "effort_readback",
+                        phase,
+                        &detail,
+                        started_at.elapsed().as_millis() as u64,
+                    );
+                }
+            }
             Some("bind_tab") if !submitted && target.is_none() => {
                 target = Some(
                     cdp.bind_tab(
@@ -612,7 +669,31 @@ pub async fn close(config: &Config) -> Result<()> {
 
 #[cfg(test)]
 mod diagnostic_tests {
-    use super::{launch_stage, problem};
+    use super::{launch_stage, problem, safe_effort_observation};
+
+    #[test]
+    fn effort_diagnostics_accept_only_static_safe_metadata() {
+        let event = serde_json::json!({"phase":"prepare","expected":"Extra High",
+            "observed":"High","kind":"known"});
+        assert_eq!(
+            safe_effort_observation(&event),
+            Some(("prepare", "expected_extra_high_observed_high_known".into()))
+        );
+        for field in ["expected", "observed", "kind", "phase"] {
+            let mut corrupt = event.clone();
+            corrupt[field] = serde_json::json!("PRIVATE DOM or prompt text");
+            assert!(safe_effort_observation(&corrupt).is_none(), "{field}");
+        }
+        let missing = serde_json::json!({"phase":"prepare","expected":"Extra High",
+            "observed":null,"kind":"missing"});
+        assert_eq!(
+            safe_effort_observation(&missing),
+            Some((
+                "prepare",
+                "expected_extra_high_observed_missing_missing".into()
+            ))
+        );
+    }
 
     #[test]
     fn runner_categories_are_static_and_identify_first_and_second_attempts() {

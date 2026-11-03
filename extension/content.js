@@ -8,9 +8,36 @@
   let preparing = false;
   const trusted = sender => sender.id === chrome.runtime.id &&
     sender.url?.startsWith(`chrome-extension://${chrome.runtime.id}/bridge.html`);
+  const EFFORTS=['Instant','Medium','High','Extra High','Pro'];
   const canonical = url => typeof url==='string' && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]{1,128}(?![\s\S])/.test(url);
   const atTarget = url => url ? location.href===url : location.origin==='https://chatgpt.com' && location.pathname==='/';
   const progress=(id,stage)=>chrome.runtime.sendMessage({kind:'slingring',event:'progress',id,stage}).catch(()=>{});
+  // Only allowlisted reasoning labels and observation states cross the native
+  // bridge. Never send model-menu text, DOM output, prompts or conversation URLs.
+  const effortObservation=(id,phase,expected)=>{
+    if(!expected)return null;
+    const state=dom.effortState();
+    chrome.runtime.sendMessage({kind:'slingring',event:'effort_state',id,phase,expected,
+      observed:state.value,kind:state.kind}).catch(()=>{});
+    return state.value;
+  };
+  async function ensureRequestedEffort(id,phase,expected,deadline,followup) {
+    if(!expected)return null;
+    const observed=effortObservation(id,phase,expected);
+    if(observed===expected)return expected;
+    // Voice readiness already established that the conversation is loaded.
+    // No visible/recognizable model control? Don't spend extra seconds polling
+    // an unrelated selector. Send without claiming a verified effort change.
+    if(observed===null)return null;
+    // An explicit override is best-effort. A missing or changing picker is not
+    // grounds to block an otherwise ready conversation. Omitted overrides do
+    // not even call this function or inspect the effort UI.
+    progress(id,'effort_selection');
+    try {
+      await dom.ensureEffort(expected,Math.min(deadline,Date.now()+6500),{verifyChat:!followup});
+    } catch { /* No retry or block on an unavailable/rehydrating effort UI. */ }
+    return effortObservation(id,phase,expected)===expected ? expected : null;
+  }
   function guardTarget(url) {
     if (!atTarget(url)) throw Error(url ? 'conversation_changed' : 'not_new_chat');
   }
@@ -20,29 +47,13 @@
     if (!task.image_count && !dom.noAttachments()) throw Error('attachments_present');
     if (checkUploaded && (!dom.attachmentsReady(task.image_count) ||
         (task.image_count && !dom.attachmentsUnchanged(task.attachments)))) throw Error('attachments_changed');
-    if (task.target && task.effort!==dom.currentEffort()) throw Error('effort_changed');
   }
   async function handle(message) {
-    if (message.action === 'ensure_chat') {
-      if (task || preparing || submitted) throw Error('invalid_bootstrap_state');
-      if (location.href!=='https://chatgpt.com/') throw Error('not_new_chat');
-      const deadline=message.deadline_ms || Date.now()+120000;
-      if (deadline-Date.now()<5000) throw Error('deadline_before_submission');
-      preparing=true;
-      // A cold profile may default to Work, where /c/ links fail to load. Select
-      // Chat on the empty home page only, before opening the requested thread.
-      progress(message.id,'chat_mode_verification');
-      await dom.ensureChat(deadline);
-      if (location.href!=='https://chatgpt.com/') throw Error('not_new_chat');
-      if (!dom.chatVerified()) throw Error('chat_mode_unverified');
-      if (deadline-Date.now()<5000) throw Error('deadline_before_submission');
-      return {ok:true};
-    }
     if (message.action === "prepare") {
       if (task || preparing || submitted) throw Error("duplicate_prepare");
       const target=message.chatgpt_url ?? null;
       if (target!==null && !canonical(target)) throw Error('invalid_chat_url');
-      if (target && message.effort!=null) throw Error('invalid_followup');
+      if (message.effort!=null && !EFFORTS.includes(message.effort)) throw Error('invalid_effort');
       guardTarget(target);
       preparing = true;
       const deadline=message.deadline_ms || Date.now()+120000;
@@ -53,13 +64,13 @@
         await dom.waitFor(()=>{guardTarget(target);return dom.composer();},Math.min(15000,available),'composer_unavailable');
         await dom.waitFor(()=>{
           guardTarget(target);
-          // A follow-up must keep the existing thread and model. Never click a
-          // Chat/Work switch or an effort picker while opening this conversation.
-          return dom.chatVerified() && dom.followupReady();
+          // Exact URL, known Chat composer, an idle voice control, and no stop
+          // signal establish readiness. Never visit home or toggle Chat/Work.
+          return dom.followupReady();
         },available,'conversation_not_ready');
         guardTarget(target);
-        if (!dom.chatVerified() || !dom.followupReady()) throw Error('conversation_not_ready');
-        verified=dom.currentEffort();
+        if (!dom.followupReady()) throw Error('conversation_not_ready');
+        verified=await ensureRequestedEffort(message.id,'prepare',message.effort,deadline,true);
       } else {
         progress(message.id,'chat_mode_verification');
         await dom.ensureChat(deadline);
@@ -108,9 +119,8 @@
       await dom.waitFor(dom.sendButton,15000,"send_button_unavailable");
       guardTarget(task.target);
       guardPrepared(true);
-      if (!dom.chatVerified()) throw Error("chat_mode_unverified");
+      if(!task.target && !dom.chatVerified())throw Error('chat_mode_unverified');
       const state=dom.promptState(task.prompt);if(state!=='matches')throw Error(state);
-      if (task.requested && dom.currentEffort()!==task.requested) throw Error("effort_changed");
       if (task.deadline-Date.now()<5000) throw Error("deadline_before_submission");
       progress(task.id,'send_ready');
       const ack=await chrome.runtime.sendMessage({kind:"slingring",event:"will_submit",id:task.id});
@@ -123,9 +133,8 @@
       guardTarget(task.target);
       guardPrepared(true);
       if (task.deadline-Date.now()<5000) throw Error('deadline_before_submission');
-      if (!button?.isConnected || !input?.isConnected || !dom.chatVerified() || button.disabled ||
-          !dom.promptEquals(input,task.prompt) ||
-          (task.requested && dom.currentEffort()!==task.requested)) throw Error("page_changed_before_send");
+      if (!button?.isConnected || !input?.isConnected || (!task.target && !dom.chatVerified()) || button.disabled ||
+          !dom.promptEquals(input,task.prompt)) throw Error("page_changed_before_send");
       const baseline=dom.turnBaseline();
       submitted=true;
       button.click();

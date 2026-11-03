@@ -21,13 +21,17 @@ pub struct NewTask {
 pub struct SendMessage {
     pub chatgpt_url: String,
     pub message: String,
+    /// Opt-in: omitted reasoning effort leaves the existing chat untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_paths: Vec<PathBuf>,
 }
 
 /// Both operations share the same queue, browser owner and submission guard.
-/// A follow-up deliberately has no model/effort override. Local CLI callers
-/// may attach images; remote MCP callers cannot provide file paths.
+/// A follow-up may request an effort explicitly; otherwise it leaves the
+/// existing conversation's setting alone. Local CLI callers may attach images;
+/// remote MCP callers cannot provide file paths.
 #[derive(Clone)]
 pub enum Task {
     New(NewTask),
@@ -46,13 +50,17 @@ impl From<SendMessage> for Task {
 }
 
 impl SendMessage {
-    pub fn resolve(mut self) -> Result<Self> {
+    pub fn resolve(mut self, _config: &crate::config::Config) -> Result<Self> {
         ensure!(
             canonical_url(&self.chatgpt_url),
             "chatgpt_url must be an exact https://chatgpt.com/c/<id> conversation URL without a query or fragment"
         );
         ensure!(!self.message.trim().is_empty(), "message cannot be empty");
         ensure!(self.message.len() <= MAX_PROMPT, "message exceeds 128 KiB");
+        self.reasoning_effort = match self.reasoning_effort.as_deref().map(str::trim) {
+            Some(value) if !value.is_empty() => Some(effort(value)?),
+            _ => None,
+        };
         validate_images(&mut self.image_paths)?;
         Ok(self)
     }
@@ -62,7 +70,7 @@ impl Task {
     pub fn resolve(self, config: &crate::config::Config) -> Result<Self> {
         match self {
             Self::New(task) => task.resolve(config).map(Self::New),
-            Self::Message(task) => task.resolve().map(Self::Message),
+            Self::Message(task) => task.resolve(config).map(Self::Message),
         }
     }
     pub fn prompt(&self) -> &str {
@@ -80,7 +88,7 @@ impl Task {
     pub fn reasoning_effort(&self) -> Option<&str> {
         match self {
             Self::New(task) => task.reasoning_effort.as_deref(),
-            Self::Message(_) => None,
+            Self::Message(task) => task.reasoning_effort.as_deref(),
         }
     }
     pub fn image_paths(&self) -> &[PathBuf] {
@@ -105,11 +113,13 @@ impl Task {
     }
     pub fn validate_result(&self, result: &TaskResult) -> Result<()> {
         result.validate()?;
-        ensure!(
-            self.reasoning_effort().is_none()
-                || self.reasoning_effort() == result.reasoning_effort.as_deref(),
-            "requested effort was not verified; inspect chat before retrying"
-        );
+        if let Self::New(_) = self {
+            ensure!(
+                self.reasoning_effort().is_none()
+                    || self.reasoning_effort() == result.reasoning_effort.as_deref(),
+                "requested effort was not verified; inspect chat before retrying"
+            );
+        }
         ensure!(
             self.conversation_url().is_none_or(|url| url == result.url),
             "follow-up conversation changed; inspect chat before retrying"

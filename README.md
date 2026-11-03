@@ -54,7 +54,7 @@ slingring remote url | pbcopy
 Add it to your assistant as a remote MCP server. URL-key connections use **No authentication** in the client because the private URL itself is the credential. Keep it secret. Three text-only tools are available:
 
 - `new_task(prompt, reasoning_effort?, request_id?)` starts a conversation.
-- `send_message(chatgpt_url, message, request_id?)` follows up in an existing chat and preserves its reasoning effort.
+- `send_message(chatgpt_url, message, reasoning_effort?, request_id?)` follows up directly in an existing chat. Omit effort to leave the model selector completely untouched, or explicitly request a best-effort level change.
 - `get_job_status(request_id)` reads the Mac's journal without submitting anything, including when an earlier MCP caller timed out.
 
 After accepting an MCP request, Slingring waits up to five seconds for a result. If the task is still queued or starting, it returns an `accepted: true`, `outcome: in_progress` receipt with the request ID. That receipt does not claim that a message was sent. Query `get_job_status` with the same ID to obtain the confirmed conversation link or failure.

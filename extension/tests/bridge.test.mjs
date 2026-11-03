@@ -6,7 +6,7 @@ import {JSDOM} from 'jsdom';
 const source=readFileSync(new URL('../bridge.js',import.meta.url),'utf8');
 const target='https://chatgpt.com/c/existing-conversation';
 const bootstrap='about:blank#slingring-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=null,tabUrl=bootstrap,initialBlank=false}={}) {
+async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,tabUrl=bootstrap,initialBlank=false}={}) {
   const page=new JSDOM('<body></body>',{url:'chrome-extension://test-extension/bridge.html#token=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa&job=test-job',runScripts:'outside-only'});
   const w=page.window,events=[],navigations=[],contentRequests=[],removed=[],order=[];
   let nativeListener,runtimeListener,resolve,updatedListener,tabCommitted=!initialBlank;
@@ -36,11 +36,11 @@ async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=nul
     },
     sendMessage:async (id,message)=>{
       assert.equal(id,5);contentRequests.push(message);order.push(message.action);
-      if(message.action==='ensure_chat')return bootstrapError ? {ok:false,code:bootstrapError,submitted:false} : {ok:true};
-      if(message.action==='prepare')return {ok:true,effort:null,upload_selector:'input[type="file"][multiple]'};
+      if(message.action==='prepare')return prepareError ? {ok:false,code:prepareError,submitted:false} :
+        {ok:true,effort:task.effort??null,upload_selector:'input[type="file"][multiple]'};
       const ack=await new Promise(done=>runtimeListener({kind:'slingring',event:'will_submit',id:'test-job'},sender,done));
       if(!ack?.ok)return {ok:false,submitted:false,code:'submission_not_authorized'};
-      return {ok:true,url:resultUrl,evidence:'thinking',effort:null,submitted:true};
+      return {ok:true,url:resultUrl,evidence:'thinking',effort:task.effort??null,submitted:true};
     },
     remove:async id=>{removed.push(id);},getCurrent:async()=>({id:99})
   }};
@@ -51,14 +51,14 @@ async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=nul
   w.close();return result;
 }
 
-test('bridge bootstraps Chat at home, then opens the exact follow-up in the same owned tab',async()=>{
+test('bridge navigates straight to an exact follow-up with no home visit or mode bootstrap',async()=>{
   const r=await run();
-  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/',target]);
+  assert.deepEqual(r.navigations,[bootstrap,target]);
   assert.equal(r.events.filter(e=>e.type==='bind_tab').length,1);
-  assert.deepEqual(r.order,['navigate:https://chatgpt.com/','ensure_chat',`navigate:${target}`,'prepare','submit']);
+  assert.deepEqual(r.order,[`navigate:${target}`,'prepare','submit']);
   assert.equal(r.contentRequests.find(m=>m.action==='prepare').chatgpt_url,target);
-  const preparation=r.contentRequests.find(m=>m.action==='ensure_chat');
-  assert.equal(typeof preparation.deadline_ms,'number');assert.equal(preparation.prompt,undefined);assert.equal(preparation.effort,undefined);
+  assert.equal(r.contentRequests.some(m=>m.action==='ensure_chat'),false);
+  assert.equal(r.navigations.includes('https://chatgpt.com/'),false);
   assert.equal(r.contentRequests.filter(m=>m.action==='submit').length,1);
   assert.equal(r.terminal.type,'released');assert(r.removed.includes(5));
   assert.equal(r.events.find(e=>e.type==='started').url,target);
@@ -73,7 +73,7 @@ test('new_task still navigates home and allows its newly created conversation UR
 
 test('local follow-up images use the existing native upload handshake before submission',async()=>{
   const r=await run({task:{image_count:2}});
-  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/',target]);
+  assert.deepEqual(r.navigations,[bootstrap,target]);
   assert.equal(r.contentRequests.find(m=>m.action==='prepare').image_count,2);
   assert.equal(r.events.filter(e=>e.type==='upload').length,1);
   assert.equal(r.events.find(e=>e.type==='upload').selector,'input[type="file"][multiple]');
@@ -81,11 +81,11 @@ test('local follow-up images use the existing native upload handshake before sub
   assert.equal(r.terminal.type,'released');
 });
 
-test('failed Chat bootstrap never navigates to the target or prepares a message',async()=>{
-  const r=await run({bootstrapError:'chat_mode_unverified'});
-  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/']);
-  assert.deepEqual(r.contentRequests.map(m=>m.action),['ensure_chat']);
-  assert.equal(r.terminal.code,'chat_mode_unverified');assert.equal(r.terminal.submitted,false);
+test('an inaccessible/unready target aborts without mode switching or authorizing Send',async()=>{
+  const r=await run({prepareError:'conversation_not_ready'});
+  assert.deepEqual(r.navigations,[bootstrap,target]);
+  assert.deepEqual(r.contentRequests.map(m=>m.action),['prepare']);
+  assert.equal(r.terminal.code,'conversation_not_ready');assert.equal(r.terminal.submitted,false);
   assert.equal(r.events.some(e=>e.type==='will_submit'),false);
 });
 
@@ -95,12 +95,20 @@ test('an expired job deadline prevents bootstrap navigation and any content acti
   assert.equal(r.navigations.length,0);assert.equal(r.contentRequests.length,0);
 });
 
-test('bridge rejects malformed targets or follow-up effort overrides before creating a browser tab',async()=>{
+test('bridge rejects malformed targets or unsupported efforts before creating a browser tab',async()=>{
   for(const task of [{chatgpt_url:target+'\n'},{chatgpt_url:target+'?x=1'},{chatgpt_url:'https://chatgpt.com/c/'+ 'a'.repeat(129)},
-    {chatgpt_url:false},{chatgpt_url:''},{effort:'High'}]) {
+    {chatgpt_url:false},{chatgpt_url:''},{effort:'Ultra'}]) {
     const r=await run({task});assert.equal(r.terminal.type,'failed');assert.equal(r.terminal.code,'invalid_followup');
     assert.equal(r.terminal.submitted,false);assert.equal(r.navigations.length,0);
   }
+});
+
+test('follow-ups can select an explicit reasoning effort without visiting the homepage',async()=>{
+  const r=await run({task:{effort:'Extra High'}});
+  assert.deepEqual(r.navigations,[bootstrap,target]);
+  assert.equal(r.contentRequests[0].effort,'Extra High');
+  assert.equal(r.events.find(e=>e.type==='started').effort,'Extra High');
+  assert.equal(r.terminal.type,'released');
 });
 
 test('bridge rejects malformed or excessive local image counts before opening a tab',async()=>{
