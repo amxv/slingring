@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.3.0 · 3 November 2026
+
+Add the MCP-only `send_message(chatgpt_url, message)` tool for continuing an existing ChatGPT Chat conversation using the same isolated browser, Chrome profile, and serial queue as `new_task`. A follow-up waits for the voice control to signal readiness, never interrupts an ongoing response, preserves the current reasoning effort, and returns the same conversation URL once new thinking, working, or response activity begins. Generated answers are not extracted.
+
+Protect follow-ups from invalid or redirected URLs, existing drafts and attachments, Work mode, busy conversations, and misleading historical activity. A failed or uncertain submission is not automatically retried; follow-up messages remain limited to 128 KiB. Add regression coverage for queueing, duplicate protection, readiness, and real start detection.
+
 ## 0.2.0 · 3 November 2026
 
 Install the verified browser helper automatically with Slingring. Add named Chrome profile selection in the CLI and menu bar. Move settings into Configure, retaining service control, latest chat, and quit at the top level. Advertise the requested MCP hint values while retaining explicit tool behavior.
