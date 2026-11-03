@@ -36,7 +36,7 @@ pub fn assets(root: &Path) -> Result<PathBuf> {
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
-pub fn register(root: &Path) -> Result<()> {
+pub fn register(root: &Path, browser_data: &Path) -> Result<()> {
     ensure!(root.is_absolute(), "state directory must be absolute");
     config::private_dir(root)?;
     assets(root)?;
@@ -48,9 +48,19 @@ pub fn register(root: &Path) -> Result<()> {
     );
     config::atomic(&wrapper, text.as_bytes())?;
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
-    let hosts = PathBuf::from(std::env::var_os("HOME").context("HOME missing")?)
-        .join("Library/Application Support/Google/Chrome/NativeMessagingHosts");
-    fs::create_dir_all(&hosts)?;
+    // A copied profile uses its own NativeMessagingHosts directory. Register
+    // ONLY there, never alter the user's everyday Chrome installation.
+    let data = browser_data.canonicalize()?;
+    ensure!(
+        data.starts_with(std::env::temp_dir().canonicalize()?)
+            && data
+                .file_name()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| v.starts_with("agent-browser-profile-")),
+        "native host registration requires an isolated agent-browser profile copy"
+    );
+    let hosts = data.join("NativeMessagingHosts");
+    config::private_dir(&hosts)?;
     let manifest = json!({"name":HOST,"description":"Slingring task bridge","path":wrapper,
         "type":"stdio","allowed_origins":[format!("chrome-extension://{EXTENSION_ID}/")]});
     let path = hosts.join(format!("{HOST}.json"));
@@ -68,23 +78,6 @@ pub fn register(root: &Path) -> Result<()> {
     f.sync_all()?;
     fs::rename(temporary, path)?;
     Ok(())
-}
-
-/// A copied Chrome user-data directory has its own native-host registry.
-/// Register only inside the profile proven to belong to our browser endpoint.
-pub fn register_owned_profile(root: &Path, user_data: &Path) -> Result<()> {
-    ensure!(
-        user_data.is_absolute() && user_data.is_dir(),
-        "invalid browser profile directory"
-    );
-    let hosts = user_data.join("NativeMessagingHosts");
-    let manifest = json!({"name":HOST,"description":"Slingring task bridge",
-        "path":root.join("native-host"),"type":"stdio",
-        "allowed_origins":[format!("chrome-extension://{EXTENSION_ID}/")]});
-    config::atomic(
-        &hosts.join(format!("{HOST}.json")),
-        &serde_json::to_vec_pretty(&manifest)?,
-    )
 }
 fn forward_frame(reader: &mut impl Read, writer: &mut impl Write) -> Result<()> {
     let mut header = [0_u8; 4];

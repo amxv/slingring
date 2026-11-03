@@ -19,9 +19,6 @@ async fn connection(
     queue: Queue,
     status: watch::Sender<String>,
 ) -> Result<()> {
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
     let mut request = config
         .relay_url
         .as_deref()
@@ -36,8 +33,10 @@ async fn connection(
     );
     request.headers_mut().insert("Authorization", auth.parse()?);
     let mut limits = WebSocketConfig::default();
-    limits.max_message_size = Some(MAX_JSON);
-    limits.max_frame_size = Some(MAX_JSON);
+    limits.read_buffer_size = 4096;
+    limits.write_buffer_size = 4096;
+    limits.max_message_size = Some(MAX_JSON + 4096);
+    limits.max_frame_size = Some(MAX_JSON + 4096);
     let (socket, _) = tokio::time::timeout(
         Duration::from_secs(20),
         connect_async_with_config(request, Some(limits), false),
@@ -73,7 +72,7 @@ async fn connection(
                             && value["request"].is_object(), "invalid relay envelope");
                         let key = match value.get("idempotency_key") {
                             None | Some(Value::Null) => value["id"].as_str().unwrap_or_default().to_string(),
-                            Some(Value::String(k)) if k.len() <= 128 => k.clone(),
+                            Some(Value::String(k)) if !k.is_empty() && k.len() <= 100 && k.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b,b'-'|b'_')) => k.clone(),
                             _ => anyhow::bail!("invalid idempotency key"),
                         };
                         let deadline = value["expires_at"].as_u64().filter(|d| *d <= crate::queue::now() + 300_000)

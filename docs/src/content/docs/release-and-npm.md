@@ -1,36 +1,38 @@
 ---
-title: Releases and updates
-description: Authenticated private downloads and direct macOS updates.
-order: 9
+title: Installation and updates
+description: Direct macOS distribution, with an optional native menu bar.
+order: 10
 category: Distribution
-summary: Checksummed CLI and menu bar bundles, without npm.
+summary: Private GitHub downloads, verified archives, and explicit update preferences.
 ---
 
-## Private distribution
+Slingring uses direct GitHub Releases, not npm. Apple Silicon and Intel macOS archives include the Rust executable; paired bundles also include the Swift menu bar app. Their checksums and ad-hoc signatures are verified by the website installer. Ad-hoc signing is not Developer ID notarization, and no macOS security settings are disabled.
 
-Use the [quickstart installer](/docs/quickstart) with an authenticated GitHub CLI session. The installer prefers authenticated downloads and falls back to public downloads when available. With repository access, assets can also be downloaded directly:
+## Private repository access
+
+While the repository is private, authenticate `gh` with access to `amxv/slingring`. The installer and upgrade check use that existing login for private release metadata and assets. Tokens are not copied into the command line or source tree. Anonymous GitHub URLs cannot download private artifacts.
 
 ```bash
-gh release list --repo amxv/slingring
-gh release download <TAG> --repo amxv/slingring --dir ./release-assets
+gh auth status
+curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-Select the matching macOS architecture and verify the release checksum before extracting. Keep the companion CLI next to the optional `.app`. Asset availability depends on an actual published release. Do not assume a release exists yet.
+The default destination is `~/.local/bin`. The app is included but need not run. Open `~/.local/bin/Slingring.app` explicitly, or set `CLI_LAUNCH_MENU_BAR=1` when installing. An already-running app is reopened after an upgrade.
 
-While the repository is private, anonymous downloads do not work. `upgrade --check` uses authenticated GitHub metadata when available. Updates download matching checksums and verify the CLI/app bundle before replacing the installation. An active task defers installation. The app reopens only when it was already running or explicitly requested.
-
-## Update controls
+## Manual and scheduled updates
 
 ```bash
 slingring upgrade --check
 slingring upgrade
-slingring auto-update status
 slingring auto-update on
+slingring auto-update status
 slingring auto-update off
 ```
 
-Automatic updates are off by default. Opt-in daily checks use the OS scheduler independently of the menu bar, with no app polling timer. Enable them only once the installation's release access path works. Ad-hoc signing is not Developer ID notarization; downloaded apps may trigger Gatekeeper. Do not disable macOS security controls.
+Daily update checks are off by default. Enabling them installs an independent OS scheduler, not a continuously polling process. A failed or offline check does not revoke your opt-in. Stop active task work before upgrading.
 
 ## Maintainers
 
-`dist-workspace.toml` is the release source of truth. Regenerate the release workflow with `dist generate`, never hand-edit it. Follow `.agents/skills/release/SKILL.md` for a release. The optional app packaging builds Apple Silicon and Intel bundles with matching CLI assets and checksum sidecars. There is no npm distribution.
+The Cargo version and changelog are the release sources of truth. Run Rust formatting, strict Clippy, unit/integration tests, extension/relay tests, Swift bundle validation, and docs checks before tagging. `dist-workspace.toml` owns the Apple Silicon and Intel release targets. Regenerate the managed workflow with `dist generate` rather than editing its generated steps.
+
+The tag's cargo-dist workflow publishes native artifacts. Its post-announce Swift job builds and signs the paired app bundles. The private repository remains private unless explicitly changed by its owner.

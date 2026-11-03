@@ -1,38 +1,95 @@
 ---
+import { getCollection } from "astro:content";
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
 import { primaryNav, siteConfig } from "../data/docs";
-const features = [
-  {title:"Your browser. Your account.",body:"Uses an isolated copy of your signed-in Chrome profile through the tested agent-browser-browse build. Your everyday windows stay out of it."},
-  {title:"Chat, never Work.",body:"Checks the mode, selects your thinking effort, and verifies the choice before sending. Unsupported options fail instead of silently changing the request."},
-  {title:"A link, not an answer scraper.",body:"Returns when genuine thinking or response activity begins. Open the conversation to follow along. Generated answers never come back through Slingring."},
-  {title:"Nothing open just in case.",body:"The browser closes when the queue drains. Local-only mode exits entirely; remote mode keeps one small Rust service and an outbound connection."}
+
+const docs = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
+
+const proofPoints = [
+  {
+    title: "Your agents, one entrance",
+    body: "Use the CLI locally or one authenticated MCP tool remotely. Both share the same queue and browser behavior."
+  },
+  {
+    title: "Starts in Chat. Never Work.",
+    body: "The extension verifies Chat mode and the requested reasoning level before sending your prompt."
+  },
+  {
+    title: "A link, not a scraped answer",
+    body: "Get the conversation URL after real thinking or streaming begins. Continue in ChatGPT while the local browser exits."
+  },
+  {
+    title: "Quiet between tasks",
+    body: "No idle browser, Redis, or polling queue. Local-only service exits; remote mode keeps one sleeping push connection."
+  }
 ];
 ---
-<BaseLayout title="Slingring · Give your agents a way into ChatGPT" description={siteConfig.description} siteConfig={siteConfig} primaryNav={primaryNav}>
-  <div class="slingring-home">
-    <section class="landing-hero">
-      <div class="hero-copy">
-        <p class="product-note"><span aria-hidden="true"></span> A small bridge for your agents</p>
-        <h1>Send the task.<br />Get the chat.<br /><em>Keep moving.</em></h1>
-        <p class="lede">Let a local or remote agent start a ChatGPT conversation for you. Slingring sends the prompt, returns the link when thinking starts, and gets the browser out of the way.</p>
-        <div class="actions"><a class="primary" href="/docs/quickstart">Start with the CLI <span aria-hidden="true">↗</span></a><a href="/docs/remote">Connect a remote agent →</a></div>
-        <p class="compatibility">macOS · Rust CLI · Streamable HTTP MCP · Optional native menu bar</p>
+
+<BaseLayout
+  title={`${siteConfig.name} | ${siteConfig.strapline}`}
+  description={siteConfig.description}
+  siteConfig={siteConfig}
+  primaryNav={primaryNav}
+>
+  <section class="hero shell">
+    <div class="hero__copy">
+      <p class="section-label">A handoff to ChatGPT</p>
+      <h1>Send the task.<br />Keep the link.</h1>
+      <p class="hero__lede">
+        Let your local and remote agents start a ChatGPT conversation for you.
+        Slingring submits the brief, confirms that work has begun, returns the link,
+        and gets the browser out of the way.
+      </p>
+      <div class="hero__actions">
+        <a class="button button--solid" href="/docs/quickstart">Quickstart</a>
+        <a class="button button--ghost" href="/docs">Browse docs</a>
       </div>
-      <div class="handoff" aria-label="Example of sending a task and receiving its ChatGPT URL">
-        <div class="handoff-header"><span class="portal" aria-hidden="true"></span><span>One request. A new conversation.</span></div>
-        <div class="terminal"><span class="terminal-label">YOUR AGENT</span><code><span class="prompt">$</span> slingring new-task \<br />&nbsp; "Review this plan" \<br />&nbsp; --reasoning-effort "Extra High"</code></div>
-        <div class="handoff-steps"><span>Chat verified</span><span>Extra High selected</span><span>Thinking started</span></div>
-        <div class="returned"><span class="terminal-label">BACK TO YOUR AGENT</span><code>chatgpt.com/c/…</code><span class="quiet">Browser closed. Task continues.</span></div>
+    </div>
+    <aside class="hero__panel">
+      <p class="hero__panel-label">From your terminal</p>
+      <div class="hero__terminal">
+        <span>$ slingring new-task \</span>
+        <span>&nbsp;&nbsp;--prompt-file brief.md \</span>
+        <span>&nbsp;&nbsp;--reasoning-effort "Extra High"</span>
+        <span>https://chatgpt.com/c/…</span>
       </div>
-    </section>
-    <section class="ways" aria-labelledby="ways-title">
-      <div><p class="section-note">TWO WAYS IN</p><h2 id="ways-title">Same queue.<br />Different starting points.</h2></div>
-      <a href="/docs/local-input"><span class="number">01</span><h3>On your Mac</h3><p>A CLI command from Claude Code, a script, or another local agent. Prompts from text or files; image attachments stay local until upload.</p><span class="learn">Local CLI →</span></a>
-      <a href="/docs/remote"><span class="number">02</span><h3>From anywhere</h3><p>One MCP tool for ChatGPT and other remote assistants. An authenticated relay reaches your awake Mac over its outbound connection.</p><span class="learn">Remote MCP →</span></a>
-    </section>
-    <section class="principles" aria-labelledby="principles-title"><h2 id="principles-title">Deliberately small.<br />Careful where it counts.</h2><div class="feature-grid">{features.map(feature=><article><h3>{feature.title}</h3><p>{feature.body}</p></article>)}</div></section>
-    <section class="end-note"><p>No Redis. No home server. No always-open browser.</p><a href="/docs/customize-cli">See the architecture →</a></section>
-  </div>
+    </aside>
+  </section>
+
+  <section class="shell section-grid">
+    <div class="section-heading">
+      <p class="section-label">One small bridge</p>
+      <h2>Hand off the work without keeping another workspace alive.</h2>
+      <p>
+        A Rust CLI, a short-lived Chrome extension, and an optional native menu bar.
+        Start tasks one at a time, queue a burst, and leave the actual conversation in ChatGPT.
+      </p>
+    </div>
+    <div class="proof-grid">
+      {proofPoints.map((item) => (
+        <article class="proof-card">
+          <h3>{item.title}</h3>
+          <p>{item.body}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="shell docs-teaser">
+    <div class="section-heading">
+      <p class="section-label">Documentation</p>
+      <h2>Start locally. Add remote access when you need it.</h2>
+    </div>
+    <div class="docs-teaser__grid">
+      {docs.map((entry) => (
+        <a class="docs-teaser__card" href={`/docs/${entry.id}`}>
+          <span>{entry.data.category}</span>
+          <h3>{entry.data.title}</h3>
+          <p>{entry.data.summary ?? entry.data.description}</p>
+        </a>
+      ))}
+    </div>
+  </section>
 </BaseLayout>
 <style>
   .slingring-home{--ember:#b7410e;--line:color-mix(in srgb,currentColor 16%,transparent);max-width:1180px;margin:auto;padding:24px 30px 70px}

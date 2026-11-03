@@ -112,7 +112,14 @@ pub async fn dispatch(
         Ok(task) => task,
         Err(e) => return Some(error(id, -32602, &e.to_string())),
     };
-    let outcome = match queue.submit(key.clone(), task, config).await {
+    let external_deadline = deadline_ms.map(|deadline| {
+        tokio::time::Instant::now()
+            + std::time::Duration::from_millis(deadline.saturating_sub(crate::queue::now()))
+    });
+    let outcome = match queue
+        .submit_before(key.clone(), task, config, external_deadline)
+        .await
+    {
         Ok(r) => {
             json!({"content":[{"type":"text","text":r.url}],"structuredContent":r,"isError":false})
         }

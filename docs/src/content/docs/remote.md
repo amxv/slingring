@@ -1,64 +1,61 @@
 ---
-title: Remote agents
-description: Reach your Mac through a small authenticated relay, without an inbound port.
+title: Remote access
+description: One outbound push connection, one MCP tool, no polling queue.
 order: 4
 category: Start
-summary: One Streamable HTTP tool, one outbound connection, and no Redis.
+summary: Connect an assistant through your authenticated Streamable HTTP relay.
 ---
 
-## How remote access works
+## Connect the Mac
 
-The Mac opens one outbound TLS WebSocket to your Cloudflare Worker. A hibernating Durable Object connects incoming Streamable HTTP requests to that socket. The relay does not run a browser, schedule work, interpret prompts, or store a task queue. Rust owns all task behavior.
+Remote mode adds one outbound WSS connection from the Rust service to a Cloudflare Worker. A hibernating Durable Object forwards requests to the connected Mac. There is no homebox, Redis, cloudflared process, inbound Mac port, or durable cloud prompt queue.
 
-The Mac must be awake, logged into its desktop session, and online. Sleeping, offline, or disconnected Macs return an error rather than retaining prompts for surprise execution later. No homebox, Redis, inbound firewall rule, or `cloudflared` process is required.
-
-Cloudflare's browser-integrity checks can reject legitimate non-browser API clients. Configure an exception **only for your relay hostname**, leaving website protection elsewhere unchanged. Slingring still requires its device/client credentials; this is not an unauthenticated endpoint. Avoid changing your user-agent to impersonate a browser merely to access your own API.
-
-## Deploy a relay
-
-Deploy the repository's `relay/` directory to your own Cloudflare account and hostname. Set **different random secrets** for `DEVICE_TOKEN` and `CLIENT_TOKEN`. Change the account ID and custom domain in `wrangler.jsonc` for your installation. Observability is off so capability URLs and prompts are not written to Worker logs.
+Deploy `relay/` into your own Cloudflare account first. Its Worker secrets must contain distinct, cryptographically random `DEVICE_TOKEN` and `CLIENT_TOKEN` values. Never reuse either token for another service.
 
 ```bash
-cd relay
-bun install --frozen-lockfile
-bunx wrangler deploy
-# Pipe tokens from a secret manager; do not put secrets in command arguments.
-printf '%s' "$DEVICE_TOKEN" | bunx wrangler secret put DEVICE_TOKEN
-printf '%s' "$CLIENT_TOKEN" | bunx wrangler secret put CLIENT_TOKEN
-```
-
-Configure the Mac through stdin. The credential JSON contains `device_token` and optionally the private `mcp_url` for the menu bar's copy action.
-
-```bash
-cat /path/to/private-credentials.json | slingring remote configure \
-  --url wss://YOUR-RELAY/device --token-stdin
+# DEVICE_TOKEN comes from your secret manager, not a literal in shell history.
+printf '%s' "$DEVICE_TOKEN" | slingring remote configure \
+  --url wss://YOUR_RELAY/device --token-stdin
 slingring remote on
 slingring service install
 slingring status --json
 ```
 
-Remove the temporary credential file after securely configuring it. Configuration is saved under private local permissions; secrets do not appear in ordinary status output.
+`remote on` enables the connection. `service install` starts the user LaunchAgent and arranges startup after login. The Mac must be awake, logged in, online, and able to use the configured ChatGPT session. Slingring does not prevent sleep or bypass login challenges.
 
-## Connect an assistant
+## Add a remote assistant
 
-For clients supporting headers, use `https://YOUR-RELAY/mcp` with `Authorization: Bearer CLIENT_TOKEN`. URL-only clients can use `https://YOUR-RELAY/mcp/CLIENT_TOKEN` and choose **No authentication** in the connector UI: the unguessable URL itself is the credential.
+Clients that support HTTP headers use `https://YOUR_RELAY/mcp` with `Authorization: Bearer CLIENT_TOKEN`.
 
-The locally configured URL is available through `slingring remote url` or **Copy Remote MCP URL** in the menu bar. Do not paste it into issues, public logs, or screenshots. Query-string keys are disabled by default.
+For a client such as ChatGPT configured with **No authentication**, use the private URL `https://YOUR_RELAY/mcp/CLIENT_TOKEN`. The unguessable URL is the authentication credential. It is not a public, unauthenticated endpoint. Keep it out of screenshots, source control, support logs, and shared chats.
 
-```text
-new_task(prompt: string, reasoning_effort?: string)
+`remote configure` also accepts credential JSON on stdin with `device_token` and `mcp_url`. This lets a provisioning script save the complete private connection URL without exposing it in command arguments. The menu bar's **Copy Remote MCP URL** and `slingring remote url` reveal that URL only when explicitly requested.
+
+## One tool
+
+```json
+{
+  "name": "new_task",
+  "arguments": {
+    "prompt": "Review this plan and identify the biggest risks.",
+    "reasoning_effort": "Extra High"
+  }
+}
 ```
 
-Blank or omitted effort uses the configured default. The tool returns a chat URL after real assistant activity starts, not the completed answer. `image_paths`, `images`, attachments, profile overrides, and every unknown argument are rejected. Local images are available only on the CLI.
+Omit the effort or pass an empty string to use the local default. No remote argument accepts images, filesystem paths, arbitrary URLs, shell commands, or browser configuration. Unknown fields are rejected.
 
-## Disable or stop
+The server implements MCP initialization, ping, tool discovery, and this one write tool. Successful calls return task metadata and a canonical ChatGPT URL, not the generated answer. HTTP POST JSON responses are used; the optional MCP GET event stream is not exposed.
+
+## Failure and reconnect behavior
+
+Requests are bounded to 256 KiB and 32 outstanding calls. A disconnected Mac produces an explicit error. Transport reconnects use bounded exponential backoff; they never replay a task automatically. A sparse 60-second application heartbeat maintains and checks the connection. It is not a job poll.
+
+Remote requests carry an end-to-end deadline. A queued request whose caller has gone away is cancelled before submission. If a request may already have reached ChatGPT, the result is uncertain instead of retried. Check the local journal before requesting another task. Clients with custom headers may use a unique `Idempotency-Key` to recover the same operation safely; reuse with different arguments is rejected.
 
 ```bash
 slingring remote off
 slingring service stop
-slingring service uninstall
 ```
 
-`remote off` closes the outbound connection; the idle local process exits after work drains. `service stop` stops current processing, so inspect any interrupted task before retrying. `service uninstall` additionally removes login registration. None of these deletes browser history or ChatGPT conversations.
-
-The relay's deadlines are bounded. A transport error after submission may be uncertain; do not automatically resubmit. A client able to set `Idempotency-Key` can use the same key with identical input to recover a retained result without creating another chat.
+Disabling remote access preserves its credentials. Stopping the service does not delete configuration or chat history.

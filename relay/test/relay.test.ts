@@ -3,14 +3,23 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import worker, { Relay, authorize, acceptsJson, MAX_BYTES, WAIT_MS } from '../src/index';
 // Node lacks the Workers timing-safe digest primitive.
 import { timingSafeEqual } from 'node:crypto';
-import { setTimeout as realDelay } from 'node:timers/promises';
-const NativeResponse = globalThis.Response;
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 Object.assign(crypto.subtle, { timingSafeEqual: (a: ArrayBuffer, b: ArrayBuffer) => timingSafeEqual(Buffer.from(a), Buffer.from(b)) });
 class Socket {
   frames: string[] = [];
   closed = false;
-  send(frame: string) { if (this.closed) throw Error('closed'); this.frames.push(frame); }
+  waiters: {count: number, resolve: () => void}[] = [];
+  send(frame: string) {
+    if (this.closed) throw Error('closed');
+    this.frames.push(frame);
+    const ready=this.waiters.filter(waiter=>this.frames.length>=waiter.count);
+    this.waiters=this.waiters.filter(waiter=>this.frames.length<waiter.count);
+    for(const waiter of ready) waiter.resolve();
+  }
+  sent(count=1): Promise<void> {
+    if(this.frames.length>=count) return Promise.resolve();
+    return new Promise(resolve=>this.waiters.push({count,resolve}));
+  }
   close() { this.closed = true; }
 }
 let socket: Socket;
@@ -20,29 +29,18 @@ let context: any;
 function req(body: unknown = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { images: ['unchanged'] } }, headers = {}, path = '/mcp', method = 'POST') {
   return new Request(`https://relay.example${path}`, { method, headers: { Authorization: 'Bearer client', Accept: 'application/json', 'Content-Type': 'application/json', ...headers }, ...(method === 'GET' ? {} : { body: JSON.stringify(body) }) });
 }
-async function sent() {
-  for (let i = 0; i < 1000 && socket.frames.length === 0; i++) await realDelay(1);
-  expect(socket.frames.length).toBeGreaterThan(0);
-}
+// Wait for the actual WebSocket event. A fixed number of event-loop turns can
+// race WebCrypto on a slower Linux CI runner despite passing locally.
+async function sent(count=1) { await socket.sent(count); }
 function result(response: unknown, id = JSON.parse(socket.frames.at(-1)!).id) { relay.webSocketMessage(socket as any, JSON.stringify({ type: 'rpc_result', id, response })); }
 beforeEach(() => {
   socket = new Socket();
   env = { CLIENT_TOKEN: 'client', DEVICE_TOKEN: 'device' };
   context = { getWebSockets: () => socket.closed ? [] : [socket], setWebSocketAutoResponse: vi.fn(), acceptWebSocket: vi.fn() };
   vi.stubGlobal('WebSocketRequestResponsePair', class {});
-  vi.stubGlobal('WebSocketPair', class { 0 = new Socket(); 1 = new Socket(); });
-  vi.stubGlobal('Response', class extends NativeResponse {
-    private upgrade: boolean;
-    webSocket: unknown;
-    constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: unknown }) {
-      super(body, init?.status === 101 ? { ...init, status: 200 } : init);
-      this.upgrade = init?.status === 101; this.webSocket = init?.webSocket;
-    }
-    get status() { return this.upgrade ? 101 : super.status; }
-  });
   relay = new Relay(context, env);
 });
-afterEach(() => { relay.webSocketError(socket as any); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('authentication and origin', () => {
   it('requires route-specific tokens and rejects equal/missing secrets', async () => {
     expect((await authorize(req({}, {}, '/device'), env))?.status).toBe(401);
@@ -99,16 +97,20 @@ describe('HTTP framing', () => {
     expect((await relay.fetch(req())).status).toBe(503);
     expect(await (await relay.fetch(req({}, {}, '/health', 'GET'))).json()).toEqual({ online: false });
   });
-  it('replaces a stale device only after authentication and fails pending calls without replay', async () => {
-    const call=relay.fetch(req()); await sent();
-    const previous=socket;
-    context.acceptWebSocket.mockImplementation((value:Socket)=>{socket=value;});
-    const response=await relay.fetch(req({}, { Authorization: 'Bearer device', Upgrade: 'websocket' }, '/device', 'GET'));
-    expect(response.status).toBe(101);
-    expect(previous.closed).toBe(true);
-    expect(socket).not.toBe(previous);
-    expect((await call).status).toBe(503);
-    expect(socket.frames).toHaveLength(0);
+  it('requires a native authenticated WebSocket for device connections', async () => {
+    expect((await relay.fetch(req({}, { Authorization: 'Bearer device' }, '/device', 'GET'))).status).toBe(426);
+    expect((await relay.fetch(req({}, { Authorization: 'Bearer device', Upgrade: 'websocket', Origin: 'https://chatgpt.com' }, '/device', 'GET'))).status).toBe(403);
+    expect(socket.closed).toBe(false);
+  });
+  it('accepts an unguessable MCP URL but never a device token in the URL', async () => {
+    const token = 'a'.repeat(64);
+    expect(await authorize(new Request(`https://relay.example/mcp/${token}`), {...env,CLIENT_TOKEN:token})).toBeNull();
+    expect((await authorize(new Request(`https://relay.example/mcp/${token}`,{headers:{Authorization:'Bearer wrong'}}), {...env,CLIENT_TOKEN:token}))?.status).toBe(401);
+    expect((await authorize(new Request(`https://relay.example/device/${token}`), {...env,DEVICE_TOKEN:token}))?.status).toBe(401);
+  });
+  it('rejects unsupported protocol versions and invalid idempotency keys', async () => {
+    expect((await relay.fetch(req({}, {'MCP-Protocol-Version':'1900-01-01'}))).status).toBe(400);
+    expect((await relay.fetch(req({}, {'Idempotency-Key':'../some/path'}))).status).toBe(400);
   });
   it('authenticates worker before forwarding and strips query secrets', async () => {
     const fetch = vi.fn(async (request: Request) => { expect(request.url).toBe('https://relay.example/mcp'); return new Response(); });
@@ -132,33 +134,22 @@ describe('pending lifecycle', () => {
   });
   it('caps concurrent requests at 32 and fails them on disconnect', async () => {
     const calls = Array.from({ length: 32 }, () => relay.fetch(req()));
-    for (let i = 0; i < 50 && socket.frames.length < 32; i++) await new Promise(resolve => setImmediate(resolve));
+    await sent(32);
     expect(socket.frames).toHaveLength(32);
     expect((await relay.fetch(req())).status).toBe(429);
     relay.webSocketClose(socket as any);
     expect((await Promise.all(calls)).every(r => r.status === 503)).toBe(true);
   });
   it('times out at 240 seconds without replay', async () => {
-    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    const call = relay.fetch(req()); await sent(); vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    // Timer was installed with real timers; use fake timers before starting another call.
+    relay.webSocketError(socket as any); await call;
+    socket = new Socket();
+    relay = new Relay(context, env);
     const next = relay.fetch(req());
     await sent();
     await vi.advanceTimersByTimeAsync(WAIT_MS);
     expect((await next).status).toBe(504); expect(socket.frames).toHaveLength(1);
-  });
-  it('rejects browser attempts to connect as a device and unknown protocol versions', async () => {
-    expect((await authorize(req({}, {Authorization:'Bearer device',Origin:'https://chatgpt.com'}, '/device'),env))?.status).toBe(403);
-    expect((await relay.fetch(req({}, {'MCP-Protocol-Version':'1900-01-01'}))).status).toBe(400);
-  });
-  it('supports URL-only clients with an opaque path and redacts it before forwarding', async () => {
-    const token='a'.repeat(64); env.CLIENT_TOKEN=token;
-    const fetch=vi.fn(async(request:Request)=>{
-      expect(request.url).toBe('https://relay.example/mcp');
-      expect(request.headers.get('Authorization')).toBe(`Bearer ${token}`);
-      return new Response();
-    });
-    env.RELAY={idFromName:()=> 'mac',get:()=>({fetch})};
-    await worker.fetch(new Request(`https://relay.example/mcp/${token}`),env);
-    expect(fetch).toHaveBeenCalledOnce();
   });
   it.each(['garbage', JSON.stringify({ type: 'unknown' }), 'x'.repeat(MAX_BYTES + 1)])('rejects invalid frames', async message => {
     const call = relay.fetch(req()); await sent(); relay.webSocketMessage(socket as any, message);

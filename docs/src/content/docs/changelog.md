@@ -6,14 +6,20 @@ category: Distribution
 summary: Release status and user-visible changes.
 ---
 
-## 0.1.1 · November 3, 2026
+## 0.1.2 · 3 November 2026
 
 Keep the browser's crash backstop longer than the configured task deadline without changing launch options as queued requests age. Retry a model-menu click that races page hydration, while retaining the one-shot submission guard and strict effort verification.
 
-## 0.1.0 · November 3, 2026
+## 0.1.1 · 3 November 2026
 
-Initial private release for macOS. Local CLI and remote Streamable HTTP clients feed one serial task queue. Local callers can attach images. The browser adapter verifies Chat mode, selects and reads back reasoning effort, and returns a canonical conversation URL only after genuine assistant activity starts.
+Harden browser startup and reasoning-picker hydration, anchor activity detection to the active transcript, and reject loading-only states. Preserve a full per-task startup budget for locally queued requests, close a warm browser when abandoned queued work drains, and use smaller idle WebSocket buffers. Add regression fixtures, private-release installation support, and automatic relay-code deployment.
 
-The tested `agent-browser-browse` baseline remains in charge of Chrome launch and profile isolation. The companion extension uses a short-lived native host; the browser closes when the queue drains. Local-only use exits at idle. Remote access uses one Rust service and an outbound connection to a hibernating Cloudflare relay, without Redis or a tunnel process.
+## 0.1.0 · 3 November 2026
 
-Includes duplicate-request protection, bounded metadata-only history, fail-closed UI checks, explicit uncertain outcomes without automatic replay, direct authenticated downloads, and an optional Swift menu bar wrapper with no polling timer.
+Initial private macOS release. Local CLI and remote Streamable HTTP MCP share one serial queue and a patched-browser runner. The CLI supports local image attachments; the single remote tool accepts only prompt and reasoning effort.
+
+The browser adapter verifies Chat mode, supports all five reasoning levels when the account exposes them, and returns the conversation URL only after real assistant activity. It handles the current retained home view, user-bubble, and assistant Markdown structure. Stop controls, pulsing dots, and screen-reader loading text do not count as a successful handoff.
+
+Remote mode uses a single outbound Rust WebSocket, a hibernating Cloudflare relay, sparse connection heartbeats, and no Redis or idle browser. Local-only mode exits when idle. The optional signed Swift menu bar wraps CLI commands and has no status polling timer.
+
+The private installer supports authenticated GitHub downloads, paired CLI/app archives, checksum verification, and explicit update preferences. Private release artifacts still require repository access; there is no anonymous release download or npm package.

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Slingring",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minimum_chrome_version": "156",
   "description": "Start an explicitly requested ChatGPT chat, report its URL, and stop. No answer extraction.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3HhH6jn2jI7Zsr34jD22cyTW2AfrxjUy4DOD2NkhSj+Igqh0NGbG94D6W+nNKSJ+5sJriAoAZ60PN5+zFiQdAp/VkqqT9ZWVY9/Y42w7NKEnnSdjYhsAq6V8WWe9R51VDcVOsIo2brw4vmCVMf5LZXtGsvbgXgFqvlrejcFBQ7qnfag/z19/+sTgTMsXpac9QDS5jc/zKPqb5EsvBk5X3lZhPqzhY24rqdlC34ny2diBQvNyIDWvUbyYzPvUmxxjWiOZ7cb8PqUrsM+O510C4e+jLH0f27i4OhiHsJv/PpmbjatlBgvIWdjspEaQOCFdvLx2Gjg1EPMPqg7eFY1kUwIDAQAB",

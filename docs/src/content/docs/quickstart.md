@@ -6,22 +6,37 @@ category: Start
 summary: Send your first local task and continue in ChatGPT.
 ---
 
-## Install a private release
+## Install
 
-Slingring runs on macOS. The repository is initially private, so sign into `gh` with repository access. The installer uses that authenticated session to fetch the checksummed release.
+Slingring is initially private and macOS-only. Authenticate the GitHub CLI with repository access before downloading a release. The installer uses that existing login for private assets and verifies the release checksum and app signature.
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://slingring.ashray.xyz/install.sh -o /tmp/slingring-install.sh
-sh /tmp/slingring-install.sh
-rm /tmp/slingring-install.sh
-slingring setup --profile "Profile 6" --default-effort "Extra High"
+gh auth status
+curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-Install the tested [agent-browser-browse fork](https://github.com/amxv/agent-browser-browse) separately. Sign into ChatGPT in the chosen Chrome profile once. Slingring reuses an isolated copy, not your everyday browser window. Upstream `agent-browser` is not a substitute for the tested fork. Slingring does not log you in or bypass an authentication challenge.
+The paired CLI and optional `Slingring.app` are installed under `~/.local/bin`. The menu bar does not need to run for either local or remote calls. Open it explicitly when useful:
 
-The installer includes the Swift menu bar app beside the CLI but does not start it automatically. It is optional; open `~/.local/bin/Slingring.app` for service controls and defaults.
+```bash
+open "$HOME/.local/bin/Slingring.app"
+```
 
-For a source build, clone the private repository and run `cargo install --locked --path .` with the pinned toolchain, then run `slingring setup`.
+To build from source instead:
+
+```bash
+gh repo clone amxv/slingring
+cd slingring
+cargo install --locked --path .
+slingring --help
+```
+
+Use the pinned Rust toolchain. Install the tested `agent-browser-browse` fork separately and prepare its authenticated Chrome `Profile 6`, isolated from everyday Chrome. A normal agent-browser installation is not a substitute for the tested fork. Browser setup and account access are prerequisites; Slingring does not log you in.
+
+```bash
+slingring setup --profile 'Profile 6' --default-effort 'Extra High'
+```
+
+Setup resolves the browser executable and installs private extension assets. It does not launch Chrome or modify your everyday browser's extensions.
 
 ## Hand off a task
 

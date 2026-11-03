@@ -18,7 +18,7 @@ Mac-only Rust CLI/service that starts ChatGPT Chat conversations and returns the
 
 `src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: one write tool. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
 
-The Chrome copy uses its own `NativeMessagingHosts` directory. Derive the owned directory from the matching daemon parent PID and `DevToolsActivePort`, never by guessing another browser's profile. Do not enable CDP Runtime event streaming.
+The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browser PID through the already-owned CDP browser connection, then verify the headless process and isolated temporary user-data directory. Never guess another browser's profile. Do not enable CDP Runtime event streaming.
 
 ## Checks
 

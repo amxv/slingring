@@ -45,24 +45,27 @@ fn latest_from_location(raw: &str) -> Result<String> {
 }
 
 fn latest_version() -> Result<String> {
-    // Private releases require authenticated access. gh obtains credentials from
-    // its own secure store; no token is placed in argv, output, or our config.
+    // Private prereleases use the existing GitHub CLI login. No credential is
+    // copied into process arguments, config, or logs. Public installs still work
+    // through the anonymous redirect fallback after repository publication.
     if let Ok(output) = Command::new("gh")
-        .args(["api", "repos/amxv/slingring/releases/latest"])
+        .args([
+            "api",
+            "repos/amxv/slingring/releases/latest",
+            "--jq",
+            ".tag_name",
+        ])
+        .env("GH_PROMPT_DISABLED", "1")
         .stdin(Stdio::null())
         .output()
         && output.status.success()
     {
-        let release: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .context("Invalid authenticated release metadata")?;
-        if release["draft"] == false
-            && release["prerelease"] == false
-            && let Some(tag) = release["tag_name"].as_str()
-            && parse_version(tag).is_some()
-        {
-            return Ok(tag.trim_start_matches('v').into());
+        let tag = String::from_utf8(output.stdout)?;
+        let version = tag.trim().trim_start_matches('v');
+        if parse_version(version).is_some() {
+            return Ok(version.into());
         }
-        bail!("Latest authenticated release is not a stable version");
+        bail!("Latest GitHub release has an unsupported version");
     }
     // /releases/latest redirects are not subject to the shared GitHub REST
     // anonymous API quota. Do not follow to untrusted URLs.
@@ -80,7 +83,7 @@ fn latest_version() -> Result<String> {
         .context("curl is required to check releases")?;
     if !output.status.success() {
         bail!(
-            "Cannot read releases. While the repository is private, authenticate gh with repository access"
+            "Unable to read latest release. While this repository is private, authenticate gh with repository access."
         );
     }
     let headers = String::from_utf8(output.stdout).context("Invalid GitHub Release headers")?;

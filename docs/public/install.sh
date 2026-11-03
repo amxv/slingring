@@ -36,11 +36,12 @@ fi
 if [ "$action" = --check ]; then
   printf 'Installed: '
   if [ -x "$target" ]; then "$target" --version; else echo '(not installed)'; fi
-  if command -v gh >/dev/null 2>&1 && gh api repos/amxv/slingring/releases/latest --jq .tag_name 2>/dev/null; then
-    exit 0
+  if command -v gh >/dev/null 2>&1 && GH_PROMPT_DISABLED=1 gh auth status >/dev/null 2>&1; then
+    gh release view --repo amxv/slingring --json tagName --jq '.tagName'
+  else
+    curl --proto '=https' --tlsv1.2 -fsSIL --max-time 20 -o /dev/null \
+      -w 'Latest release: %{url_effective}\n' "$repo/releases/latest"
   fi
-  curl --proto '=https' --tlsv1.2 -fsSIL --max-time 20 -o /dev/null \
-    -w 'Latest release: %{url_effective}\n' "$repo/releases/latest"
   exit 0
 fi
 
@@ -81,26 +82,30 @@ done
 umask 077
 stage=$(mktemp -d "${TMPDIR:-/tmp}/$cli-install.XXXXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
-download() {
-  name=$1; destination=$2
-  if command -v gh >/dev/null 2>&1; then
-    mkdir -p "$stage/download"
-    if gh release download ${version:+"v$version"} --repo amxv/slingring --pattern "$name" --dir "$stage/download" --clobber >/dev/null 2>&1; then
-      mv "$stage/download/$name" "$destination"; return 0
+download_asset() {
+  name=$1
+  destination=$2
+  if command -v gh >/dev/null 2>&1 && GH_PROMPT_DISABLED=1 gh auth status >/dev/null 2>&1; then
+    if [ -n "$version" ]; then
+      GH_PROMPT_DISABLED=1 gh release download "v$version" --repo amxv/slingring --pattern "$name" --output "$destination"
+    else
+      GH_PROMPT_DISABLED=1 gh release download --repo amxv/slingring --pattern "$name" --output "$destination"
     fi
+  else
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$name" -o "$destination" || {
+      echo 'Private releases require an authenticated gh CLI with repository access.' >&2
+      return 1
+    }
   fi
-  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$name" -o "$destination" || {
-    echo 'Release download failed. Private releases require gh auth login and repository access.' >&2; return 1;
-  }
 }
 if [ "$mac" = 1 ]; then
   asset="${binary}_darwin_${arch}.tar.gz"
-  download "$asset.sha256" "$stage/sums"
+  download_asset "$asset.sha256" "$stage/sums"
 else
   asset="${binary}_linux_${arch}"
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/SHA256SUMS" -o "$stage/sums"
 fi
-download "$asset" "$stage/$asset"
+download_asset "$asset" "$stage/$asset"
 if [ "$mac" = 1 ]; then
   expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
 else
@@ -117,7 +122,7 @@ fi
 if [ "$mac" = 1 ]; then
   mkdir "$stage/unpacked"
   tar -tzf "$stage/$asset" | while IFS= read -r entry; do
-    case "/$entry/" in *'/../'*|*'/./'*) echo 'Unsafe archive path' >&2; exit 1 ;; esac
+    case "$entry" in /*|../*|*/../*|*/..) echo 'Unsafe archive path' >&2; exit 1 ;; esac
     case "$entry" in
       "$cli"|"$app"|"$app/"|"$app/"*|LICENSE) ;;
       *) echo "Unexpected or unsafe archive member: $entry" >&2; exit 1 ;;
@@ -208,9 +213,11 @@ fi
 rm -rf "$backup/old-app"
 rm -f "$backup/old-cli"
 printf 'Installed %s and %s at %s\n' "$cli" "$app" "$install_dir"
-"$target" setup >/dev/null
-if [ "$service_running" = 1 ]; then "$target" service start >/dev/null; fi
-if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "${CLI_LAUNCH_MENUBAR:-0}" = 1 ] || [ "$was_running" = 1 ]; }; then
+if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$was_running" = 1 ] || [ "${CLI_LAUNCH_MENU_BAR:-0}" = 1 ]; }; then
   /usr/bin/open -n -g "$app_dest" --args --after-upgrade ||
     echo "Installed successfully, but could not launch $app; open it manually." >&2
+fi
+if [ "$service_running" = 1 ]; then
+  "$target" service start >/dev/null ||
+    echo 'Updated successfully, but the service did not restart. Run slingring service start.' >&2
 fi

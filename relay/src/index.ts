@@ -142,7 +142,7 @@ export class Relay {
     if (this.pending.size >= MAX_PENDING) return reply(429, { error: 'Relay busy' });
     const id = crypto.randomUUID();
     const notification = !Object.hasOwn(body, 'id');
-    const frame = JSON.stringify({ type: 'rpc', id, request: body, expires_at: Date.now() + WAIT_MS - 30_000,
+    const frame = JSON.stringify({ type: 'rpc', id, request: body, expires_at: Date.now() + WAIT_MS - 10_000,
       ...(key === null ? {} : { idempotency_key: key }) });
     if (encoder.encode(frame).length > MAX_BYTES) return reply(413, { error: 'Relay frame too large' });
     return new Promise<Response>(resolve => {

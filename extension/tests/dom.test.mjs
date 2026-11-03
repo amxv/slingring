@@ -97,6 +97,15 @@ test('Plus cannot silently downgrade Extra High or Pro',async()=>{
   const p=picker(['Instant','Medium','High'],1);
   await assert.rejects(p.api.setEffort('Extra High'),/effort_unavailable_on_account/);p.close();
 });
+test('a disabled reasoning picker is awaited before a single click',async()=>{
+  const p=picker(['Instant','Medium','High','Extra High','Pro'],3);
+  const model=p.document.querySelector('#model');
+  model.disabled=true;
+  let clicks=0;model.addEventListener('click',()=>clicks++);
+  p.window.setTimeout(()=>{model.disabled=false;},10);
+  assert.equal(await p.api.setEffort('Medium'),'Medium');
+  assert.equal(clicks,1);p.close();
+});
 test('a six-position Work-like picker is rejected even if its labels resemble Chat',async()=>{
   const p=picker(['Instant','Light','Medium','High','Extra High','Pro'],4);
   await assert.rejects(p.api.setEffort('Extra High'),/effort_unavailable_on_account/);p.close();

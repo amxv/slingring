@@ -1,78 +1,26 @@
 ---
-title: Docs site maintenance
-description: Maintain the Astro/ZueDocs site without mixing JavaScript tooling into the Rust root.
-order: 5
-category: Reference
-summary: The docs workspace boundary, checks, and Vercel behavior.
+title: Development and checks
+description: Test the bridge without exposing prompts or assistant answers.
+order: 11
+category: Development
+summary: Rust, browser-adapter fixtures, relay tests, and native app validation.
 ---
 
-## Workspace boundary
-
-Everything required by the web app lives in `docs/`:
-
-```text
-docs/package.json
-docs/bun.lock
-docs/astro.config.mjs
-docs/vercel.json
-docs/scripts/
-docs/src/
-```
-
-The repository root intentionally has no Node package or Astro configuration.
-
-## Development
-
 ```bash
-just docs-install
-just docs-dev
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cd relay
+bun install --frozen-lockfile
+bun run check
+bun run test
+bun run dry-run
 ```
 
-## Validation
+Rust tests cover validation, idempotency, serialization, queue cancellation, crash recovery, safe CLI inspection, and the text-only MCP boundary. DOM fixtures cover Chat/Work state, account reasoning levels, true response evidence, and rejection of loading indicators. Relay tests cover authentication, Origin checks, bounded JSON, deadlines, disconnects, and pending-call limits.
 
-```bash
-just docs-test
-just docs-check
-```
+For a live browser acceptance test, use a dedicated `SLINGRING_HOME`, the tested browsing fork, and an explicitly authorized signed-in profile. Submit harmless prompts. Inspect only UI state, activity booleans, and canonical URLs. Never dump response bodies, browser cookies, credentials, or generated assistant text into test artifacts.
 
-Astro check is sufficient locally; GitHub Actions builds and packages the
-production site before deploying to Vercel.
+Use the same complete runner flags and environment on every command in a named browser session. Changing agent-browser launch configuration during a task can restart its background process and invalidate the native connection. Never close other agents' browser sessions.
 
-## Vercel
-
-Set the Vercel project Root Directory to `docs` and connect its GitHub repo,
-but keep `git.deploymentEnabled: false` in the committed `vercel.json`. The
-project should use framework `astro`, install command
-`bun install --frozen-lockfile`, build command `bun run build`, and output `dist`.
-New Vercel projects can otherwise default to repository root `.`.
-
-For a custom **subdomain**, pass the project explicitly when attaching it:
-
-```bash
-vercel domains add <subdomain.example.com> <project-name> --scope <team>
-vercel domains verify <subdomain.example.com> --project <project-name> --scope <team> --json
-```
-
-Use the exact DNS record in `recommended.records` for Cloudflare, with proxying
-disabled, and verify again. `vercel domains inspect` can describe the parent
-zone rather than the subdomain's actual record requirements.
-
-The `.github/workflows/docs.yml` workflow responds to `docs/**` changes on
-`main`, validates Astro, and deploys with the Vercel CLI. Rust-only, Swift-only,
-and Cargo changes never request a Vercel deployment, so they cannot use its
-daily deployment quota through this pipeline.
-
-After linking `docs/` to Vercel, run `just vercel-provision` in the generated
-repository **before** `just bootstrap-clean`. It mints a project-scoped CI
-token using the existing Vercel CLI login (or macOS Keychain as a fallback),
-stores `VERCEL_TOKEN` in Actions secrets and the two non-sensitive IDs in
-Actions variables. The GitHub workflow builds and deploys Astro's static
-output with `--prebuilt`, avoiding broad settings calls that may fail with
-restricted tokens. The workflow builds inside `docs/`, then copies the prebuilt
-bundle to repository-root `.vercel/output` and invokes Vercel from that root.
-Do not call Vercel from `docs/`: the configured Root Directory `docs` would be
-resolved twice. Agents use only `just docs-check` for local Astro
-validation. `just docs-test` validates both the GitHub path
-filter and the retained local Git diff helper `docs/scripts/should-build.mjs`.
-It is deliberately **not** wired to `ignoreCommand`, because a canceled
-Vercel Ignored Build Step still counts toward deployment quotas.
+The documentation site retains Astro/ZueDocs. Its `docs/**` workflow builds in GitHub Actions and deploys a prebuilt bundle to Vercel. Local docs validation is `bun run test:vercel` followed by `bun run check`; no custom documentation renderer is used.

@@ -16,7 +16,6 @@ on:
       - "src/**"
       - "tests/**"
       - "extension/**"
-      - "relay/**"
       - "apps/menubar/**"
   pull_request:
     branches: [main]
@@ -33,7 +32,6 @@ on:
       - "src/**"
       - "tests/**"
       - "extension/**"
-      - "relay/**"
       - "apps/menubar/**"
   workflow_dispatch:
 

@@ -26,51 +26,6 @@ pub fn session(root: &Path) -> String {
     let digest = format!("{:x}", Sha256::digest(root.to_string_lossy().as_bytes()));
     format!("slingring-{}", &digest[..12])
 }
-async fn owned_profile(config: &Config, endpoint: &str) -> Result<PathBuf> {
-    let info = agent(config, &["session", "info"]).await?;
-    let parent = info["runtime"]["backgroundPid"]
-        .as_u64()
-        .or_else(|| info["pid"].as_u64())
-        .context("browser owner process is unknown")?;
-    let processes = tokio::process::Command::new("/bin/ps")
-        .args(["-axo", "ppid=,command="])
-        .kill_on_drop(true)
-        .output()
-        .await?;
-    ensure!(
-        processes.status.success() && processes.stdout.len() < 4 * 1024 * 1024,
-        "cannot inspect owned browser process"
-    );
-    let endpoint = url::Url::parse(endpoint)?;
-    let port = endpoint.port().context("missing browser port")?.to_string();
-    for row in String::from_utf8(processes.stdout)?.lines() {
-        let Some((ppid, command)) = row.trim_start().split_once(char::is_whitespace) else {
-            continue;
-        };
-        if ppid.parse::<u64>().ok() != Some(parent)
-            || !command.contains("Google Chrome.app/Contents/MacOS/Google Chrome ")
-        {
-            continue;
-        }
-        let Some((_, value)) = command.split_once("--user-data-dir=") else {
-            continue;
-        };
-        let path = PathBuf::from(value.split(" --").next().unwrap_or("").trim());
-        let Ok(active) = std::fs::read_to_string(path.join("DevToolsActivePort")) else {
-            continue;
-        };
-        let mut lines = active.lines();
-        if lines.next() == Some(port.as_str()) && lines.next() == Some(endpoint.path()) {
-            ensure!(
-                path.is_absolute() && !std::fs::symlink_metadata(&path)?.file_type().is_symlink(),
-                "invalid owned browser profile"
-            );
-            return Ok(path);
-        }
-    }
-    anyhow::bail!("could not locate the profile owned by Slingring's browser")
-}
-
 async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     ensure!(
         Path::new(&config.browser_binary)
@@ -123,6 +78,49 @@ struct Cdp {
     id: u64,
 }
 impl Cdp {
+    async fn owned_profile(&mut self) -> Result<PathBuf> {
+        let info = self
+            .call("SystemInfo.getProcessInfo", json!({}), None)
+            .await?;
+        let pid = info["processInfo"]
+            .as_array()
+            .context("browser process metadata missing")?
+            .iter()
+            .find(|entry| entry["type"] == "browser")
+            .and_then(|entry| entry["id"].as_u64())
+            .filter(|pid| *pid > 0 && *pid <= u32::MAX as u64)
+            .context("browser PID missing")?;
+        trace(&format!("browser_pid={pid}"));
+        let output = tokio::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .stdin(Stdio::null())
+            .output()
+            .await?;
+        ensure!(
+            output.status.success(),
+            "could not inspect owned browser process"
+        );
+        let command = String::from_utf8(output.stdout)?;
+        ensure!(
+            command.contains("--headless=new"),
+            "owned browser is not headless"
+        );
+        let directory = command
+            .split_once("--user-data-dir=")
+            .map(|(_, rest)| rest.split(" --").next().unwrap_or("").trim())
+            .filter(|value| !value.is_empty())
+            .context("owned browser profile directory missing")?;
+        let directory = PathBuf::from(directory).canonicalize()?;
+        ensure!(
+            directory.starts_with(std::env::temp_dir().canonicalize()?)
+                && directory
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .is_some_and(|v| v.starts_with("agent-browser-profile-")),
+            "refusing to register outside an isolated browser profile"
+        );
+        Ok(directory)
+    }
     async fn connect(endpoint: &str) -> Result<Self> {
         let url = url::Url::parse(endpoint)?;
         ensure!(
@@ -246,26 +244,49 @@ fn failure(code: &str, submitted: bool, url: Option<String>) -> anyhow::Error {
     }
     .into()
 }
+fn trace(stage: &str) {
+    if std::env::var_os("SLINGRING_TRACE").is_some() {
+        eprintln!("slingring browser: {stage}");
+    }
+}
 
 pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskResult> {
-    let began = tokio::time::Instant::now();
+    trace("launch");
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
-    native::register(&root).map_err(|_| failure("native_registration_failed", false, None))?;
     let extension = native::assets(&root)?;
-    agent(config, &["open", "about:blank"])
-        .await
-        .map_err(|_| failure("browser_start_failed", false, None))?;
+    if agent(config, &["open", "about:blank"]).await.is_err() {
+        // This is strictly before extension installation and before ChatGPT is
+        // opened. A stale runner/socket may be recreated once without any risk
+        // of replaying a prompt. No submission or UI action is retried here.
+        trace("retry_blank_browser_launch");
+        let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
+        agent(config, &["open", "about:blank"])
+            .await
+            .map_err(|_| failure("browser_start_failed", false, None))?;
+    }
     let endpoint = agent(config, &["get", "cdp-url"])
         .await
         .map_err(|_| failure("browser_endpoint_unavailable", false, None))?;
-    let endpoint = endpoint["cdpUrl"]
-        .as_str()
-        .context("browser endpoint missing")?;
-    let profile = owned_profile(config, endpoint)
+    let mut cdp = Cdp::connect(
+        endpoint["cdpUrl"]
+            .as_str()
+            .context("browser endpoint missing")?,
+    )
+    .await?;
+    if std::env::var_os("SLINGRING_TRACE").is_some() {
+        config::atomic(
+            &root.join("debug-browser.json"),
+            &serde_json::to_vec(&endpoint)?,
+        )?;
+    }
+    let browser_data = cdp
+        .owned_profile()
         .await
-        .map_err(|_| failure("owned_profile_unavailable", false, None))?;
-    native::register_owned_profile(&root, &profile)?;
-    let mut cdp = Cdp::connect(endpoint).await?;
+        .map_err(|_| failure("isolated_profile_unverified", false, None))?;
+    native::register(&root, &browser_data)
+        .map_err(|_| failure("native_registration_failed", false, None))?;
     let loaded = cdp
         .call("Extensions.loadUnpacked", json!({"path":extension}), None)
         .await
@@ -306,20 +327,49 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
         .await
         .map_err(|_| failure("native_connection_failed", false, None))??;
     let hello = tokio::time::timeout(Duration::from_secs(5), native::read(&mut socket)).await??;
+    trace("native_connected");
     ensure!(
         hello["type"] == "hello" && hello["token"] == token && hello["job"] == task_id,
         "native session authentication failed"
     );
     native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt,
         "effort":task.reasoning_effort,"image_count":task.image_paths.len(),"timeout_ms":config.start_timeout_secs*1000,
-        "deadline_ms":crate::queue::now()+Duration::from_secs(config.start_timeout_secs).saturating_sub(began.elapsed()).as_millis() as u64})).await?;
+        "deadline_ms":crate::queue::now()+deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64})).await?;
     let mut submitted = false;
+    let mut conversation_url: Option<String> = None;
     loop {
-        let event = native::read(&mut socket)
+        let event = tokio::time::timeout_at(deadline, native::read(&mut socket))
             .await
-            .map_err(|_| failure("native_connection_lost", submitted, None))?;
+            .map_err(|_| {
+                failure(
+                    "generation_not_started",
+                    submitted,
+                    conversation_url.clone(),
+                )
+            })?
+            .map_err(|_| {
+                failure(
+                    "native_connection_lost",
+                    submitted,
+                    conversation_url.clone(),
+                )
+            })?;
         ensure!(event["job"] == task_id, "unexpected native job");
+        if let Some(kind) = event["type"]
+            .as_str()
+            .filter(|value| matches!(*value, "upload" | "will_submit" | "started" | "failed"))
+        {
+            trace(kind);
+        }
         match event["type"].as_str() {
+            Some("conversation") if submitted => {
+                let url = event["url"]
+                    .as_str()
+                    .filter(|url| canonical_url(url))
+                    .context("invalid conversation URL")?;
+                conversation_url = Some(url.into());
+                trace("conversation_created");
+            }
             Some("upload") if !submitted && !task.image_paths.is_empty() => {
                 let selector = event["selector"]
                     .as_str()
@@ -372,7 +422,10 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
                 return Err(failure(
                     code,
                     submitted || event["submitted"] == true,
-                    event["url"].as_str().map(str::to_string),
+                    event["url"]
+                        .as_str()
+                        .map(str::to_string)
+                        .or(conversation_url),
                 ));
             }
             _ => return Err(failure("invalid_native_event", submitted, None)),
@@ -380,5 +433,9 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
     }
 }
 pub async fn close(config: &Config) -> Result<()> {
+    trace("close");
+    if let Ok(root) = config::root() {
+        let _ = std::fs::remove_file(root.join("debug-browser.json"));
+    }
     agent(config, &["close"]).await.map(|_| ())
 }

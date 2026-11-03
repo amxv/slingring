@@ -192,47 +192,50 @@
     return location.origin === "https://chatgpt.com" && /^\/c\/[a-zA-Z0-9-]+$/.test(location.pathname)
       ? location.origin+location.pathname : null;
   }
-  function startEvidence() {
-    // The current SPA keeps the pre-submit main mounted but hidden after routing.
-    // Reading the first main observes that stale copy forever, not the live chat.
-    const main = [...document.querySelectorAll("main")].find(visible); if (!main) return null;
-    const modern = main.querySelector('[data-thread-user-message-navigation-content]');
-    const transcript = modern || main;
-    const user = transcript.querySelector('[data-message-author-role="user"],[data-user-message-bubble]');
+  function activityLabel(element) {
+    if (!visible(element) || element.closest('.sr-only,[aria-hidden="true"]') || element.querySelector('.pulsing-dot')) return '';
+    const clone=element.cloneNode(true);
+    for(const hidden of clone.querySelectorAll('.sr-only,[aria-hidden="true"],svg')) hidden.remove();
+    return normal(clone.textContent || (element.tagName==='BUTTON' ? element.getAttribute('aria-label') : ''));
+  }
+  function startEvidence(expectedPrompt) {
+    const user = [...document.querySelectorAll('[data-message-author-role="user"],[data-user-message-bubble]')]
+      .find(e=>visible(e) && (!expectedPrompt || normal(e.textContent)===normal(expectedPrompt)));
     if (!user || !canonicalUrl()) return null;
-    const meaningful = e => {
-      const value = normal(e.textContent);
-      return value.length > 0 && !/^[.·•●○◌…\s]+$/.test(value);
-    };
-    const outsideUser = e => !e.closest('[data-user-message-bubble],[data-message-author-role="user"],[class~="group/user-message"],form,nav,[data-composer-body]');
+    // ChatGPT can retain a home view beside its live thread. Anchor observation
+    // to this task's user bubble rather than the first <main> on the page.
+    const main = user.closest('[data-thread-user-message-navigation-content]') || user.closest('main,[role="main"]');
+    if (!main) return null;
+    const outsideUser=e=>!e.closest('[data-user-message-bubble],[data-message-author-role="user"],form,nav,header,[data-composer-body]');
+    const meaningful=e=>visible(e) && outsideUser(e) && /[^\s.…·●•○◌]/u.test(e.textContent || '');
     const alerts = [...main.querySelectorAll('[role="alert"]')].filter(visible);
     if (alerts.some(e=>/something went wrong|usage limit|network error|try again/i.test(e.textContent))) throw Error("generation_error");
-    const assistant = [...main.querySelectorAll('[data-message-author-role="assistant"],article[data-turn="assistant"]')];
+    const assistant = [...main.querySelectorAll('[data-message-author-role="assistant"],article[data-turn="assistant"]'),
+      ...[...main.querySelectorAll('[data-conversation-role="assistant"]')].map(e=>e.parentElement).filter(Boolean)];
     for (const area of assistant) {
       const status = [...area.querySelectorAll('button,[role="status"],[aria-live],[data-testid*="thinking"],[data-testid*="reasoning"]')]
-        .filter(visible).map(e=>normal(e.getAttribute("aria-label")||e.textContent));
+        .map(activityLabel);
       if (status.some(t=>/^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(t) && t.length<120)) return "thinking";
       if (status.some(t=>/^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(t) && t.length<120)) return "working";
       // Test for presence only. Never return, log, or serialize generated text.
-      if ([...area.querySelectorAll('.markdown,.prose,[data-message-content]')].some(meaningful)) return "streaming";
+      if ([...area.querySelectorAll('.markdown,.prose,[data-message-content],[data-markdown-text-style="assistant-message"]')]
+        .some(meaningful)) return "streaming";
     }
-    if (modern) {
-      // November Chat layout: user bubbles and assistant Markdown have explicit
-      // attributes, rather than the older data-message-author-role markers.
-      for (const control of modern.querySelectorAll('button,[role="status"],[aria-live],span,div')) {
-        if (!visible(control) || !outsideUser(control) || control.querySelector('[data-user-message-bubble],[data-message-author-role="user"]')) continue;
-        const label = normal(control.getAttribute('aria-label') || control.textContent);
-        if (label.length < 120 && /^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(label)) return "thinking";
-        if (label.length < 120 && /^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(label)) return "working";
+    if(main.matches('[data-thread-user-message-navigation-content]')) {
+      for(const control of main.querySelectorAll('span,div')) {
+        if(!outsideUser(control) || control.childElementCount > 1 || control.querySelector('[data-user-message-bubble]'))continue;
+        const label=activityLabel(control);
+        if(label.length < 120 && /^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(label))return 'thinking';
+        if(label.length < 120 && /^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(label))return 'working';
       }
-      if ([...modern.querySelectorAll('[data-markdown-text-style]')]
-        .some(e => outsideUser(e) && visible(e) && meaningful(e))) return "streaming";
+      if([...main.querySelectorAll('[data-markdown-text-style]')].some(meaningful))return 'streaming';
     }
     // Some Chat layouts render the thinking control alongside, not inside, the
     // assistant message. Exclude the composer, user messages and navigation.
     for (const control of main.querySelectorAll('button,[role="status"]')) {
-      if (!visible(control) || !outsideUser(control)) continue;
-      const label=normal(control.getAttribute('aria-label')||control.textContent);
+      if (!visible(control) || control.closest('form,[data-message-author-role="user"],[data-user-message-bubble],nav,header') ||
+          control.querySelector('.pulsing-dot')) continue;
+      const label=activityLabel(control);
       if (/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for .*)?$/i.test(label)) return "thinking";
       if (/^(Working|Analyzing|Searching)(\.{0,3}|…| for .*)?$/i.test(label)) return "working";
     }

@@ -130,7 +130,6 @@ pub async fn run(command: Command) -> Result<()> {
                         .into_owned();
             }
             config.save(&root)?;
-            crate::native::register(&root)?;
             let extension = crate::browser::install_extension(&root)?;
             reload(&root).await?;
             output(

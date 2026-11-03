@@ -25,6 +25,9 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message?.kind!=="slingring" || sender.id!==chrome.runtime.id || sender.tab?.id!==tabId || sender.frameId!==0 ||
       !sender.url?.startsWith("https://chatgpt.com/"))return false;
   if(message.event==="ready") { const wait=waits.get("content_ready");if(wait){waits.delete("content_ready");wait.resolve({});}return false; }
+  if(message.event==="conversation" && message.id===job && submitted && canonical(message.url)) {
+    native.postMessage({type:"conversation",job,url:message.url});return false;
+  }
   if(message.event!=="will_submit" || message.id!==job || submitted || finished)return false;
   const ack=next("continue",10000);
   native.postMessage({type:"will_submit",job});

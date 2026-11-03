@@ -158,7 +158,7 @@ struct Item {
     id: String,
     task: NewTask,
     config: Config,
-    deadline: Instant,
+    deadline: Option<Instant>,
 }
 #[derive(Clone)]
 pub struct Queue {
@@ -226,6 +226,17 @@ impl Queue {
         self.active() == 0 && !self.busy.load(Ordering::Acquire)
     }
     pub async fn submit(&self, id: String, task: NewTask, config: Config) -> Result<TaskResult> {
+        self.submit_before(id, task, config, None).await
+    }
+    /// A remote caller may impose an end-to-end deadline. Local queue waiting
+    /// does not consume the individual browser startup budget.
+    pub async fn submit_before(
+        &self,
+        id: String,
+        task: NewTask,
+        config: Config,
+        deadline: Option<Instant>,
+    ) -> Result<TaskResult> {
         ensure!(
             !id.is_empty()
                 && id.len() <= 128
@@ -236,7 +247,6 @@ impl Queue {
         );
         let task = task.resolve(&config)?;
         let fingerprint = task.fingerprint(&config.profile)?;
-        let deadline = Instant::now() + Duration::from_secs(config.start_timeout_secs);
         let (tx, rx) = oneshot::channel();
         {
             let mut state = self.state.lock().expect("queue lock");
@@ -302,7 +312,7 @@ async fn work(
             let skipped = {
                 let mut state = queue.state.lock().expect("queue lock");
                 let abandoned = state.waiters.get(&id).is_none_or(|w| w.iter().all(oneshot::Sender::is_closed));
-                if Instant::now() >= deadline || abandoned {
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) || abandoned {
                     state.finish(&id, Err(anyhow::anyhow!("request expired or caller disconnected before launch; nothing was submitted")), "failed")?;
                     true
                 } else {
@@ -313,13 +323,15 @@ async fn work(
             };
             if skipped {
                 if rx.is_empty() {
-                    if let Some(open) = open_config.take() { close_bounded(backend.as_ref(), &open).await; }
+                    if let Some(config) = open_config.take() { close_bounded(backend.as_ref(), &config).await; }
                     queue.busy.store(false, Ordering::Release);
                 }
                 continue;
             }
             queue.busy.store(true, Ordering::Release);
             config.browser_idle_secs = Some(config.start_timeout_secs.saturating_add(60));
+            let own_deadline = Instant::now() + Duration::from_secs(config.start_timeout_secs);
+            let deadline = deadline.map_or(own_deadline, |external| external.min(own_deadline));
             config.start_timeout_secs = deadline.saturating_duration_since(Instant::now()).as_secs().max(1);
             open_config = Some(config.clone());
             let result = tokio::select! {
