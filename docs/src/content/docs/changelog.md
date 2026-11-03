@@ -8,9 +8,13 @@ summary: Release status and user-visible changes.
 
 ## Unreleased
 
-Add per-request read-only remote recovery with `request_id` and `get_job_status`, bounded private startup-stage/timing diagnostics, and caller-visible job receipts on remote HTTP results/timeouts. Clarify that the relay can wait longer than an MCP client and that a timed-out caller does not imply an unsent message. Keep strict no-replay behavior, no generated-answer extraction, and existing remote MCP transport. This work is a separate stacked PR and not yet released.
+Add read-only recovery with `request_id` and `get_job_status`, bounded private startup-stage/timing diagnostics, and accepted MCP receipts after a five-second result wait. Accepted jobs continue in memory after caller disconnects. Reserve status capacity when submissions are saturated, classify interrupted jobs conservatively before restart, and preserve confirmed outcomes without waiting for browser cleanup. A timeout or missing record never proves that a message was unsent, and interrupted work is never replayed.
 
 Use the official `rmcp` Rust SDK for local stdio MCP protocol handling and transport, preserving the existing remote relay integration and strict text-only MCP boundary. Add `slingring send-message` with local image attachments, file/stdin message input, and request-ID recovery. Follow-up images use the existing isolated browser upload path, with readiness and unchanged-conversation checks before submission. No generated answers are extracted.
+
+Preserve rich-text line breaks during prompt verification, reject existing or changed drafts, bind uploads to the exact owned browser target, and wait for uploads without confusing their progress with an active response. Keep submission evidence separate from cleanup and report missing composers clearly.
+
+Add persistent headless/headed selection through `config set browser-mode` and Configure → Browser Mode. Headless remains the default. Show current preparation phases and queued jobs separately from the last confirmed, failed, or uncertain attempt. These changes have not been released as a desktop build.
 
 ## 0.3.0 · 3 November 2026
 

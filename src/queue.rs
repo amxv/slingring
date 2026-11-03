@@ -134,7 +134,7 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         .unwrap_or("")
     {
         "chat_mode_unverified" => {
-            "Chat mode could not be positively verified before submission. Confirm the configured Chrome account opens Chat (not Work) and check session/profile readiness. Inspect events.log for the stage and elapsed time."
+            "Chat mode could not be positively verified. Confirm the configured Chrome account opens Chat (not Work), check session/profile readiness, and use the recorded outcome to assess submission. Inspect events.log for the stage and elapsed time."
         }
         "browser_start_failed" => {
             "The isolated browser failed to start twice. Inspect events.log for safe launch/retry categories (timeout, spawn, exit, invalid JSON or unsuccessful response); verify the pinned browser helper with slingring browser status and agent-browser-browse doctor."

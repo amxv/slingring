@@ -565,7 +565,6 @@ pub async fn run_with_progress(
                 native::write(&mut socket, &json!({"type":"continue"})).await?;
             }
             Some("started") if submitted => {
-                progress("activity_confirmed");
                 let result = TaskResult {
                     job_id: task_id.into(),
                     url: event["url"].as_str().context("task URL missing")?.into(),
@@ -577,6 +576,7 @@ pub async fn run_with_progress(
                 };
                 task.validate_result(&result)
                     .map_err(|_| failure("invalid_start_result", true, conversation_url.clone()))?;
+                progress("activity_confirmed");
                 // The listener and its path guard drop synchronously here,
                 // before the serial worker can begin another job.
                 return Ok(handoff_started(result, socket, cdp, controller_id));

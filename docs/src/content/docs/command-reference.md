@@ -5,6 +5,8 @@ order: 20
 category: Reference
 ---
 
+> Browser-mode settings, the CLI `send-message` command, and MCP request-ID/status recovery are unreleased additions on `main`, not features of v0.3.0.
+
 ## CLI
 
 ```text

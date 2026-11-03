@@ -4,7 +4,9 @@
 
 Send a prompt from a local or remote agent, get a ChatGPT conversation link back, and continue there. Useful for a second opinion on code, a deeper review of a plan, or handing over a brief without copying it between apps.
 
-Slingring starts a new **Chat** or sends a follow-up to an existing Chat, never Work. It waits until ChatGPT actually begins thinking or responding to your message, returns the URL, and closes its temporary browser when the queue is empty. It does not retrieve the answer.
+Slingring starts a new **Chat** or sends a follow-up to an existing Chat, never Work. It confirms a conversation URL only after ChatGPT begins thinking or responding to your message, and closes its temporary browser when the queue is empty. MCP calls can first return a pending receipt while the Mac prepares the task. It does not retrieve the answer.
+
+> The browser-mode setting, CLI `send-message` command, and MCP receipt/status recovery below are unreleased changes on `main`. They are not included in v0.3.0.
 
 ## Get started
 
