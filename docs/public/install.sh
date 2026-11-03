@@ -1,18 +1,17 @@
 #!/bin/sh
-# Installs the CLI; on macOS also installs and relaunches its signed Swift .app.
-# curl/tar creates no Finder quarantine metadata. This is NOT notarization.
+# Installs the macOS CLI and optional signed Swift app. Private releases use gh.
+# Ad-hoc signing is not Developer ID notarization. Never strip quarantine.
 set -eu
-cli='__CLI__'
-binary='__BINARY__'
-app='__APP_NAME__.app'
-app_exec='__APP_EXEC__'
-repo='https://github.com/__OWNER__/__REPO__'
+cli='slingring'
+binary='slingring'
+app='Slingring.app'
+app_exec='slingring-menubar'
+repo='https://github.com/amxv/slingring'
 action=${1:-install}
 case "$action" in install|upgrade|--check) ;; *) echo "Usage: install.sh [upgrade|--check]" >&2; exit 2 ;; esac
 case "$(uname -s)" in
   Darwin) os=darwin; mac=1 ;;
-  Linux) os=linux; mac=0 ;;
-  *) echo 'On Windows use __SITE__/install.ps1' >&2; exit 1 ;;
+  *) echo 'Slingring currently supports macOS only.' >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   arm64|aarch64) arch=arm64 ;;
@@ -37,12 +36,18 @@ fi
 if [ "$action" = --check ]; then
   printf 'Installed: '
   if [ -x "$target" ]; then "$target" --version; else echo '(not installed)'; fi
+  if command -v gh >/dev/null 2>&1 && gh api repos/amxv/slingring/releases/latest --jq .tag_name 2>/dev/null; then
+    exit 0
+  fi
   curl --proto '=https' --tlsv1.2 -fsSIL --max-time 20 -o /dev/null \
     -w 'Latest release: %{url_effective}\n' "$repo/releases/latest"
   exit 0
 fi
 
 version=${CLI_VERSION:-}
+if [ -z "$version" ] && command -v gh >/dev/null 2>&1; then
+  version=$(gh api repos/amxv/slingring/releases/latest --jq .tag_name 2>/dev/null || true)
+fi
 if [ -n "$version" ]; then
   version=${version#v}
   printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo 'Invalid CLI_VERSION' >&2; exit 1; }
@@ -58,8 +63,8 @@ if [ "$mac" = 0 ]; then
   trap 'rm -rf "$stage"' EXIT HUP INT TERM
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
     "$base/$cli-installer.sh" -o "$stage/installer.sh"
-  __CLI_ENV___INSTALL_DIR="$install_dir"
-  export __CLI_ENV___INSTALL_DIR
+  SLINGRING_INSTALL_DIR="$install_dir"
+  export SLINGRING_INSTALL_DIR
   if ! command -v sha256sum >/dev/null 2>&1; then
     command -v shasum >/dev/null 2>&1 || { echo 'sha256sum or shasum is required' >&2; exit 1; }
     printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$stage/sha256sum"
@@ -76,14 +81,26 @@ done
 umask 077
 stage=$(mktemp -d "${TMPDIR:-/tmp}/$cli-install.XXXXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
+download() {
+  name=$1; destination=$2
+  if command -v gh >/dev/null 2>&1; then
+    mkdir -p "$stage/download"
+    if gh release download ${version:+"v$version"} --repo amxv/slingring --pattern "$name" --dir "$stage/download" --clobber >/dev/null 2>&1; then
+      mv "$stage/download/$name" "$destination"; return 0
+    fi
+  fi
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$name" -o "$destination" || {
+    echo 'Release download failed. Private releases require gh auth login and repository access.' >&2; return 1;
+  }
+}
 if [ "$mac" = 1 ]; then
   asset="${binary}_darwin_${arch}.tar.gz"
-  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$asset.sha256" -o "$stage/sums"
+  download "$asset.sha256" "$stage/sums"
 else
   asset="${binary}_linux_${arch}"
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/SHA256SUMS" -o "$stage/sums"
 fi
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$asset" -o "$stage/$asset"
+download "$asset" "$stage/$asset"
 if [ "$mac" = 1 ]; then
   expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
 else
@@ -100,12 +117,14 @@ fi
 if [ "$mac" = 1 ]; then
   mkdir "$stage/unpacked"
   tar -tzf "$stage/$asset" | while IFS= read -r entry; do
+    case "/$entry/" in *'/../'*|*'/./'*) echo 'Unsafe archive path' >&2; exit 1 ;; esac
     case "$entry" in
       "$cli"|"$app"|"$app/"|"$app/"*|LICENSE) ;;
       *) echo "Unexpected or unsafe archive member: $entry" >&2; exit 1 ;;
     esac
   done
   tar -xzf "$stage/$asset" -C "$stage/unpacked"
+  [ -z "$(find "$stage/unpacked" -type l -print -quit)" ] || { echo 'Archive symlinks are not allowed' >&2; exit 1; }
   [ -x "$stage/unpacked/$cli" ] || { echo 'Archive is missing the CLI' >&2; exit 1; }
   [ -x "$stage/unpacked/$app/Contents/MacOS/$app_exec" ] || { echo 'Archive is missing the menu bar app' >&2; exit 1; }
   codesign --verify --deep --strict "$stage/unpacked/$app"
@@ -148,6 +167,17 @@ app_pids() {
       }'
 }
 was_running=0
+service_running=0
+if [ "$action" = upgrade ]; then
+  state=$("$target" status --json)
+  if printf '%s' "$state" | grep -Eq '"active_tasks":[1-9][0-9]*'; then
+    echo 'A task is active. Let it finish before upgrading; installation unchanged.' >&2; exit 1
+  fi
+  if printf '%s' "$state" | grep -q '"running":true'; then
+    service_running=1
+    "$target" service stop >/dev/null
+  fi
+fi
 if [ -n "$(app_pids)" ]; then
   was_running=1
   for pid in $(app_pids); do kill -TERM "$pid" 2>/dev/null || true; done
@@ -167,6 +197,7 @@ restore() {
   if [ "$was_running" = 1 ] && [ -d "$app_dest" ]; then
     /usr/bin/open -n -g "$app_dest" --args --after-upgrade >/dev/null 2>&1 || true
   fi
+  if [ "$service_running" = 1 ]; then "$target" service start >/dev/null 2>&1 || true; fi
 }
 if ! mv "$staged/$app" "$app_dest" || ! mv "$staged/$cli" "$target"; then
   restore; echo 'Install failed; restored previous CLI and app' >&2; exit 1
@@ -177,7 +208,9 @@ fi
 rm -rf "$backup/old-app"
 rm -f "$backup/old-cli"
 printf 'Installed %s and %s at %s\n' "$cli" "$app" "$install_dir"
-if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$action" = install ] || [ "$was_running" = 1 ]; }; then
+"$target" setup >/dev/null
+if [ "$service_running" = 1 ]; then "$target" service start >/dev/null; fi
+if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "${CLI_LAUNCH_MENUBAR:-0}" = 1 ] || [ "$was_running" = 1 ]; }; then
   /usr/bin/open -n -g "$app_dest" --args --after-upgrade ||
     echo "Installed successfully, but could not launch $app; open it manually." >&2
 fi

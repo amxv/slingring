@@ -1,40 +1,39 @@
 ---
-title: Customize the CLI
-description: Turn the starter command into a real Rust application without disturbing release plumbing.
-order: 2
+title: Architecture and performance
+description: A small Rust coordinator with an on-demand browser.
+order: 5
 category: Development
-summary: Where application behavior belongs and how to keep the command surface testable.
+summary: A small Rust coordinator with an on-demand browser.
 ---
 
-## Rust structure
+## Input becomes a chat URL
 
-```text
-src/main.rs       process exit/error boundary
-src/lib.rs        application dispatch
-src/cli.rs        clap parser model
-src/commands/     command implementations
-tests/            binary-level integration tests
+```mermaid
+flowchart LR
+  L[Local CLI] --> Q[Rust serial queue]
+  A[Remote agent] --> R[Authenticated Worker relay]
+  R -->|Outbound Mac socket| Q
+  Q --> B[Isolated Chrome session]
+  B --> C[New ChatGPT Chat]
+  C --> U[Status + canonical chat URL]
 ```
 
-Keep `main.rs` small. Command parsing and behavior should remain reachable from library code so tests can exercise the application without reproducing process setup.
+Rust owns validation, MCP semantics, queueing, and durable per-job records. The Cloudflare Worker / Durable Object is transport only. The browser runner selects Chat, applies the requested effort, uploads local images, and sends once. It requires real thinking, working, or streaming evidence and a canonical chat URL; a loading dot or stop button alone is insufficient.
 
-## Add a command
+The browser stays warm while queued tasks remain and closes when the queue drains. The remote service keeps a Rust daemon and outbound socket idle, not a Chrome or Node runtime. The optional native app is a CLI wrapper with no WebView and no polling timers. Leave it closed for the lowest idle footprint; quitting it does not stop the service.
 
-Add the `clap` type in `src/cli.rs`, create a focused module under `src/commands/`, then dispatch it from `src/lib.rs`.
+## Measure on your machine
 
-Prefer command-specific help text to a large custom help renderer. `clap` derives version information from the Cargo package, so no separate version file is required.
+No verified RAM, idle CPU, startup latency, throughput, or end-to-end timing numbers are published here. Architecture is an intent, not a benchmark. Account availability, browser startup, image size, network, and queue depth affect results. Measure cold and warm submissions separately and record machine, version, workload, sample count, and observation window before making comparisons.
 
-## Validate while editing
+## State and recovery
 
-```bash
-just check-fast
-cargo test --locked <test-name>
-```
+The default data root is `~/.config/slingring`, overridden by `SLINGRING_HOME`. It contains private configuration, Unix sockets, the extracted companion extension, and atomic job metadata. Status is read-only and never starts a daemon. Journal records do not contain prompts or image paths. Up to 256 records are retained; request IDs deduplicate within that retention window. A restarted process marks interrupted work failed or uncertain and never replays it.
 
-Before pushing:
+## Browser boundary
 
-```bash
-just check
-```
+The patched fork owns Chrome launch, the authenticated profile copy, and fingerprint defaults. Slingring does not override them. Limited browser-level CDP installs the companion extension and supplies local files to the file input. It does not turn on Runtime event streaming or scrape answers.
 
-Project lints forbid unsafe code and deny `dbg!`, `todo!`, and `unimplemented!`.
+The extension communicates with a short-lived Rust Native Messaging host over a private Unix socket. Native registration is placed in the verified owned browser copy, not another running profile. The extension has no permanent service worker; its controller page exists only during a task. The original browser profile and any normal Chrome window remain separate.
+
+DOM observers handle UI changes while a task is active. They verify the Chat switch, read back the effort, and detect real assistant activity in the visible transcript. There is no periodic page scan while idle. Remote mode uses a 120-second connection heartbeat, not a queue-polling loop; the relay answers it without waking the Durable Object.

@@ -20,13 +20,13 @@ jobs:
         include:
           - arch: arm64
             triple: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
           - arch: amd64
             triple: x86_64-apple-darwin
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Install pinned Rust toolchain and native target
@@ -35,8 +35,8 @@ jobs:
           TARGET: ${{ matrix.triple }}
         run: |
           set -euo pipefail
-          rustup toolchain install 1.98.0 --profile minimal
-          rustup target add "$TARGET" --toolchain 1.98.0
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add "$TARGET" --toolchain 1.99.1
       - name: Build, ad-hoc sign, and archive CLI + Swift app
         shell: bash
         env:
@@ -45,20 +45,20 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          cargo +1.98.0 build --locked --release --target "$TARGET"
+          cargo +1.99.1 build --locked --release --target "$TARGET"
           mkdir -p stage out
-          cp "target/$TARGET/release/__CLI__" "stage/__CLI__"
-          chmod 755 "stage/__CLI__"
-          codesign --force --sign - "stage/__CLI__"
-          codesign --verify --strict "stage/__CLI__"
+          cp "target/$TARGET/release/slingring" "stage/slingring"
+          chmod 755 "stage/slingring"
+          codesign --force --sign - "stage/slingring"
+          codesign --verify --strict "stage/slingring"
           swift_arch="$ARCH"
           if [ "$ARCH" = amd64 ]; then swift_arch=x86_64; fi
-          bash apps/menubar/build.sh "$PWD/stage/__APP_NAME__.app" "$swift_arch" "$version"
-          codesign --verify --deep --strict "stage/__APP_NAME__.app"
-          "stage/__APP_NAME__.app/Contents/MacOS/__APP_EXEC__" --check
+          bash apps/menubar/build.sh "$PWD/stage/Slingring.app" "$swift_arch" "$version"
+          codesign --verify --deep --strict "stage/Slingring.app"
+          "stage/Slingring.app/Contents/MacOS/slingring-menubar" --check
           cp LICENSE stage/LICENSE
-          archive="__CLI___darwin_${ARCH}.tar.gz"
-          COPYFILE_DISABLE=1 tar -czf "out/$archive" -C stage "__CLI__" "__APP_NAME__.app" LICENSE
+          archive="slingring_darwin_${ARCH}.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "out/$archive" -C stage "slingring" "Slingring.app" LICENSE
           shasum -a 256 "out/$archive" | awk '{print $1}' > "out/$archive.sha256"
       - name: Attach verified menu bar bundles to GitHub Release
         shell: bash

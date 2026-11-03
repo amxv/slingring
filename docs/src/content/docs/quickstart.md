@@ -1,49 +1,44 @@
 ---
 title: Quickstart
-description: Go from a fresh clone to a checked Rust CLI and local docs site.
+description: Send your first local task and continue in ChatGPT.
 order: 1
 category: Start
-summary: The shortest path from template clone to product code.
+summary: Send your first local task and continue in ChatGPT.
 ---
 
-## Create the repository
+## Install a private release
+
+Slingring runs on macOS. The repository is initially private, so sign into `gh` with repository access. The installer uses that authenticated session to fetch the checksummed release.
 
 ```bash
-gh repo create acme/pluck \
-  --public \
-  --template amxv/rust-cli-template \
-  --clone
-cd pluck
+curl --proto '=https' --tlsv1.2 -fsSL https://slingring.ashray.xyz/install.sh -o /tmp/slingring-install.sh
+sh /tmp/slingring-install.sh
+rm /tmp/slingring-install.sh
+slingring setup --profile "Profile 6" --default-effort "Extra High"
 ```
 
-## Initialize project identity
+Install the tested [agent-browser-browse fork](https://github.com/amxv/agent-browser-browse) separately. Sign into ChatGPT in the chosen Chrome profile once. Slingring reuses an isolated copy, not your everyday browser window. Upstream `agent-browser` is not a substitute for the tested fork. Slingring does not log you in or bypass an authentication challenge.
+
+The installer includes the Swift menu bar app beside the CLI but does not start it automatically. It is optional; open `~/.local/bin/Slingring.app` for service controls and defaults.
+
+For a source build, clone the private repository and run `cargo install --locked --path .` with the pinned toolchain, then run `slingring setup`.
+
+## Hand off a task
 
 ```bash
-just bootstrap \
-  --cli-name pluck \
-  --npm-package @acme/pluck \
-  --description "A fast file picker" \
-  --license Apache-2.0 \
-  --rust-version 1.98.0
+slingring new-task "Review this migration plan" --reasoning-effort High --json
 ```
 
-The bootstrap script detects the new GitHub origin and synchronizes Cargo, `dist`, docs, npm, license, and toolchain metadata.
+A local call uses the running daemon or starts an ephemeral daemon. The ephemeral daemon drains its queue and closes the browser before exiting. No persistent service is required for local use.
 
-## Run the starter
+The result contains job metadata and, on success, a canonical ChatGPT `/c/...` URL. Open that URL to continue. `started` means real activity was observed after submission, not that the answer is finished. Slingring never returns generated assistant text.
+
+## Inspect without starting a service
 
 ```bash
-just check
-cargo run -- --help
-cargo run -- hello agent
+slingring status --json
+slingring jobs --json
+slingring config show --json
 ```
 
-The starter command is intentionally tiny. Replace it rather than building abstractions around the greeting example.
-
-## Run the docs site
-
-```bash
-just docs-install
-just docs-dev
-```
-
-The docs application lives completely under `docs/`, including its dependencies and Vercel configuration.
+Next: [local input and images](/docs/local-input), [remote access](/docs/remote), or [reasoning modes](/docs/reasoning).
