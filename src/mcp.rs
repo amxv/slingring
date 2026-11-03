@@ -1,5 +1,9 @@
 //! Stateless JSON-RPC MCP. Image paths are deliberately absent at this boundary.
-use crate::{config::Config, model::NewTask, queue::Queue};
+use crate::{
+    config::Config,
+    model::{NewTask, SendMessage, Task},
+    queue::Queue,
+};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -17,6 +21,18 @@ pub fn tool() -> Value {
             "reasoning_effort":{"type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]}},
             "required":["prompt"],"additionalProperties":false},
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
+}
+pub fn message_tool() -> Value {
+    json!({"name":"send_message","description":"Send a follow-up to an existing ChatGPT Chat conversation. Accept only its exact https://chatgpt.com/c/<id> URL. Wait for voice-mode readiness without stopping an existing response, preserve the chat's effort, send once, and return the same URL after new thinking or response activity starts. No generated answer is returned. An uncertain result must not be blindly retried.",
+        "inputSchema":{"type":"object","properties":{
+            "chatgpt_url":{"type":"string","minLength":23,"maxLength":150,
+                "pattern":"^https://chatgpt\\.com/c/[A-Za-z0-9-]{1,128}$"},
+            "message":{"type":"string","minLength":1,"maxLength":131072}},
+            "required":["chatgpt_url","message"],"additionalProperties":false},
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
+}
+pub fn tools() -> Vec<Value> {
+    vec![tool(), message_tool()]
 }
 /// Outer None means this is a write request; Some(None) means a notification.
 pub fn metadata(request: &Value) -> Option<Option<Value>> {
@@ -41,22 +57,41 @@ pub fn metadata(request: &Value) -> Option<Option<Value>> {
             };
             json!({"protocolVersion":version,"capabilities":{"tools":{}},
                 "serverInfo":{"name":"slingring","version":env!("CARGO_PKG_VERSION")},
-                "instructions":"Use new_task to start ChatGPT chats. This tool returns a conversation URL, not an answer. Never automatically retry an uncertain submission."})
+                "instructions":"Use new_task to start ChatGPT chats and send_message to follow up in an existing Chat. Both tools submit prompts through the connected account and return a conversation URL, not an answer. Never automatically retry an uncertain submission."})
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools":[tool()]}),
+        "tools/list" => json!({"tools":tools()}),
         "tools/call" => return None,
         _ => return Some(Some(error(id, -32601, "Method not found"))),
     };
     Some(Some(result(id, r)))
 }
-pub fn arguments(request: &Value) -> Result<NewTask, &'static str> {
-    if request["params"]["name"] != "new_task" {
+pub fn arguments(request: &Value) -> Result<Task, &'static str> {
+    let name = request["params"]["name"].as_str().unwrap_or("");
+    if !matches!(name, "new_task" | "send_message") {
         return Err("Unknown tool");
     }
     let args = request["params"]["arguments"]
         .as_object()
         .ok_or("arguments must be an object")?;
+    if name == "send_message" {
+        if args.keys().any(|k| k != "chatgpt_url" && k != "message") {
+            return Err("Only chatgpt_url and message are accepted");
+        }
+        let chatgpt_url = args
+            .get("chatgpt_url")
+            .and_then(Value::as_str)
+            .ok_or("chatgpt_url must be a string")?;
+        let message = args
+            .get("message")
+            .and_then(Value::as_str)
+            .ok_or("message must be a string")?;
+        return Ok(SendMessage {
+            chatgpt_url: chatgpt_url.into(),
+            message: message.into(),
+        }
+        .into());
+    }
     if args
         .keys()
         .any(|k| k != "prompt" && k != "reasoning_effort")
@@ -76,7 +111,8 @@ pub fn arguments(request: &Value) -> Result<NewTask, &'static str> {
         prompt: prompt.into(),
         reasoning_effort,
         image_paths: Vec::new(),
-    })
+    }
+    .into())
 }
 pub async fn dispatch(
     root: &Path,

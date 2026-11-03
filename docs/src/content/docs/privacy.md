@@ -1,15 +1,15 @@
 ---
 title: Privacy and security
-description: What is sent, what is saved, and who can start a chat.
+description: What is sent, what is saved, and who can send messages.
 order: 24
 category: Reference
 ---
 
 ## Data flow
 
-Slingring sends the requested prompt and any local CLI attachments to ChatGPT using your chosen Chrome login. Remote prompts also pass through your relay. It detects whether assistant activity is present but does not return, log, or save generated answer text.
+Slingring sends the requested prompt or follow-up message and any local new-task CLI attachments to ChatGPT using your chosen Chrome login. Remote requests, including follow-up target URLs and messages, also pass through your relay. It detects whether fresh assistant activity is present but does not return, log, or save generated answer text.
 
-Chat URLs, timestamps, status, and request fingerprints are stored in a bounded local journal. Prompts and image contents are not persisted in that journal. The relay forwards requests in memory; it does not keep a durable prompt queue.
+Chat URLs, including follow-up targets, timestamps, status, and request fingerprints are stored in a bounded local journal. Prompts, message text, and image contents are not persisted in that journal. The relay forwards requests in memory; it does not keep a durable message queue. Messages sent to ChatGPT remain subject to ChatGPT's conversation storage settings.
 
 ## Local security
 
@@ -19,9 +19,11 @@ The browser runs with an isolated temporary profile copy. Native Messaging regis
 
 ## Remote access
 
-Anyone with the client token or private MCP URL can send prompts through your account. Use separate high-entropy client and device credentials. Never publish a connection URL, commit credentials, or include them in support logs. Rotate exposed credentials in Cloudflare and reconfigure the Mac.
+Anyone with the client token or private MCP URL can start chats and send follow-ups to accessible chats when they know the conversation URL. Use separate high-entropy client and device credentials. Never publish a connection URL, commit credentials, or include them in support logs. Rotate exposed credentials in Cloudflare and reconfigure the Mac.
 
-MCP accepts text and reasoning effort only. Remote callers cannot select image paths, browser profiles, destination URLs, or shell commands. The annotation hints do not change the fact that calling `new_task` creates a chat; they are not a security boundary.
+MCP `new_task` accepts prompt text and optional reasoning effort. `send_message` accepts message text and an exact `https://chatgpt.com/c/ID` target; IDs are limited to 1..128 ASCII letters, digits, or hyphens, without queries or fragments. Other destinations and routes are rejected. Remote callers cannot select image paths, browser profiles, or shell commands. Follow-ups preserve the existing effort and never interrupt a response. The queue cannot prevent concurrent writes by a person or another client.
+
+Both tools advertise `readOnlyHint: true` and `openWorldHint: false` as requested metadata. Their actual effect is to send a message and create or modify a conversation. These hints are not authorization controls or a security boundary.
 
 ## Website compatibility
 

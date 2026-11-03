@@ -28,11 +28,15 @@
   }
   function chatVerified() {
     if (location.origin !== "https://chatgpt.com" || /^\/work(?:\/|$)/.test(location.pathname)) return false;
+    const workEditor=[...document.querySelectorAll('[contenteditable][aria-label],textarea[aria-label],input[aria-label]')]
+      .some(e=>visible(e) && /^work with chatgpt$/i.test(normal(e.getAttribute('aria-label'))));
+    if (workEditor || document.querySelector('[data-testid*="work-composer"]')) return false;
     const m = modes();
     if (m.ambiguous) return false;
     if (m.chat || m.work) return selected(m.chat) === true && selected(m.work) === false;
-    // Classic Chat-only accounts have no mode switch. Unknown layouts fail closed.
-    return visible(document.querySelector('#prompt-textarea')) && !document.querySelector('[data-testid*="work-composer"]');
+    // Existing Chat threads can omit both the mode switch and the classic ID.
+    // Recognize only known Chat editors; unrelated editable controls fail closed.
+    return [...document.querySelectorAll('#prompt-textarea,[contenteditable="true"][aria-label="Ask ChatGPT"]')].some(visible);
   }
   function waitFor(predicate, timeout = 30000, code = "ui_timeout") {
     return new Promise((resolve, reject) => {
@@ -164,6 +168,45 @@
     return [...root.querySelectorAll('button[data-testid="send-button"],button[data-testid="composer-submit-button"],button[aria-label="Send"],button[aria-label="Send prompt"],button[aria-label="Send message"]')]
       .find(e=>visible(e) && !e.disabled && e.getAttribute("aria-disabled") !== "true");
   }
+  function composerRoot() {
+    const input=composer();
+    return input?.closest('form') || input?.closest('[data-composer-body]') || input?.closest('main,[role="main"]');
+  }
+  function stopControl() {
+    return [...document.querySelectorAll('button')].some(e=>visible(e) && (
+      ['stop-button','composer-stop-button'].includes(e.getAttribute('data-testid')) ||
+      /^stop(?: generating| responding| generation| response| streaming)?(?: \(.*\))?$/i.test(normal(e.getAttribute('aria-label')))));
+  }
+  function voiceActive() {
+    return [...document.querySelectorAll('button')].some(e=>visible(e) &&
+      /^(?:end voice|exit voice|stop voice|stop recording|stop dictation|stop dictating|mute microphone|unmute microphone)(?:\b|$)/i.test(normal(e.getAttribute('aria-label'))));
+  }
+  function followupIdle() {
+    const input=composer(),root=composerRoot();
+    return !!input && !!root && !input.disabled && input.getAttribute('aria-disabled')!=='true' &&
+      input.getAttribute('contenteditable')!=='false' && !stopControl() && !voiceActive() &&
+      ![...root.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible);
+  }
+  function noAttachments() {
+    const root=composerRoot();
+    return !!root && ![...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"],[data-testid="file-thumbnail"]')].some(visible);
+  }
+  function followupReady() {
+    if (!followupIdle()) return false;
+    // Never take over an existing draft, even when it happens to match this
+    // message. A prior uncertain send may have left it in the composer.
+    if (text(composer())) throw Error('unrelated_draft_present');
+    if (!noAttachments()) throw Error('attachments_present');
+    const voice=[...composerRoot().querySelectorAll('button')].filter(e=>visible(e) && !e.disabled &&
+      e.getAttribute('aria-disabled')!=='true').filter(e=>{
+        const label=normal(e.getAttribute('aria-label'));
+        return /^(?:start voice|start voice mode|use voice mode|voice mode)$/i.test(label) ||
+          (!label && e.getAttribute('data-testid')==='composer-speech-button');
+      });
+    // A real prior user turn also prevents a still-hydrating or inaccessible
+    // conversation from being mistaken for a ready new-chat composer.
+    return voice.length===1 && userTurns().length>0;
+  }
   function fileInput() {
     const inputs = [...document.querySelectorAll('input[type="file"]')];
     return inputs.find(e=>e.multiple && e.getAttribute('aria-label')==='Attach photos') ||
@@ -189,8 +232,16 @@
     return previews.length >= count && !busy && !!sendButton();
   }
   function canonicalUrl() {
-    return location.origin === "https://chatgpt.com" && /^\/c\/[a-zA-Z0-9-]+$/.test(location.pathname)
+    return location.origin === "https://chatgpt.com" && /^\/c\/[a-zA-Z0-9-]{1,128}$/.test(location.pathname)
       ? location.origin+location.pathname : null;
+  }
+  function userTurns() {
+    const selector='[data-message-author-role="user"],[data-user-message-bubble]';
+    return [...document.querySelectorAll(selector)].filter(e=>visible(e) && !e.querySelector(selector));
+  }
+  function turnBaseline() {
+    const users=userTurns();
+    return {users};
   }
   function activityLabel(element) {
     if (!visible(element) || element.closest('.sr-only,[aria-hidden="true"]') || element.querySelector('.pulsing-dot')) return '';
@@ -198,21 +249,36 @@
     for(const hidden of clone.querySelectorAll('.sr-only,[aria-hidden="true"],svg')) hidden.remove();
     return normal(clone.textContent || (element.tagName==='BUTTON' ? element.getAttribute('aria-label') : ''));
   }
-  function startEvidence(expectedPrompt) {
-    const user = [...document.querySelectorAll('[data-message-author-role="user"],[data-user-message-bubble]')]
-      .find(e=>visible(e) && (!expectedPrompt || normal(e.textContent)===normal(expectedPrompt)));
+  function startEvidence(expectedPrompt, baseline) {
+    // Sending must consume the submitted input. Appending delayed historical
+    // turns can otherwise resemble a new turn while an ignored Send leaves the
+    // prompt intact. Recheck the visible current composer on every observation;
+    // a missing composer or any draft makes this start ambiguous.
+    if (baseline) {
+      const input=composer();
+      if (!input || text(input)) return null;
+    }
+    const users=userTurns(),user=users.at(-1);
+    // The transcript can contain identical prior prompts and completed answers.
+    // Only a newly appended user turn may authorize a start result. If a layout
+    // virtualizes/replaces history ambiguously, fail closed rather than infer it.
+    if (baseline && (!Array.isArray(baseline.users) || users.length!==baseline.users.length+1 ||
+        baseline.users.some((previous,index)=>users[index]!==previous))) return null;
+    if (user && expectedPrompt && normal(user.textContent)!==normal(expectedPrompt)) return null;
     if (!user || !canonicalUrl()) return null;
     // ChatGPT can retain a home view beside its live thread. Anchor observation
     // to this task's user bubble rather than the first <main> on the page.
     const main = user.closest('[data-thread-user-message-navigation-content]') || user.closest('main,[role="main"]');
     if (!main) return null;
+    const afterUser=e=>!e.contains(user) && !!(user.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING);
     const outsideUser=e=>!e.closest('[data-user-message-bubble],[data-message-author-role="user"],form,nav,header,[data-composer-body]');
-    const meaningful=e=>visible(e) && outsideUser(e) && /[^\s.…·●•○◌]/u.test(e.textContent || '');
-    const alerts = [...main.querySelectorAll('[role="alert"]')].filter(visible);
+    const meaningful=e=>visible(e) && afterUser(e) && outsideUser(e) && /[^\s.…·●•○◌]/u.test(e.textContent || '');
+    const alerts = [...main.querySelectorAll('[role="alert"]')].filter(e=>visible(e) && afterUser(e));
     if (alerts.some(e=>/something went wrong|usage limit|network error|try again/i.test(e.textContent))) throw Error("generation_error");
     const assistant = [...main.querySelectorAll('[data-message-author-role="assistant"],article[data-turn="assistant"]'),
       ...[...main.querySelectorAll('[data-conversation-role="assistant"]')].map(e=>e.parentElement).filter(Boolean)];
     for (const area of assistant) {
+      if (!afterUser(area)) continue;
       const status = [...area.querySelectorAll('button,[role="status"],[aria-live],[data-testid*="thinking"],[data-testid*="reasoning"]')]
         .map(activityLabel);
       if (status.some(t=>/^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(t) && t.length<120)) return "thinking";
@@ -223,7 +289,7 @@
     }
     if(main.matches('[data-thread-user-message-navigation-content]')) {
       for(const control of main.querySelectorAll('span,div')) {
-        if(!outsideUser(control) || control.childElementCount > 1 || control.querySelector('[data-user-message-bubble]'))continue;
+        if(!afterUser(control) || !outsideUser(control) || control.childElementCount > 1 || control.querySelector('[data-user-message-bubble]'))continue;
         const label=activityLabel(control);
         if(label.length < 120 && /^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(label))return 'thinking';
         if(label.length < 120 && /^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(label))return 'working';
@@ -233,7 +299,7 @@
     // Some Chat layouts render the thinking control alongside, not inside, the
     // assistant message. Exclude the composer, user messages and navigation.
     for (const control of main.querySelectorAll('button,[role="status"]')) {
-      if (!visible(control) || control.closest('form,[data-message-author-role="user"],[data-user-message-bubble],nav,header') ||
+      if (!visible(control) || !afterUser(control) || control.closest('form,[data-message-author-role="user"],[data-user-message-bubble],nav,header') ||
           control.querySelector('.pulsing-dot')) continue;
       const label=activityLabel(control);
       if (/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for .*)?$/i.test(label)) return "thinking";
@@ -242,5 +308,6 @@
     return null; // A stop control, loading dot, or empty assistant node is not evidence.
   }
   globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,modes,chatVerified,waitFor,ensureChat,
-    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentsReady,canonicalUrl,startEvidence};
+    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentsReady,canonicalUrl,startEvidence,
+    followupReady,followupIdle,noAttachments,turnBaseline};
 })();

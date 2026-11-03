@@ -60,6 +60,37 @@ test('Work mode is never considered Chat, including an ambiguous switch',()=>{
   p.document.querySelector('#chat').removeAttribute('aria-pressed');
   assert.equal(p.api.chatVerified(),false);p.close();
 });
+test('an existing thread with only the known Ask ChatGPT editor is positively recognized',()=>{
+  const p=page('<div contenteditable="true" aria-label="Ask ChatGPT"></div>');
+  assert.equal(p.document.querySelector('#prompt-textarea'),null);
+  assert.equal(p.api.modes().chat,null);assert.equal(p.api.modes().work,null);
+  assert.equal(p.api.chatVerified(),true);p.close();
+});
+test('unrelated editable controls cannot establish Chat mode',()=>{
+  for(const html of ['<div contenteditable="true">Ask ChatGPT</div>',
+    '<div contenteditable="true" aria-label="Ask another assistant"></div>',
+    '<textarea aria-label="Ask ChatGPT"></textarea>']) {
+    const p=page(html);assert.equal(p.api.chatVerified(),false);p.close();
+  }
+});
+test('visible Work editors and Work composer markers override a known Chat editor',()=>{
+  const chat='<div contenteditable="true" aria-label="Ask ChatGPT"></div>';
+  for(const work of ['<div contenteditable="true" aria-label="Work with ChatGPT"></div>',
+    '<textarea aria-label="Work with ChatGPT"></textarea>','<div data-testid="work-composer"></div>']) {
+    const p=page(chat+work);assert.equal(p.api.chatVerified(),false);p.close();
+  }
+  const p=page(chat+'<div hidden contenteditable="true" aria-label="Work with ChatGPT"></div>');
+  assert.equal(p.api.chatVerified(),true);p.close();
+});
+test('explicit Work or ambiguous mode controls override the known-editor fallback',()=>{
+  const editor='<div contenteditable="true" aria-label="Ask ChatGPT"></div>';
+  for(const switches of ['<button aria-pressed="false">Chat</button><button aria-pressed="true">Work</button>',
+    '<button aria-pressed="true">Chat</button><button>Chat</button><button aria-pressed="false">Work</button>',
+    '<button>Chat</button><button aria-pressed="false">Work</button>']) {
+    const p=page(switches+editor);assert.equal(p.api.chatVerified(),false);p.close();
+  }
+  const p=page(editor,'https://chatgpt.com/work/c/test');assert.equal(p.api.chatVerified(),false);p.close();
+});
 test('hydrating disabled Chat control is awaited, rather than sent through or rejected early',async()=>{
   const p=page(controls,'https://chatgpt.com/');
   const chat=p.document.querySelector('#chat'),work=p.document.querySelector('#work');

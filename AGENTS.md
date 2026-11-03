@@ -1,6 +1,6 @@
 # Slingring
 
-Mac-only Rust CLI/service that starts ChatGPT Chat conversations and returns their URLs after real assistant activity begins. Do not extract generated answers. Do not use local Codex to delegate this project unless the user explicitly changes that instruction.
+Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversations and returns their URLs after real assistant activity begins. Do not extract generated answers. Do not use local Codex to delegate this project unless the user explicitly changes that instruction.
 
 ## Invariants
 
@@ -8,15 +8,16 @@ Mac-only Rust CLI/service that starts ChatGPT Chat conversations and returns the
 - Chat mode must be positively verified. Never submit in Work or an ambiguous mode. Requested effort must be read back; never silently downgrade account-restricted levels.
 - Stop buttons and loading indicators are not activity. Watch the visible transcript: the current SPA leaves a hidden pre-submit `main` mounted.
 - Do not read, log, return, or store generated answer text. The DOM adapter may classify content presence to detect streaming.
-- One serial queue, bounded at 32, for local and remote calls. Prompt/image content stays in memory. Journal metadata is private, bounded, and never automatically replayed after a crash.
-- Image paths are CLI-only. MCP accepts only `prompt` and `reasoning_effort` and rejects unknown fields.
+- One serial queue, bounded at 32, for local and remote calls. Prompt/message/image content stays in memory. Journal metadata, including follow-up target URLs, is private, bounded, and never automatically replayed after a crash.
+- Image paths are CLI-only. MCP `new_task` accepts only `prompt` and optional `reasoning_effort`; MCP `send_message` accepts only `chatgpt_url` and `message`. Reject unknown fields. Follow-ups have no separate CLI command.
+- Follow-ups preserve the chat's reasoning effort and require an exact `https://chatgpt.com/c/` URL with a 1..128-character ASCII alphanumeric/hyphen ID, no query or fragment. Recheck the target before sending. Wait for visible voice readiness without a stop control before filling; never interrupt a response. Detect activity for the newly submitted turn, not historical messages.
 - Never retry an uncertain submission. Only close the owned named browser session. Reuse it while queued jobs remain; close it on drain or failure.
 - No idle browser, polling daemon, Redis, or `cloudflared`. Remote mode has one Rust runtime thread and outbound WSS; local-only mode exits at idle.
 - Menu bar commands wrap the CLI. No independent configuration, network service, timer polling, or embedded browser.
 
 ## Source map
 
-`src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: one chat-creation tool, with owner-requested readOnlyHint=true/openWorldHint=false metadata. Hints never bypass authorization. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
+`src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: `new_task` and `send_message`, with owner-requested readOnlyHint=true/openWorldHint=false metadata. Both tools send messages; hints never bypass authorization. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
 
 The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browser PID through the already-owned CDP browser connection, then verify the headless process and isolated temporary user-data directory. Never guess another browser's profile. Do not enable CDP Runtime event streaming.
 

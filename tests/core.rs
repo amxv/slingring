@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use slingring::{
     config::Config,
-    model::{NewTask, TaskResult, effort},
+    model::{NewTask, Task, TaskResult, effort},
     queue::{Backend, BrowserFuture, Queue},
 };
 use std::sync::{
@@ -41,12 +41,7 @@ impl Mock {
     }
 }
 impl Backend for Mock {
-    fn run<'a>(
-        &'a self,
-        _: &'a Config,
-        t: &'a NewTask,
-        id: &'a str,
-    ) -> BrowserFuture<'a, TaskResult> {
+    fn run<'a>(&'a self, _: &'a Config, t: &'a Task, id: &'a str) -> BrowserFuture<'a, TaskResult> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -57,7 +52,7 @@ impl Backend for Mock {
             Ok(TaskResult {
                 job_id: id.into(),
                 url: format!("https://chatgpt.com/c/{id}"),
-                reasoning_effort: t.reasoning_effort.clone(),
+                reasoning_effort: t.reasoning_effort().map(str::to_string),
                 evidence: "thinking".into(),
             })
         })

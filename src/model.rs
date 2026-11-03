@@ -16,6 +16,103 @@ pub struct NewTask {
     pub image_paths: Vec<PathBuf>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendMessage {
+    pub chatgpt_url: String,
+    pub message: String,
+}
+
+/// Both operations share the same queue, browser owner and submission guard.
+/// A follow-up deliberately has no model/effort override or local file access.
+#[derive(Clone)]
+pub enum Task {
+    New(NewTask),
+    Message(SendMessage),
+}
+
+impl From<NewTask> for Task {
+    fn from(task: NewTask) -> Self {
+        Self::New(task)
+    }
+}
+impl From<SendMessage> for Task {
+    fn from(task: SendMessage) -> Self {
+        Self::Message(task)
+    }
+}
+
+impl SendMessage {
+    pub fn resolve(self) -> Result<Self> {
+        ensure!(
+            canonical_url(&self.chatgpt_url),
+            "chatgpt_url must be an exact https://chatgpt.com/c/<id> conversation URL without a query or fragment"
+        );
+        ensure!(!self.message.trim().is_empty(), "message cannot be empty");
+        ensure!(self.message.len() <= MAX_PROMPT, "message exceeds 128 KiB");
+        Ok(self)
+    }
+}
+
+impl Task {
+    pub fn resolve(self, config: &crate::config::Config) -> Result<Self> {
+        match self {
+            Self::New(task) => task.resolve(config).map(Self::New),
+            Self::Message(task) => task.resolve().map(Self::Message),
+        }
+    }
+    pub fn prompt(&self) -> &str {
+        match self {
+            Self::New(task) => &task.prompt,
+            Self::Message(task) => &task.message,
+        }
+    }
+    pub fn conversation_url(&self) -> Option<&str> {
+        match self {
+            Self::New(_) => None,
+            Self::Message(task) => Some(&task.chatgpt_url),
+        }
+    }
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        match self {
+            Self::New(task) => task.reasoning_effort.as_deref(),
+            Self::Message(_) => None,
+        }
+    }
+    pub fn image_paths(&self) -> &[PathBuf] {
+        match self {
+            Self::New(task) => &task.image_paths,
+            Self::Message(_) => &[],
+        }
+    }
+    pub fn fingerprint(&self, profile: &str) -> Result<String> {
+        match self {
+            // Preserve existing new_task receipts across an upgrade.
+            Self::New(task) => task.fingerprint(profile),
+            Self::Message(task) => {
+                let mut hash = Sha256::new();
+                hash.update(b"send_message\0");
+                hash.update(serde_json::to_vec(task)?);
+                hash.update(profile.as_bytes());
+                Ok(format!("{:x}", hash.finalize()))
+            }
+        }
+    }
+    pub fn validate_result(&self, result: &TaskResult) -> Result<()> {
+        result.validate()?;
+        ensure!(
+            self.reasoning_effort().is_none()
+                || self.reasoning_effort() == result.reasoning_effort.as_deref(),
+            "requested effort was not verified; inspect chat before retrying"
+        );
+        ensure!(
+            self.conversation_url().is_none_or(|url| url == result.url),
+            "follow-up conversation changed; inspect chat before retrying"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TaskResult {

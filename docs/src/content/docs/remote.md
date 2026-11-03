@@ -1,11 +1,11 @@
 ---
 title: Connect a remote assistant
-description: Give ChatGPT or another remote agent the new_task tool.
+description: Let a remote assistant start chats and send follow-up messages.
 order: 4
 category: Guides
 ---
 
-Remote access lets an assistant start a ChatGPT chat through your Mac. You still get a conversation link, not the generated answer.
+Remote access lets an assistant start a ChatGPT chat or follow up on an existing one through your Mac. You get a conversation link when the new turn starts, not the generated answer.
 
 ## When remote access is already configured
 
@@ -25,7 +25,11 @@ Keep the entire URL private. Anyone who has it can submit prompts through your a
 
 Ask it to use `new_task` with your prompt and, optionally, a reasoning level. For example: “Start a ChatGPT chat to review this plan using High reasoning, then give me the link.”
 
-The tool accepts only `prompt` and `reasoning_effort`. Leave effort out, or leave it blank, to use the default configured on your Mac. Local file paths and images are not exposed remotely.
+`new_task` accepts only `prompt` and optional `reasoning_effort`. Leave effort out, or leave it blank, to use the default configured on your Mac.
+
+To continue that chat, ask the assistant to call `send_message` with `chatgpt_url` and `message`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. It returns the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
+
+Both tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests. If a result is uncertain, inspect the conversation and `slingring jobs --json` before sending anything again. See [CLI and MCP reference](/docs/command-reference) for URL and queue limits.
 
 ## Keep your Mac available
 

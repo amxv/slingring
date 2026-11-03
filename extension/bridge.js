@@ -6,6 +6,8 @@ const job = params.get("job");
 history.replaceState(null,"",location.pathname);
 let native;
 let tabId;
+let targetUrl=null;
+let readyUrl=null;
 let submitted=false;
 let finished=false;
 const waits=new Map();
@@ -15,7 +17,13 @@ const next=(type,timeout=180000)=>new Promise((resolve,reject)=>{
 });
 function failWaits() { for(const wait of waits.values())wait.reject(Error("native_disconnected"));waits.clear(); }
 const safeCode=e=>/^[a-z_]+$/.test(e?.message||"")?e.message:"extension_failed";
-const canonical=url=>typeof url==="string" && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/.test(url);
+const canonical=url=>typeof url==="string" && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]{1,128}(?![\s\S])/.test(url);
+function readyFor(url,deadline) {
+  const remaining=deadline-Date.now()-5000;
+  if(remaining<=0)throw Error('deadline_before_submission');
+  readyUrl=url;
+  return next('content_ready',Math.min(60000,remaining));
+}
 async function content(action,data) {
   const reply=await chrome.tabs.sendMessage(tabId,{kind:"slingring",action,id:job,...data});
   if(!reply?.ok){submitted ||= !!reply?.submitted;const e=Error(reply?.code||"content_script_failed");e.url=canonical(reply?.url)?reply.url:null;throw e;}
@@ -24,11 +32,16 @@ async function content(action,data) {
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message?.kind!=="slingring" || sender.id!==chrome.runtime.id || sender.tab?.id!==tabId || sender.frameId!==0 ||
       !sender.url?.startsWith("https://chatgpt.com/"))return false;
-  if(message.event==="ready") { const wait=waits.get("content_ready");if(wait){waits.delete("content_ready");wait.resolve({});}return false; }
-  if(message.event==="conversation" && message.id===job && submitted && canonical(message.url)) {
+  if(message.event==="ready") {
+    if(sender.url!==readyUrl)return false;
+    const wait=waits.get("content_ready");if(wait){waits.delete("content_ready");wait.resolve({});}return false;
+  }
+  if(message.event==="conversation" && message.id===job && submitted && canonical(message.url) &&
+      (!targetUrl || message.url===targetUrl)) {
     native.postMessage({type:"conversation",job,url:message.url});return false;
   }
   if(message.event!=="will_submit" || message.id!==job || submitted || finished)return false;
+  if(targetUrl && sender.url!==targetUrl){reply({ok:false});return false;}
   const ack=next("continue",10000);
   native.postMessage({type:"will_submit",job});
   ack.then(()=>{submitted=true;reply({ok:true});}).catch(()=>reply({ok:false}));
@@ -45,18 +58,31 @@ async function run() {
   native.postMessage({type:"hello",token,job});
   const task=await ready;
   if(task.job!==job || typeof task.prompt!=="string")throw Error("invalid_task");
-  const contentReady=next("content_ready",60000);
+  if(task.chatgpt_url!=null){
+    if(!canonical(task.chatgpt_url) || task.effort!=null || task.image_count!==0)throw Error("invalid_followup");
+    targetUrl=task.chatgpt_url;
+  }
+  const deadline=task.deadline_ms || Date.now()+120000;
+  const contentReady=readyFor('https://chatgpt.com/',deadline);
   const tab=await chrome.tabs.create({url:"about:blank",active:true});tabId=tab.id;
-  await chrome.tabs.update(tabId,{url:"https://chatgpt.com/"});
+  await chrome.tabs.update(tabId,{url:'https://chatgpt.com/'});
   await contentReady;
-  const prepared=await content("prepare",{prompt:task.prompt,effort:task.effort,image_count:task.image_count,timeout_ms:task.timeout_ms,deadline_ms:task.deadline_ms});
+  if(targetUrl){
+    await content('ensure_chat',{deadline_ms:deadline});
+    const targetReady=readyFor(targetUrl,deadline);
+    await chrome.tabs.update(tabId,{url:targetUrl});
+    await targetReady;
+  }
+  const prepared=await content("prepare",{prompt:task.prompt,effort:task.effort,image_count:task.image_count,
+    chatgpt_url:targetUrl,timeout_ms:task.timeout_ms,deadline_ms:task.deadline_ms});
   if(task.image_count){
     const uploaded=next("uploaded",45000);
     native.postMessage({type:"upload",job,selector:prepared.upload_selector});
     const reply=await uploaded;if(reply.ok!==true)throw Error("image_upload_failed");
   }
   const result=await content("submit",{});
-  if(!canonical(result.url) || !["thinking","working","streaming"].includes(result.evidence))throw Error("invalid_result");
+  if(!canonical(result.url) || (targetUrl && result.url!==targetUrl) ||
+      !["thinking","working","streaming"].includes(result.evidence))throw Error("invalid_result");
   const acknowledged=next("ack",10000);
   finished=true;
   native.postMessage({type:"started",job,url:result.url,evidence:result.evidence,effort:result.effort});

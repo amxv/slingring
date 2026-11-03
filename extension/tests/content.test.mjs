@@ -15,6 +15,7 @@ test('submission re-queries a React-replaced send button after the native acknow
     composer:()=>d.querySelector('#prompt'),text:e=>e.value.trim(),normal:value=>value.trim(),
     uploadSelector:async()=>null,attachmentsReady:()=>true,sendButton:()=>d.querySelector('#send'),
     chatVerified:()=>true,currentEffort:()=> 'Medium',canonicalUrl:()=>submitted?'https://chatgpt.com/c/test':null,
+    turnBaseline:()=>({users:[]}),
     startEvidence:()=>submitted?'thinking':null,
     waitFor:async predicate=>{const value=predicate();if(!value)throw Error('predicate_not_ready');return value;}
   };

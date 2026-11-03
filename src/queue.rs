@@ -2,7 +2,7 @@
 //! image paths live in memory and interrupted jobs are never automatically replayed.
 use crate::{
     config::{self, Config},
-    model::{NewTask, QUEUE_CAPACITY, StartError, TaskResult},
+    model::{QUEUE_CAPACITY, StartError, Task, TaskResult},
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -27,19 +27,14 @@ pub trait Backend: Send + Sync + 'static {
     fn run<'a>(
         &'a self,
         config: &'a Config,
-        task: &'a NewTask,
+        task: &'a Task,
         id: &'a str,
     ) -> BrowserFuture<'a, TaskResult>;
     fn close<'a>(&'a self, config: &'a Config) -> BrowserFuture<'a, ()>;
 }
 pub struct Browser;
 impl Backend for Browser {
-    fn run<'a>(
-        &'a self,
-        c: &'a Config,
-        t: &'a NewTask,
-        id: &'a str,
-    ) -> BrowserFuture<'a, TaskResult> {
+    fn run<'a>(&'a self, c: &'a Config, t: &'a Task, id: &'a str) -> BrowserFuture<'a, TaskResult> {
         Box::pin(crate::browser::run(c, t, id))
     }
     fn close<'a>(&'a self, c: &'a Config) -> BrowserFuture<'a, ()> {
@@ -129,7 +124,7 @@ impl State {
                 job.result = Some(r);
             }
             Err(e) => {
-                if let Some(e) = e.downcast_ref::<StartError>() {
+                if let Some(e) = e.downcast_ref::<StartError>().filter(|e| e.url.is_some()) {
                     job.url = e.url.clone();
                 }
                 job.error = Some(e.to_string());
@@ -156,7 +151,7 @@ impl State {
 }
 struct Item {
     id: String,
-    task: NewTask,
+    task: Task,
     config: Config,
     deadline: Option<Instant>,
 }
@@ -225,7 +220,12 @@ impl Queue {
     pub fn quiet(&self) -> bool {
         self.active() == 0 && !self.busy.load(Ordering::Acquire)
     }
-    pub async fn submit(&self, id: String, task: NewTask, config: Config) -> Result<TaskResult> {
+    pub async fn submit(
+        &self,
+        id: String,
+        task: impl Into<Task>,
+        config: Config,
+    ) -> Result<TaskResult> {
         self.submit_before(id, task, config, None).await
     }
     /// A remote caller may impose an end-to-end deadline. Local queue waiting
@@ -233,7 +233,7 @@ impl Queue {
     pub async fn submit_before(
         &self,
         id: String,
-        task: NewTask,
+        task: impl Into<Task>,
         config: Config,
         deadline: Option<Instant>,
     ) -> Result<TaskResult> {
@@ -245,7 +245,7 @@ impl Queue {
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':')),
             "invalid request ID"
         );
-        let task = task.resolve(&config)?;
+        let task = task.into().resolve(&config)?;
         let fingerprint = task.fingerprint(&config.profile)?;
         let (tx, rx) = oneshot::channel();
         {
@@ -277,7 +277,7 @@ impl Queue {
                     finished_at: None,
                     result: None,
                     error: None,
-                    url: None,
+                    url: task.conversation_url().map(str::to_string),
                     fingerprint,
                 });
                 if let Err(e) = state.save() {
@@ -340,11 +340,7 @@ async fn work(
                 r = tokio::time::timeout_at(deadline, backend.run(&config, &task, &id)) => match r {
                     Ok(Ok(mut result)) => {
                         result.job_id = id.clone();
-                        result.validate().and_then(|()| {
-                            ensure!(task.reasoning_effort.is_none() || task.reasoning_effort == result.reasoning_effort,
-                                "requested effort was not verified; inspect chat before retrying");
-                            Ok(result)
-                        })
+                        task.validate_result(&result).map(|()| result)
                     }
                     Ok(Err(error)) => Err(error),
                     Err(_) => Err(anyhow::anyhow!("submission deadline reached; outcome uncertain; inspect chat before retrying")),

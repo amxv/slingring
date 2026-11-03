@@ -3,7 +3,7 @@
 //! it never enables Runtime events or reads generated answers.
 use crate::{
     config::{self, Config},
-    model::{NewTask, StartError, TaskResult, canonical_url},
+    model::{StartError, Task, TaskResult, canonical_url},
     native,
 };
 use anyhow::{Context, Result, ensure};
@@ -250,7 +250,7 @@ fn trace(stage: &str) {
     }
 }
 
-pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskResult> {
+pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResult> {
     trace("launch");
     let deadline = tokio::time::Instant::now()
         + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
@@ -332,11 +332,11 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
         hello["type"] == "hello" && hello["token"] == token && hello["job"] == task_id,
         "native session authentication failed"
     );
-    native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt,
-        "effort":task.reasoning_effort,"image_count":task.image_paths.len(),"timeout_ms":config.start_timeout_secs*1000,
+    native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt(),
+        "chatgpt_url":task.conversation_url(),"effort":task.reasoning_effort(),"image_count":task.image_paths().len(),"timeout_ms":config.start_timeout_secs*1000,
         "deadline_ms":crate::queue::now()+deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64})).await?;
     let mut submitted = false;
-    let mut conversation_url: Option<String> = None;
+    let mut conversation_url = task.conversation_url().map(str::to_string);
     loop {
         let event = tokio::time::timeout_at(deadline, native::read(&mut socket))
             .await
@@ -367,14 +367,17 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
                     .as_str()
                     .filter(|url| canonical_url(url))
                     .context("invalid conversation URL")?;
+                if task.conversation_url().is_some_and(|target| target != url) {
+                    return Err(failure("conversation_changed", submitted, conversation_url));
+                }
                 conversation_url = Some(url.into());
-                trace("conversation_created");
+                trace("conversation_identified");
             }
-            Some("upload") if !submitted && !task.image_paths.is_empty() => {
+            Some("upload") if !submitted && !task.image_paths().is_empty() => {
                 let selector = event["selector"]
                     .as_str()
                     .context("image input selector missing")?;
-                cdp.upload(selector, &task.image_paths)
+                cdp.upload(selector, task.image_paths())
                     .await
                     .map_err(|_| failure("image_upload_failed", false, None))?;
                 native::write(&mut socket, &json!({"type":"uploaded","ok":true})).await?;
@@ -394,12 +397,8 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
                         .context("activity evidence missing")?
                         .into(),
                 };
-                result.validate()?;
-                ensure!(
-                    task.reasoning_effort.is_none()
-                        || result.reasoning_effort == task.reasoning_effort,
-                    "effort verification mismatch"
-                );
+                task.validate_result(&result)
+                    .map_err(|_| failure("invalid_start_result", true, conversation_url.clone()))?;
                 native::write(&mut socket, &json!({"type":"ack"})).await?;
                 let _ =
                     tokio::time::timeout(Duration::from_secs(3), native::read(&mut socket)).await;
@@ -424,11 +423,12 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
                     submitted || event["submitted"] == true,
                     event["url"]
                         .as_str()
+                        .filter(|url| task.conversation_url().is_none_or(|target| target == *url))
                         .map(str::to_string)
                         .or(conversation_url),
                 ));
             }
-            _ => return Err(failure("invalid_native_event", submitted, None)),
+            _ => return Err(failure("invalid_native_event", submitted, conversation_url)),
         }
     }
 }
