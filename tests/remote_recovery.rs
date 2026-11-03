@@ -221,6 +221,23 @@ fn status_is_strict_and_request_id_cannot_override_a_different_http_key() {
     assert!(!dir.path().join("journal.json").exists());
 }
 
+#[test]
+fn post_authorization_composer_errors_do_not_claim_an_uncertain_job_was_unsent() {
+    for code in ["composer_unavailable", "prompt_lost"] {
+        let job: slingring::queue::Job = serde_json::from_value(json!({
+            "id":"after-ack","status":"uncertain","created_at":1,"finished_at":2,
+            "result":null,"error":format!("{code}; submission may have started"),"url":null
+        }))
+        .unwrap();
+        let status = slingring::queue::recovery_status(Some(&job), "after-ack");
+        assert_eq!(status["outcome"], "uncertain");
+        let diagnosis = status["diagnosis"].as_str().unwrap().to_ascii_lowercase();
+        assert!(!diagnosis.contains("nothing was submitted"));
+        assert!(!diagnosis.contains("no message was submitted"));
+        assert!(diagnosis.contains("recorded outcome"));
+    }
+}
+
 #[tokio::test]
 async fn mismatched_idempotency_header_rejects_before_admission() -> Result<()> {
     let dir = tempfile::tempdir()?;

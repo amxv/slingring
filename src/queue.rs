@@ -149,10 +149,10 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
             "Composer text no longer matches the prepared message. A potentially real draft was preserved. Inspect the composer before a new request; Slingring will not overwrite or automatically retry it."
         }
         "prompt_lost" => {
-            "The prepared message disappeared before submission, for example during page hydration. Nothing was submitted; inspect the configured profile and composer before a new request."
+            "The prepared message disappeared, for example during page hydration. Use the recorded outcome to assess submission; inspect the configured profile and composer before a new request."
         }
         "composer_unavailable" => {
-            "The conversation did not expose a usable composer. Check that the configured account can load the target chat; no message was submitted."
+            "The conversation did not expose a usable composer. Check that the configured account can load the target chat, and use the recorded outcome to assess submission."
         }
         _ => {
             "Use the recorded phase and outcome; inspect the Mac journal and conversation before choosing any further action."
