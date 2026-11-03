@@ -15,6 +15,16 @@ fn output(home: &std::path::Path, arguments: &[&str]) -> Value {
 }
 
 fn journal(home: &std::path::Path) {
+    // Older/missing ownership sidecars cannot prove that a queued record was
+    // never submitted. Model a known stopped daemon with both free lock files.
+    for lock in ["daemon.lock", "queue.lock"] {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(home.join(lock))
+            .unwrap();
+    }
     let entries = json!([
         {"id":"confirmed","status":"started","created_at":1,"finished_at":2,
          "result":{"job_id":"confirmed","url":"https://chatgpt.com/c/confirmed","reasoning_effort":"Pro","evidence":"thinking"},
@@ -29,6 +39,16 @@ fn journal(home: &std::path::Path) {
         &serde_json::to_vec(&entries).unwrap(),
     )
     .unwrap();
+}
+
+#[test]
+fn missing_ownership_evidence_never_claims_a_queued_task_was_unsent() {
+    let home = tempfile::tempdir().unwrap();
+    journal(home.path());
+    std::fs::remove_file(home.path().join("queue.lock")).unwrap();
+    let status = output(home.path(), &["jobs", "--request-id", "queued", "--json"]);
+    assert_eq!(status["outcome"], "uncertain");
+    assert_eq!(status["job"]["finished_at"], Value::Null);
 }
 
 #[test]

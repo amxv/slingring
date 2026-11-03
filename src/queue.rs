@@ -204,10 +204,21 @@ fn owner_file(root: &Path) -> Result<File> {
         .context("another Slingring queue owns this state directory")?;
     Ok(file)
 }
-fn lock_held(path: &Path) -> Result<bool> {
+/// An observer must retain both free ownership locks *while* reading the
+/// journal. Reading first and only then probing permits this race: a daemon
+/// can start, submit, exit, and leave the observer holding a stale queued
+/// record which it would incorrectly classify as definitely not submitted.
+enum OwnershipProbe {
+    Held { _file: File },
+    Busy,
+    Missing,
+}
+fn ownership_probe(path: &Path) -> Result<OwnershipProbe> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(OwnershipProbe::Missing);
+        }
         Err(error) => return Err(error.into()),
     };
     ensure!(
@@ -216,10 +227,13 @@ fn lock_held(path: &Path) -> Result<bool> {
     );
     let file = OpenOptions::new().read(true).open(path)?;
     match fs2::FileExt::try_lock_exclusive(&file) {
-        Ok(()) => Ok(false),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
+        Ok(()) => Ok(OwnershipProbe::Held { _file: file }),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(OwnershipProbe::Busy),
         Err(error) => Err(error.into()),
     }
+}
+fn lock_held(path: &Path) -> Result<bool> {
+    Ok(matches!(ownership_probe(path)?, OwnershipProbe::Busy))
 }
 /// Read-only liveness check. The daemon lock also recognizes older installed
 /// versions and protects the brief startup interval before the queue is opened.
@@ -244,10 +258,20 @@ fn interrupt(job: &mut Job) {
 /// Classify orphaned records even when a crashed daemon has not been restarted.
 /// Never writes history, starts a process, or infers no submission from a phase.
 pub fn recovery_records(root: &Path) -> Result<VecDeque<Job>> {
+    recovery_records_with_hook(root, || {})
+}
+fn recovery_records_with_hook(root: &Path, before_read: impl FnOnce()) -> Result<VecDeque<Job>> {
+    // Match daemon startup's lock order. Both locks need to be acquired before
+    // reading history, and retained through the offline classification. If
+    // either is busy, the owner is or was live: leave records unclassified.
+    // If either lock is missing we cannot rule out a simultaneous first-ever
+    // owner creating it, so fail closed as uncertain rather than say unsent.
+    let daemon = ownership_probe(&root.join("daemon.lock"))?;
+    let queue = ownership_probe(&root.join("queue.lock"))?;
+    before_read();
     let mut jobs = records(root)?;
-    // Probe after reading so a concurrently started owner cannot publish a new
-    // queued row between a negative liveness check and the journal read.
-    if !owner_running(root)? {
+    if matches!(daemon, OwnershipProbe::Held { .. }) && matches!(queue, OwnershipProbe::Held { .. })
+    {
         for job in &mut jobs {
             let was_active = job.active();
             interrupt(job);
@@ -257,8 +281,102 @@ pub fn recovery_records(root: &Path) -> Result<VecDeque<Job>> {
                 job.finished_at = None;
             }
         }
+    } else if matches!(daemon, OwnershipProbe::Missing) || matches!(queue, OwnershipProbe::Missing)
+    {
+        // Only ambiguous snapshots are affected. If an owner was observed as
+        // busy, it is still possible that it finished before the read, so
+        // never use a missing lock as evidence against a running task.
+        if !matches!(daemon, OwnershipProbe::Busy) && !matches!(queue, OwnershipProbe::Busy) {
+            for job in jobs.iter_mut().filter(|job| job.active()) {
+                job.status = "uncertain".into();
+                job.error = Some("owner_lock_missing; submission outcome cannot be proved".into());
+                job.finished_at = None;
+            }
+        }
     }
     Ok(jobs)
+}
+
+#[cfg(test)]
+mod ownership_snapshot_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn an_ephemeral_owner_cannot_submit_between_a_recovery_snapshot_and_ownership_probe()
+    -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        config::private_dir(dir.path())?;
+        // The historical queued row is only safe to classify as unsent if no
+        // owner can start, update the journal and exit during this snapshot.
+        for name in ["daemon.lock", "queue.lock"] {
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(dir.path().join(name))?;
+        }
+        let old = serde_json::json!([{"id":"queued-old","status":"queued","created_at":1,
+            "finished_at":null,"result":null,"error":null,"url":null}]);
+        config::atomic(&dir.path().join("journal.json"), &serde_json::to_vec(&old)?)?;
+        let (locked_tx, locked_rx) = mpsc::sync_channel(0);
+        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+        let root = dir.path().to_path_buf();
+        let observer = std::thread::spawn(move || {
+            recovery_records_with_hook(&root, || {
+                locked_tx.send(()).unwrap();
+                continue_rx.recv().unwrap();
+            })
+        });
+        locked_rx.recv_timeout(Duration::from_secs(2))?;
+        // Deterministically freeze the observer at the former race window.
+        // Both ownership locks are already held, before the journal read.
+        // A daemon or standalone queue trying to start here must fail rather
+        // than submit and exit while the observer uses a stale queued row.
+        for name in ["daemon.lock", "queue.lock"] {
+            let file = OpenOptions::new().read(true).open(dir.path().join(name))?;
+            assert_eq!(
+                fs2::FileExt::try_lock_exclusive(&file).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+        assert!(owner_file(dir.path()).is_err());
+        continue_tx.send(())?;
+        let rows = observer.join().expect("recovery thread")?;
+        assert_eq!(rows[0].status, "failed");
+        assert_eq!(
+            recovery_status(rows.front(), "queued-old")["outcome"],
+            "not_submitted"
+        );
+
+        // Once the observer releases its locks, a short-lived owner can write
+        // a confirmed result. A later query must read this newer journal and
+        // never misclassify the submitted record as unsent.
+        let daemon_guard = OpenOptions::new()
+            .read(true)
+            .open(dir.path().join("daemon.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&daemon_guard)?;
+        let queue_guard = owner_file(dir.path())?;
+        let confirmed = serde_json::json!([{"id":"queued-old","status":"started","created_at":1,
+            "finished_at":2,"error":null,"url":"https://chatgpt.com/c/test",
+            "result":{"url":"https://chatgpt.com/c/test","job_id":"queued-old",
+                "reasoning_effort":null,"evidence":"thinking"}}]);
+        config::atomic(
+            &dir.path().join("journal.json"),
+            &serde_json::to_vec(&confirmed)?,
+        )?;
+        assert_eq!(
+            recovery_status(recovery_records(dir.path())?.front(), "queued-old")["outcome"],
+            "submitted"
+        );
+        drop(queue_guard);
+        drop(daemon_guard);
+        assert_eq!(
+            recovery_status(recovery_records(dir.path())?.front(), "queued-old")["outcome"],
+            "submitted"
+        );
+        Ok(())
+    }
 }
 type Reply = oneshot::Sender<Result<TaskResult>>;
 struct State {

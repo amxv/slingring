@@ -5,7 +5,7 @@ order: 20
 category: Reference
 ---
 
-> Browser-mode settings, the CLI `send-message` command, and MCP request-ID/status recovery are unreleased additions on `main`, not features of v0.3.0.
+> Browser-mode controls, CLI `send-message`, and MCP request-ID/status recovery require Slingring v0.4.0 or newer.
 
 ## CLI
 

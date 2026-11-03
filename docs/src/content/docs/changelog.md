@@ -6,15 +6,15 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
-## Unreleased
+## 0.4.0 · 3 November 2026
 
 Add read-only recovery with `request_id` and `get_job_status`, bounded private startup-stage/timing diagnostics, and accepted MCP receipts after a five-second result wait. Accepted jobs continue in memory after caller disconnects. Reserve status capacity when submissions are saturated, classify interrupted jobs conservatively before restart, and preserve confirmed outcomes without waiting for browser cleanup. A timeout or missing record never proves that a message was unsent, and interrupted work is never replayed.
 
 Use the official `rmcp` Rust SDK for local stdio MCP protocol handling and transport, preserving the existing remote relay integration and strict text-only MCP boundary. Add `slingring send-message` with local image attachments, file/stdin message input, and request-ID recovery. Follow-up images use the existing isolated browser upload path, with readiness and unchanged-conversation checks before submission. No generated answers are extracted.
 
-Preserve rich-text line breaks during prompt verification, reject existing or changed drafts, bind uploads to the exact owned browser target, and wait for uploads without confusing their progress with an active response. Keep submission evidence separate from cleanup and report missing composers clearly.
+Preserve rich-text line breaks during prompt verification, reject existing or changed drafts, bind uploads to the exact owned browser target, and wait for uploads without confusing their progress with an active response. Require identifiable, stable attachment cards before sending; a layout with only Remove buttons is rejected rather than risking a changed sibling preview. Keep submission evidence separate from cleanup and report missing composers clearly.
 
-Add persistent headless/headed selection through `config set browser-mode` and Configure → Browser Mode. Headless remains the default. Show current preparation phases and queued jobs separately from the last confirmed, failed, or uncertain attempt. These changes have not been released as a desktop build.
+Add persistent headless/headed selection through `config set browser-mode` and Configure → Browser Mode. Headless remains the default. Show current preparation phases and queued jobs separately from the last confirmed, failed, or uncertain attempt. Protect read-only crash recovery by holding the daemon and queue ownership locks across its journal snapshot; never claim a queued job was unsent when ownership cannot be verified.
 
 ## 0.3.0 · 3 November 2026
 
