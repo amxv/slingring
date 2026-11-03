@@ -213,6 +213,69 @@ test('upload progress is awaited without confusing it with a generating response
   assert.equal((await pending).ok,true);assert.equal(p.clicks,1);p.close();
 });
 
+test('an uploaded card with both thumbnail and remove control counts as one image',async()=>{
+  const p=page();p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove</button></div>');
+  assert.equal(p.api.attachmentCount(),1);assert.equal((await p.submit()).ok,true);assert.equal(p.clicks,1);p.close();
+});
+
+test('extra or ambiguous attachments cannot be sent with an expected single image',async()=>{
+  for(const html of [
+    '<button aria-label="Remove expected photo">Remove</button><button aria-label="Remove user file">Remove</button>',
+    '<div data-testid="file-thumbnail"></div><button aria-label="Remove user file">Remove</button>',
+    '<div class="file-card"><div data-testid="file-thumbnail"></div><button aria-label="Remove photo">Remove</button></div>',
+    '<div class="attachments-strip"><div data-testid="file-thumbnail"></div><div class="user-file"><button aria-label="Remove user file">Remove</button></div></div>',
+    '<div class="ambiguous-card"><div data-testid="file-thumbnail"></div><button aria-label="Remove photo">Remove</button><button aria-label="Remove another file">Remove</button></div>']) {
+    const p=page();p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+    assert.equal((await p.prepare({image_count:1})).ok,true);
+    p.d.querySelector('form').insertAdjacentHTML('beforeend',html);
+    assert.equal(p.api.attachmentsReady(1),false);
+    if(html.includes('file-thumbnail'))assert.equal(p.api.attachmentsReady(2),false,'ambiguous indicators cannot prove two files either');
+    assert.equal((await p.submit()).code,'images_not_ready');assert.equal(p.clicks,0);
+    assert.equal(p.events.some(e=>e.event==='will_submit'),false);p.close();
+  }
+});
+
+test('a user attachment appearing during native authorization is preserved and prevents Send',async()=>{
+  const p=page({onAck:({d})=>d.querySelector('form').insertAdjacentHTML('beforeend','<button aria-label="Remove user file">Remove</button>')});
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove</button></div>');
+  assert.equal((await p.submit()).code,'attachments_changed');assert.equal(p.clicks,0);
+  assert(p.d.querySelector('[aria-label="Remove user file"]'));p.close();
+});
+
+test('same-count attachment replacement during native authorization also prevents Send',async()=>{
+  const p=page({onAck:({d})=>{
+    d.querySelector('[data-testid="file-thumbnail"]').remove();
+    d.querySelector('form').insertAdjacentHTML('beforeend','<button aria-label="Remove user replacement">Remove</button>');
+  }});
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove</button></div>');
+  assert.equal((await p.submit()).code,'attachments_changed');assert.equal(p.clicks,0);
+  assert(p.d.querySelector('[aria-label="Remove user replacement"]'));p.close();
+});
+
+test('an attachment changed in place during authorization cannot bypass DOM identity checks',async()=>{
+  const p=page({onAck:({d})=>d.querySelector('[data-testid="file-thumbnail"] img').setAttribute('src','blob:user-replacement')});
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><img src="blob:expected"><button aria-label="Remove photo">Remove</button></div>');
+  assert.equal((await p.submit()).code,'attachments_changed');assert.equal(p.clicks,0);p.close();
+});
+
+test('replacing a contained attachment control during authorization also prevents Send',async()=>{
+  const p=page({onAck:({d})=>{
+    const button=d.querySelector('[data-testid="file-thumbnail"] button');button.replaceWith(button.cloneNode(true));
+  }});
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove</button></div>');
+  assert.equal((await p.submit()).code,'attachments_changed');assert.equal(p.clicks,0);p.close();
+});
+
 test('paragraph rehydration retains exact multiline prompt while real edits abort untouched',async()=>{
   const multiline='Line one\nLine two';
   const p=page({modernEditor:true,onSend:({d,appendUser,appendThinking})=>{

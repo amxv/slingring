@@ -18,7 +18,8 @@
     if (!dom.composer()) throw Error('composer_unavailable');
     if (!dom.followupIdle(allowUpload)) throw Error('conversation_busy');
     if (!task.image_count && !dom.noAttachments()) throw Error('attachments_present');
-    if (checkUploaded && !dom.attachmentsReady(task.image_count)) throw Error('attachments_changed');
+    if (checkUploaded && (!dom.attachmentsReady(task.image_count) ||
+        (task.image_count && !dom.attachmentsUnchanged(task.attachments)))) throw Error('attachments_changed');
     if (task.target && task.effort!==dom.currentEffort()) throw Error('effort_changed');
   }
   async function handle(message) {
@@ -94,11 +95,15 @@
       guardTarget(task.target);
       guardPrepared(false,task.image_count>0);
       progress(task.id,'attachment_wait');
+      let attachments=null;
       await dom.waitFor(()=>{
         guardTarget(task.target);guardPrepared(false,task.image_count>0);
         const state=dom.promptState(task.prompt);if(state!=='matches')throw Error(state);
-        return dom.attachmentsReady(task.image_count);
+        if(!dom.attachmentsReady(task.image_count))return false;
+        attachments=task.image_count ? dom.watchAttachments() : null;
+        return !task.image_count || !!attachments;
       },Math.max(1,Math.min(45000,task.deadline-Date.now()-5000)),"images_not_ready");
+      task.attachments=attachments;
       guardPrepared(true);
       await dom.waitFor(dom.sendButton,15000,"send_button_unavailable");
       guardTarget(task.target);
@@ -140,7 +145,7 @@
   chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     if (!trusted(sender) || message?.kind!=="slingring") return false;
     handle(message).then(reply).catch(error=>reply({ok:false,code:/^[a-z_]+$/.test(error.message)?error.message:"extension_failed",
-      submitted,url:dom.canonicalUrl()}));
+      submitted,url:dom.canonicalUrl()})).finally(()=>{if(message.action==='submit')dom.releaseAttachments?.(task?.attachments);});
     return true;
   });
   chrome.runtime.sendMessage({kind:"slingring",event:"ready"}).catch(()=>{});

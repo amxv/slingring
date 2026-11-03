@@ -279,13 +279,47 @@
     input.setAttribute('data-slingring-upload',marker);
     return `input[type="file"][data-slingring-upload="${marker}"]`;
   }
+  function attachmentItems(root=composerRoot()) {
+    if(!root)return null;
+    const allThumbnails=[...root.querySelectorAll('[data-testid="file-thumbnail"]')].filter(visible);
+    const thumbnails=allThumbnails.filter(e=>!allThumbnails.some(parent=>parent!==e && parent.contains(e)));
+    const removals=[...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"]')].filter(visible);
+    const matched=new Set(),items=[...thumbnails];
+    for(const button of removals) {
+      const thumbnail=thumbnails.find(e=>e.contains(button));
+      if(thumbnail && removals.filter(e=>thumbnail.contains(e)).length!==1)return null;
+      // Only the known thumbnail marker establishes one logical card. Generic
+      // siblings/ancestors may combine different files and cannot be paired.
+      // Mixed unpaired indicators cannot prove any exact cardinality.
+      if(!thumbnail && thumbnails.length)return null;
+      if(thumbnail) {
+        if(matched.has(thumbnail))return null;
+        matched.add(thumbnail);
+      } else items.push(button);
+    }
+    return items;
+  }
+  function attachmentCount(root=composerRoot()) { return attachmentItems(root)?.length ?? null; }
+  function watchAttachments() {
+    const items=attachmentItems();if(!items)return null;
+    const snapshot={items,changed:false,observer:null};
+    snapshot.observer=new MutationObserver(()=>{snapshot.changed=true;});
+    for(const item of items)snapshot.observer.observe(item,{subtree:true,childList:true,characterData:true,attributes:true});
+    return snapshot;
+  }
+  function attachmentsUnchanged(previous) {
+    const current=attachmentItems();
+    if(previous?.observer.takeRecords().length)previous.changed=true;
+    return previous && !previous.changed && current && current.length===previous.items.length &&
+      previous.items.every((element,index)=>element.isConnected && current[index]===element);
+  }
+  function releaseAttachments(snapshot) { snapshot?.observer.disconnect(); }
   function attachmentsReady(count) {
     if (!count) return true;
-    const input = composer(); const root = input?.closest("form") || input?.closest("main");
+    const root=composerRoot();
     if (!root) return false;
-    const previews = [...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"],[data-testid="file-thumbnail"]')].filter(visible);
     const busy = [...root.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(visible);
-    return previews.length >= count && !busy && !!sendButton();
+    return attachmentCount(root) === count && !busy && !!sendButton();
   }
   function canonicalUrl() {
     return location.origin === "https://chatgpt.com" && /^\/c\/[a-zA-Z0-9-]{1,128}$/.test(location.pathname)
@@ -364,6 +398,6 @@
     return null; // A stop control, loading dot, or empty assistant node is not evidence.
   }
   globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
-    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentsReady,canonicalUrl,startEvidence,
+    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
     followupReady,followupIdle,noAttachments,turnBaseline};
 })();
