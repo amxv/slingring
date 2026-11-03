@@ -88,7 +88,8 @@ impl Job {
         serde_json::json!({"id":self.id,"status":self.status,"created_at":self.created_at,
             "finished_at":self.finished_at,"result":self.result,"error":self.error,"url":self.url,
             "phase":self.phase,"phase_at":self.phase_at,
-            "elapsed_ms":self.finished_at.unwrap_or_else(now).saturating_sub(self.created_at)})
+            "elapsed_ms":self.finished_at.map(|finished| finished.saturating_sub(self.created_at))
+                .or_else(|| self.active().then(|| now().saturating_sub(self.created_at)))})
     }
     fn outcome(&self) -> Result<TaskResult> {
         self.result.clone().ok_or_else(|| {
@@ -248,7 +249,13 @@ pub fn recovery_records(root: &Path) -> Result<VecDeque<Job>> {
     // queued row between a negative liveness check and the journal read.
     if !owner_running(root)? {
         for job in &mut jobs {
+            let was_active = job.active();
             interrupt(job);
+            // A read-only observer knows the owner is gone, not when it died.
+            // Do not synthesize a moving finish time or elapsed duration.
+            if was_active {
+                job.finished_at = None;
+            }
         }
     }
     Ok(jobs)

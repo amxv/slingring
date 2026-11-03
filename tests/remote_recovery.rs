@@ -322,6 +322,12 @@ async fn crashed_owner_is_classified_without_restarting_or_mutating_history() ->
         read_status(dir.path(), "interrupted-queue")["result"]["structuredContent"]["outcome"],
         "not_submitted"
     );
+    for request_id in ["interrupted-start", "interrupted-queue"] {
+        let job = read_status(dir.path(), request_id)["result"]["structuredContent"]["job"].clone();
+        assert!(job["finished_at"].is_null());
+        assert!(job["elapsed_ms"].is_null());
+        assert!(job["created_at"].as_u64().is_some());
+    }
     assert_eq!(std::fs::read(dir.path().join("journal.json"))?, before);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
     assert!(!dir.path().join("slingring.sock").exists());
