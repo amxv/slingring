@@ -104,6 +104,14 @@ fn effort_aliases_and_blank_default_are_explicit() {
             .is_none()
     );
 }
+
+#[test]
+fn outbound_tls_has_an_explicit_crypto_provider() {
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(rustls::RootCertStore::empty())
+        .with_no_client_auth();
+    assert!(!config.crypto_provider().cipher_suites.is_empty());
+}
 #[test]
 fn remote_schema_and_validation_do_not_accept_files_or_unknown_fields() {
     let tool = slingring::mcp::tool();
@@ -249,6 +257,13 @@ async fn abandoned_queued_calls_never_launch() -> Result<()> {
     })
     .await?;
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !queue.quiet() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(backend.closes.load(Ordering::SeqCst), 1);
     stop.send(true)?;
     worker.await??;
     Ok(())

@@ -58,19 +58,22 @@
     });
   }
   async function ensureChat() {
-    await waitFor(() => {
-      const m = modes();
-      return (m.chat && m.work && !m.ambiguous) || chatVerified();
-    }, 45000, "chat_mode_unverified");
-    if (!chatVerified()) {
-      const chat = await waitFor(() => {
-        const button = modes().chat;
-        return button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? button : null;
-      },30000,"chat_mode_unavailable");
-      chat.click();
+    for (let attempt=0; attempt<3; attempt++) {
+      const state = await waitFor(() => {
+        if (chatVerified()) return {ready:true};
+        const m=modes();
+        return m.chat && m.work && !m.ambiguous && !m.chat.disabled && m.chat.getAttribute('aria-disabled')!=='true'
+          ? {button:m.chat} : null;
+      }, 45000, "chat_mode_unverified");
+      if (state.button?.isConnected) state.button.click();
+      await waitFor(chatVerified,15000,"chat_mode_unverified");
+      await waitFor(composer,30000,"composer_unavailable");
+      // Hydration can replace the first controls. This single active-job settle
+      // delay mirrors Auto-Send; there is no timer or polling between jobs.
+      await new Promise(resolve=>setTimeout(resolve,500));
+      if (chatVerified()) return;
     }
-    await waitFor(chatVerified, 15000, "chat_mode_unverified");
-    await waitFor(composer, 30000, "composer_unavailable");
+    throw Error("chat_mode_unverified");
   }
   function modelButton() {
     return [...document.querySelectorAll('button[aria-label="Select ChatGPT model"],button[data-testid="model-switcher-dropdown-button"]')].find(visible);
@@ -162,7 +165,7 @@
   }
   function sendButton() {
     const input = composer(); if (!input) return null;
-    const root = input.closest("form") || document.querySelector("main") || document;
+    const root = input.closest("form") || input.closest("main") || document;
     return [...root.querySelectorAll('button[data-testid="send-button"],button[data-testid="composer-submit-button"],button[aria-label="Send"],button[aria-label="Send prompt"],button[aria-label="Send message"]')]
       .find(e=>visible(e) && !e.disabled && e.getAttribute("aria-disabled") !== "true");
   }
@@ -184,7 +187,7 @@
   }
   function attachmentsReady(count) {
     if (!count) return true;
-    const input = composer(); const root = input?.closest("form") || document.querySelector("main");
+    const input = composer(); const root = input?.closest("form") || input?.closest("main");
     if (!root) return false;
     const previews = [...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"],[data-testid="file-thumbnail"]')].filter(visible);
     const busy = [...root.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(visible);
@@ -201,13 +204,15 @@
     return normal(clone.textContent || (element.tagName==='BUTTON' ? element.getAttribute('aria-label') : ''));
   }
   function startEvidence(expectedPrompt) {
-    const user = [...document.querySelectorAll('[data-message-author-role="user"],[data-user-message-bubble="true"]')]
+    const user = [...document.querySelectorAll('[data-message-author-role="user"],[data-user-message-bubble]')]
       .find(e=>visible(e) && (!expectedPrompt || normal(e.textContent)===normal(expectedPrompt)));
     if (!user || !canonicalUrl()) return null;
     // ChatGPT can retain a home view beside its live thread. Anchor observation
     // to this task's user bubble rather than the first <main> on the page.
     const main = user.closest('[data-thread-user-message-navigation-content]') || user.closest('main,[role="main"]');
     if (!main) return null;
+    const outsideUser=e=>!e.closest('[data-user-message-bubble],[data-message-author-role="user"],form,nav,header,[data-composer-body]');
+    const meaningful=e=>visible(e) && outsideUser(e) && /[^\s.…·●•○◌]/u.test(e.textContent || '');
     const alerts = [...main.querySelectorAll('[role="alert"]')].filter(visible);
     if (alerts.some(e=>/something went wrong|usage limit|network error|try again/i.test(e.textContent))) throw Error("generation_error");
     const assistant = [...main.querySelectorAll('[data-message-author-role="assistant"],article[data-turn="assistant"]'),
@@ -219,8 +224,16 @@
       if (status.some(t=>/^(Working|Analyzing|Searching|Reading|Running|Browsing)(\.{0,3}|…| for .*)?$/i.test(t) && t.length<120)) return "working";
       // Test for presence only. Never return, log, or serialize generated text.
       if ([...area.querySelectorAll('.markdown,.prose,[data-message-content],[data-markdown-text-style="assistant-message"]')]
-        .some(e=>!e.closest('[data-user-message-bubble],[data-message-author-role="user"]') &&
-          /[^\s.…·●•]/u.test(e.textContent || ""))) return "streaming";
+        .some(meaningful)) return "streaming";
+    }
+    if(main.matches('[data-thread-user-message-navigation-content]')) {
+      for(const control of main.querySelectorAll('span,div')) {
+        if(!outsideUser(control) || control.childElementCount > 1 || control.querySelector('[data-user-message-bubble]'))continue;
+        const label=activityLabel(control);
+        if(/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for [0-9a-z ]+)?$/i.test(label))return 'thinking';
+        if(/^(Working|Analyzing|Searching|Reading|Running|Browsing)(\.{0,3}|…| for [0-9a-z ]+)?$/i.test(label))return 'working';
+      }
+      if([...main.querySelectorAll('[data-markdown-text-style]')].some(meaningful))return 'streaming';
     }
     // Some Chat layouts render the thinking control alongside, not inside, the
     // assistant message. Exclude the composer, user messages and navigation.

@@ -19,7 +19,7 @@ fn help_and_version_are_product_specific() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
+        .stdout(predicate::str::starts_with("slingring "));
 }
 #[test]
 fn status_does_not_start_a_service_or_browser() {

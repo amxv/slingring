@@ -250,9 +250,16 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
         + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
     let extension = native::assets(&root)?;
-    agent(config, &["open", "about:blank"])
-        .await
-        .map_err(|_| failure("browser_start_failed", false, None))?;
+    if agent(config, &["open", "about:blank"]).await.is_err() {
+        // This is strictly before extension installation and before ChatGPT is
+        // opened. A stale runner/socket may be recreated once without any risk
+        // of replaying a prompt. No submission or UI action is retried here.
+        trace("retry_blank_browser_launch");
+        let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
+        agent(config, &["open", "about:blank"])
+            .await
+            .map_err(|_| failure("browser_start_failed", false, None))?;
+    }
     let endpoint = agent(config, &["get", "cdp-url"])
         .await
         .map_err(|_| failure("browser_endpoint_unavailable", false, None))?;

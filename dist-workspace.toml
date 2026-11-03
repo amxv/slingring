@@ -8,9 +8,13 @@ installers = ["shell"]
 publish-jobs = []
 post-announce-jobs = ["./publish-menubar"]
 github-custom-job-permissions = { "publish-menubar" = { contents = "write" } }
-install-path = "CARGO_HOME"
-github-attestations = true
+install-path = "~/.local/bin"
+github-attestations = false
 targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
 ]
+
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"

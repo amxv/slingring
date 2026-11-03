@@ -20,13 +20,13 @@ jobs:
         include:
           - arch: arm64
             triple: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
           - arch: amd64
             triple: x86_64-apple-darwin
             runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Install pinned Rust toolchain and native target

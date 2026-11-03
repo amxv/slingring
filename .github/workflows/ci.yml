@@ -44,7 +44,7 @@ concurrency:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -66,3 +66,28 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      - name: Build the native menu bar companion
+        run: |
+          cargo build --locked
+          mkdir -p tmp/ci
+          cp target/debug/slingring tmp/ci/slingring
+          bash apps/menubar/build.sh "$PWD/tmp/ci/Slingring.app" arm64 0.1.0
+          tmp/ci/Slingring.app/Contents/MacOS/slingring-menubar --check
+
+  web-components:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Extension checks and behavior tests
+        working-directory: extension
+        run: bun install --frozen-lockfile && bun run check && bun run test
+      - name: Relay type checking and transport tests
+        working-directory: relay
+        run: bun install --frozen-lockfile && bun run check && bun run test && bun run dry-run

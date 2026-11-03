@@ -22,3 +22,9 @@ __pycache__/
 .DS_Store
 
 tmp/
+
+# Companion extension and relay tooling
+/extension/node_modules/
+/relay/node_modules/
+/relay/dist/
+/relay/.wrangler/
