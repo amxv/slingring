@@ -159,6 +159,9 @@ export class Relay {
   }
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
     if (socket !== this.socket()) { socket.close(1008, 'Unknown device'); return; }
+    // The hibernation runtime normally handles this without executing JS.
+    // Retain a safe fallback for development runtimes and active-object delivery.
+    if (message === 'ping') { socket.send('pong'); return; }
     if (typeof message !== 'string' || encoder.encode(message).length > MAX_BYTES) {
       this.lost(socket); socket.close(1009, 'Invalid frame'); return;
     }

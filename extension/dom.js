@@ -211,8 +211,8 @@
       for (const control of modern.querySelectorAll('button,[role="status"],[aria-live],span,div')) {
         if (!visible(control) || !outsideUser(control) || control.querySelector('[data-user-message-bubble],[data-message-author-role="user"]')) continue;
         const label = normal(control.getAttribute('aria-label') || control.textContent);
-        if (/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for [0-9a-z ]+)?$/i.test(label)) return "thinking";
-        if (/^(Working|Analyzing|Searching|Reading|Running|Browsing)(\.{0,3}|…| for [0-9a-z ]+)?$/i.test(label)) return "working";
+        if (label.length < 120 && /^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(label)) return "thinking";
+        if (label.length < 120 && /^(Working|Analyzing|Searching|Reading|Running|Browsing)(?:\b|…)/i.test(label)) return "working";
       }
       if ([...modern.querySelectorAll('[data-markdown-text-style]')]
         .some(e => outsideUser(e) && visible(e) && meaningful(e))) return "streaming";

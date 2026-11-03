@@ -91,7 +91,15 @@ async fn connection(
                     }
                     Some(Message::Ping(v)) => sink.send(Message::Pong(v)).await?,
                     Some(Message::Pong(_)) => {},
-                    Some(Message::Close(_)) | None => break,
+                    Some(Message::Close(frame)) => {
+                        if let Some(frame) = frame {
+                            // Record only the numeric code, never URLs, credentials,
+                            // prompts, or a server-supplied close reason.
+                            eprintln!("relay closed (code {}); reconnecting",u16::from(frame.code));
+                        }
+                        break;
+                    }
+                    None => break,
                     _ => anyhow::bail!("unsupported relay message"),
                 }
             }

@@ -26,6 +26,11 @@ test('new Chat layout reports thinking only outside the user bubble',()=>{
   p.document.querySelector('[data-user-message-bubble]').innerHTML='<span>Thinking</span>';
   assert.equal(p.api.startEvidence(),null);p.close();
 });
+test('thinking and working labels may include meaningful progress detail',()=>{
+  for(const [label,kind] of [['Thinking deeply','thinking'],['Working on the problem','working'],['Searching the web','working']]) {
+    const p=page(modern(`<span>${label}</span>`));assert.equal(p.api.startEvidence(),kind);p.close();
+  }
+});
 test('new Chat assistant Markdown produces only a boolean classification, never its text',()=>{
   const p=page(modern('<div data-markdown-text-style>fixture response that must not escape</div>'));
   assert.equal(p.api.startEvidence(),'streaming');

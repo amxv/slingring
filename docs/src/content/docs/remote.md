@@ -12,6 +12,8 @@ The Mac opens one outbound TLS WebSocket to your Cloudflare Worker. A hibernatin
 
 The Mac must be awake, logged into its desktop session, and online. Sleeping, offline, or disconnected Macs return an error rather than retaining prompts for surprise execution later. No homebox, Redis, inbound firewall rule, or `cloudflared` process is required.
 
+Cloudflare's browser-integrity checks can reject legitimate non-browser API clients. Configure an exception **only for your relay hostname**, leaving website protection elsewhere unchanged. Slingring still requires its device/client credentials; this is not an unauthenticated endpoint. Avoid changing your user-agent to impersonate a browser merely to access your own API.
+
 ## Deploy a relay
 
 Deploy the repository's `relay/` directory to your own Cloudflare account and hostname. Set **different random secrets** for `DEVICE_TOKEN` and `CLIENT_TOKEN`. Change the account ID and custom domain in `wrangler.jsonc` for your installation. Observability is off so capability URLs and prompts are not written to Worker logs.
