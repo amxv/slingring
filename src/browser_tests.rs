@@ -204,10 +204,26 @@ fn both_browser_modes_require_matching_visibility_and_an_isolated_profile() {
 }
 
 #[tokio::test]
-async fn launcher_passes_persisted_headed_setting_without_custom_fingerprint_flags() {
+async fn launcher_passes_persisted_headed_setting_and_fixed_background_flags() {
     let directory = tempfile::tempdir().unwrap();
     let binary = directory.path().join("synthetic-browser");
-    std::fs::write(&binary, "#!/bin/sh\ncase \"$1\" in --headed) mode=headed;; *) mode=headless;; esac\nif [ \"${AGENT_BROWSER_HEADED+x}\" = x ]; then inherited=present; else inherited=absent; fi\npinned=false\nfor argument do\ncase \"$argument\" in --pin-tab) pinned=true;; --args|--user-agent|--executable-path) exit 9;; esac\ndone\nprintf '{\"success\":true,\"data\":{\"mode\":\"%s\",\"headed_env\":\"%s\",\"pinned\":%s}}' \"$mode\" \"$inherited\" \"$pinned\"\n").unwrap();
+    std::fs::write(&binary, r#"#!/bin/sh
+case "$1" in --headed) mode=headed;; *) mode=headless;; esac
+if [ "${AGENT_BROWSER_HEADED+x}" = x ]; then inherited=present; else inherited=absent; fi
+if [ "${AGENT_BROWSER_ARGS+x}" = x ]; then inherited=present; fi
+pinned=false
+webmcp=false
+features=false
+for argument do
+  case "$argument" in
+    --pin-tab) pinned=true;;
+    --no-webmcp) webmcp=true;;
+    --disable-features=MediaRouter,--disable-default-apps) features=true;;
+    --user-agent|--executable-path) exit 9;;
+  esac
+done
+printf '{"success":true,"data":{"mode":"%s","headed_env":"%s","pinned":%s,"webmcp":%s,"features":%s}}' "$mode" "$inherited" "$pinned" "$webmcp" "$features"
+"#).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     for headed in [false, true] {
         let config = Config {
@@ -219,6 +235,8 @@ async fn launcher_passes_persisted_headed_setting_without_custom_fingerprint_fla
         assert_eq!(result["mode"], if headed { "headed" } else { "headless" });
         assert_eq!(result["headed_env"], "absent");
         assert_eq!(result["pinned"], true);
+        assert_eq!(result["webmcp"], true);
+        assert_eq!(result["features"], true);
     }
 }
 

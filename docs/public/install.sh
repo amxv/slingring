@@ -15,7 +15,7 @@ case "$(uname -s)" in
 esac
 case "$(uname -m)" in
   arm64|aarch64) arch=arm64 ;;
-  x86_64|amd64) echo 'The included browser helper currently requires an Apple Silicon Mac.' >&2; exit 1 ;;
+  x86_64|amd64) echo 'Slingring supports Apple Silicon Macs only.' >&2; exit 1 ;;
   *) echo 'Unsupported CPU architecture' >&2; exit 1 ;;
 esac
 install_dir=${CLI_INSTALL_DIR:-"$HOME/.local/bin"}

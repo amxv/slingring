@@ -61,9 +61,14 @@
       if (target) {
         const available=Math.min(message.timeout_ms || 120000,deadline-Date.now()-5000);
         if (available<=0) throw Error('deadline_before_submission');
-        await dom.waitFor(()=>{guardTarget(target);return dom.composer();},Math.min(15000,available),'composer_unavailable');
+        await dom.waitFor(()=>{guardTarget(target);return dom.composer() || dom.conversationLoadFailure();},
+          Math.min(15000,available),'composer_unavailable');
+        if(!dom.composer())
+          await dom.ensureConversationLoaded(Math.min(deadline-5000,Date.now()+Math.min(30000,available)));
+        guardTarget(target);
         await dom.waitFor(()=>{
           guardTarget(target);
+          if(dom.conversationLoadFailure())throw Error('conversation_load_failed');
           // Exact URL, known Chat composer, an idle voice control, and no stop
           // signal establish readiness. Never visit home or toggle Chat/Work.
           return dom.followupReady();
@@ -123,7 +128,9 @@
       const state=dom.promptState(task.prompt);if(state!=='matches')throw Error(state);
       if (task.deadline-Date.now()<5000) throw Error("deadline_before_submission");
       progress(task.id,'send_ready');
-      const ack=await chrome.runtime.sendMessage({kind:"slingring",event:"will_submit",id:task.id});
+      const baseline=dom.turnBaseline();
+      const ack=await chrome.runtime.sendMessage({kind:"slingring",event:"will_submit",
+        id:task.id,previous_count:baseline.count});
       if (ack?.ok!==true) throw Error("submission_not_authorized");
       // React may replace the composer/send control while the native round trip
       // is pending. Re-query after the acknowledgement, never click a detached
@@ -135,7 +142,10 @@
       if (task.deadline-Date.now()<5000) throw Error('deadline_before_submission');
       if (!button?.isConnected || !input?.isConnected || (!task.target && !dom.chatVerified()) || button.disabled ||
           !dom.promptEquals(input,task.prompt)) throw Error("page_changed_before_send");
-      const baseline=dom.turnBaseline();
+      const current=dom.turnBaseline();
+      if (current.count!==baseline.count ||
+          baseline.users.some((user,index)=>current.users[index]!==user))
+        throw Error('page_changed_before_send');
       submitted=true;
       button.click();
       progress(task.id,'activity_wait');
@@ -144,10 +154,31 @@
         if(task.target)guardTarget(task.target);
         const url=dom.canonicalUrl();
         if(url && !reported){reported=true;chrome.runtime.sendMessage({kind:"slingring",event:"conversation",id:task.id,url}).catch(()=>{});}
-        return dom.startEvidence(task.prompt,baseline);
-      },Math.max(1,Math.min(task.timeout,task.deadline-Date.now()-2000)),"generation_not_started");
+        const started=dom.startEvidence(task.prompt,baseline);
+        if(started)return started;
+        if(dom.messageSendError())throw Error('message_send_error');
+        return null;
+      // A missed signal must not hold the caller for the entire multi-minute
+      // startup budget. Reserve time for a single read-only post-refresh check.
+      },Math.max(1,Math.min(task.timeout,20000,task.deadline-Date.now()-17000)),
+        "generation_not_started",75);
       if(task.target)guardTarget(task.target);
       return {ok:true,url:dom.canonicalUrl(),evidence,effort:task.effort,submitted:true};
+    }
+    if (message.action === "recover") {
+      // Only used by the already-authorized bridge AFTER a refresh. It never
+      // fills, clicks Send, touches Retry, or changes reasoning settings.
+      if (task || preparing || submitted || !canonical(message.chatgpt_url)) throw Error('invalid_recovery_state');
+      if (!Number.isInteger(message.previous_count) || message.previous_count<0 ||
+          message.previous_count>10000 || typeof message.prompt!=='string') throw Error('invalid_recovery_state');
+      submitted=true;
+      const deadline=message.deadline_ms || Date.now()+12000;
+      const duration=Math.max(1,Math.min(12000,deadline-Date.now()-1000));
+      const evidence=await dom.waitFor(()=>{
+        if(location.href!==message.chatgpt_url)throw Error('conversation_changed');
+        return dom.recoveredEvidence(message.prompt,message.previous_count);
+      },duration,'recovery_unverified',75);
+      return {ok:true,url:message.chatgpt_url,evidence,effort:message.effort??null,submitted:true};
     }
     throw Error("unknown_action");
   }

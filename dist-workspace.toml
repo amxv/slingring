@@ -12,9 +12,7 @@ install-path = "~/.local/bin"
 github-attestations = false
 targets = [
   "aarch64-apple-darwin",
-  "x86_64-apple-darwin",
 ]
 
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
-x86_64-apple-darwin = "macos-15-intel"

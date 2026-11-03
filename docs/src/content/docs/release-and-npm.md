@@ -7,7 +7,7 @@ category: Reference
 
 ## Supported setup
 
-The complete one-command installation currently supports Apple Silicon macOS. Intel CLI archives may exist, but the published browsing fork is ARM64-only; do not assume an Intel archive provides a working browser dependency. Google Chrome must be installed and the chosen profile signed into ChatGPT.
+The release supports **Apple Silicon macOS only**. Neither Intel CLI nor menu bar archives are produced. Google Chrome must be installed and the chosen profile signed into ChatGPT.
 
 The installer downloads the paired Rust CLI and Swift app, verifies their checksum and signature, and invokes the embedded browser installer before replacing a working installation. The helper is pinned to `agent-browser-browse` 0.41.1 and verified by release checksum, architecture, signature, and reported version. It lives under `~/.config/slingring/browser`, separate from any globally installed agent-browser.
 

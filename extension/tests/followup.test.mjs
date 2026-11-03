@@ -394,6 +394,27 @@ test('old answers and old thinking for an identical prompt cannot confirm the fo
   const q=page({oldPrompt:prompt});assert.equal((await q.prepare()).ok,true);
   assert.equal((await q.submit()).evidence,'thinking');assert.equal(q.clicks,1);q.close();
 });
+test('a red send error is uncertain, never clicks Retry, and never clicks Send twice',async()=>{
+  const p=page({onSend:({d,appendUser})=>{
+    appendUser(prompt);
+    d.querySelector('textarea').value='';
+    const alert=d.createElement('div');alert.setAttribute('role','alert');
+    alert.innerHTML='<span>Message could not be sent</span><button id="retry-message">Retry</button>';
+    d.querySelector('form').before(alert);
+    alert.querySelector('#retry-message').addEventListener('click',()=>assert.fail('message Retry must never run'));
+  }});
+  assert.equal((await p.prepare()).ok,true);
+  const result=await p.submit();
+  assert.equal(p.d.querySelectorAll('[role="alert"]').length,1);
+  assert.equal(p.d.querySelector('[role="alert"]').textContent,'Message could not be sentRetry');
+  assert.equal(p.d.querySelector('[role="alert"]').closest('[data-message-author-role]'),null);
+  assert.equal(p.api.visible(p.d.querySelector('[role="alert"]')),true);
+  assert.equal(p.api.messageSendError(),true);
+  assert.equal(result.code,'message_send_error');
+  assert.equal(result.submitted,true);assert.equal(p.clicks,1);
+  assert.equal(p.events.filter(e=>e.event==='will_submit').length,1);
+  p.close();
+});
 
 test('a rerender of the old transcript does not count as a new turn',async()=>{
   const p=page({oldPrompt:prompt,onSend:({d})=>{
@@ -450,4 +471,14 @@ test('modern thread containers and hidden pre-submit views retain turn-local evi
     <div data-user-message-bubble>${prompt}</div><span>Searching the web</span></div>`);
   p.d.body.insertAdjacentHTML('afterbegin','<main hidden><div data-message-author-role="user">Hidden old user</div><div class="markdown">Hidden old answer</div></main>');
   assert.equal(p.api.startEvidence(prompt,baseline),'working');p.close();
+});
+test('a user-only navigation wrapper cannot hide a sibling assistant start',()=>{
+  const p=page(),baseline=p.api.turnBaseline();
+  p.d.querySelector('form').insertAdjacentHTML('beforebegin',`
+    <div data-thread-user-message-navigation-content>
+      <div data-user-message-bubble>${prompt}</div>
+    </div>
+    <div data-message-author-role="assistant"><span role="status">Thinking</span></div>`);
+  assert.equal(p.api.startEvidence(prompt,baseline),'thinking');
+  p.close();
 });

@@ -28,6 +28,43 @@ test('editor serialization preserves paragraph and explicit break semantics with
   input.textContent='A  B';assert.equal(p.api.promptEquals(input,'A B'),false);
   input.textContent=' A ';assert.equal(p.api.promptEquals(input,'A'),false);p.close();
 });
+test('exact failed-conversation loader retries its Try again control, never a message Retry',async()=>{
+  const p=page('<h2>Could not load this ChatGPT conversation</h2><button id="load-retry">Try again</button>');
+  let clicks=0;
+  p.document.querySelector('#load-retry').addEventListener('click',()=>{
+    clicks++;
+    p.document.querySelector('main').innerHTML='<div contenteditable="true" aria-label="Ask ChatGPT"></div>';
+  });
+  assert(p.api.conversationLoadFailure()?.button);
+  await p.api.ensureConversationLoaded(Date.now()+2000);
+  assert.equal(clicks,1);assert(p.api.composer());p.close();
+});
+test('an unresponsive load error has a finite retry budget and returns a specific code',async()=>{
+  const p=page('<h2>Could not load this ChatGPT conversation</h2><button id="load-retry">Try again</button>');
+  let clicks=0;p.document.querySelector('#load-retry').addEventListener('click',()=>clicks++);
+  await assert.rejects(p.api.ensureConversationLoaded(Date.now()+2500),/conversation_load_failed/);
+  assert.equal(clicks,2);p.close();
+});
+test('quoted errors, missing retry controls, and unrelated buttons are not load recovery',()=>{
+  const quoted=page('<div data-message-author-role="user">Could not load this ChatGPT conversation</div><button>Try again</button>');
+  assert.equal(quoted.api.conversationLoadFailure(),null);quoted.close();
+  const missing=page('<h2>Could not load this ChatGPT conversation</h2><button>Retry message</button>');
+  assert.equal(missing.api.conversationLoadFailure()?.button,null);missing.close();
+});
+test('read-only refreshed transcript requires one exact new turn AND new assistant activity',()=>{
+  const p=page('<div data-message-author-role="user">Previous message</div><textarea id="prompt-textarea"></textarea>');
+  const oldCount=p.api.turnBaseline().count;
+  const user=p.document.createElement('div');user.setAttribute('data-message-author-role','user');
+  user.textContent='New prompt';p.document.querySelector('textarea').before(user);
+  assert.equal(p.api.recoveredEvidence('New prompt',oldCount),null);
+  const assistant=p.document.createElement('div');assistant.setAttribute('data-message-author-role','assistant');
+  assistant.innerHTML='<button>Thinking</button>';p.document.querySelector('textarea').before(assistant);
+  assert.equal(p.api.recoveredEvidence('Wrong prompt',oldCount),null);
+  assert.equal(p.api.recoveredEvidence('New prompt',oldCount),'thinking');
+  p.document.querySelector('textarea').value='Unrelated draft';
+  assert.equal(p.api.recoveredEvidence('New prompt',oldCount),null);
+  p.close();
+});
 
 test('filling rejects an existing identical draft as well as different text',()=>{
   for(const existing of ['test prompt','different prompt','  ']) {

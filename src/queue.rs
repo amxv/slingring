@@ -155,6 +155,12 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         "composer_unavailable" => {
             "The conversation did not expose a usable composer. Check that the configured account can load the target chat, and use the recorded outcome to assess submission."
         }
+        "conversation_load_failed" => {
+            "The exact ChatGPT conversation-load error persisted after bounded page-load retries. No prompt was submitted. Check the target conversation in the selected account before a new request."
+        }
+        "message_send_error" | "recovery_unverified" => {
+            "The page reported a send problem, or a read-only refresh could not prove new activity. A send may still have reached ChatGPT. Inspect the exact conversation; never press Retry or automatically resubmit."
+        }
         _ => {
             "Use the recorded phase and outcome; inspect the Mac journal and conversation before choosing any further action."
         }

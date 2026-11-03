@@ -72,6 +72,8 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     // The persisted application setting owns visibility, not a daemon's
     // inherited shell environment. Fork defaults retain fingerprint settings.
     command.env_remove("AGENT_BROWSER_HEADED");
+    command.env_remove("AGENT_BROWSER_ARGS");
+    command.env_remove("AGENT_BROWSER_NO_WEBMCP");
     if config.browser_headed {
         command.arg("--headed");
     }
@@ -87,6 +89,15 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             // discovery of our extension-created tabs steals the active target
             // and a later open could race owned controller cleanup.
             "--pin-tab",
+            // Slingring never uses the fork's experimental WebMCP discovery.
+            // Keeping it enabled changes Chrome feature flags and adds work
+            // to an already heavy ChatGPT renderer.
+            "--no-webmcp",
+            // Do not discover LAN casting targets or install Chrome's default
+            // apps inside our isolated throwaway profile. CDP still uses the
+            // loopback endpoint; no LAN device access is required.
+            "--args",
+            "--disable-features=MediaRouter,--disable-default-apps",
             "--json",
         ])
         .args(args)
@@ -581,6 +592,7 @@ pub async fn run_with_progress(
                     Some("attachment_wait") => "attachment_wait",
                     Some("send_ready") => "send_ready",
                     Some("activity_wait") => "activity_wait",
+                    Some("submission_recovery") => "submission_recovery",
                     _ => return Err(failure("invalid_native_event", submitted, conversation_url)),
                 };
                 progress(stage);
