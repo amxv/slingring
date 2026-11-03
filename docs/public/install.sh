@@ -2,17 +2,16 @@
 # Installs the CLI; on macOS also installs and relaunches its signed Swift .app.
 # curl/tar creates no Finder quarantine metadata. This is NOT notarization.
 set -eu
-cli='__CLI__'
-binary='__BINARY__'
-app='__APP_NAME__.app'
-app_exec='__APP_EXEC__'
-repo='https://github.com/__OWNER__/__REPO__'
+cli='slingring'
+binary='slingring'
+app='Slingring.app'
+app_exec='slingring-menubar'
+repo='https://github.com/amxv/slingring'
 action=${1:-install}
 case "$action" in install|upgrade|--check) ;; *) echo "Usage: install.sh [upgrade|--check]" >&2; exit 2 ;; esac
 case "$(uname -s)" in
   Darwin) os=darwin; mac=1 ;;
-  Linux) os=linux; mac=0 ;;
-  *) echo 'On Windows use __SITE__/install.ps1' >&2; exit 1 ;;
+  *) echo 'Slingring currently supports macOS only.' >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   arm64|aarch64) arch=arm64 ;;
@@ -37,8 +36,12 @@ fi
 if [ "$action" = --check ]; then
   printf 'Installed: '
   if [ -x "$target" ]; then "$target" --version; else echo '(not installed)'; fi
-  curl --proto '=https' --tlsv1.2 -fsSIL --max-time 20 -o /dev/null \
-    -w 'Latest release: %{url_effective}\n' "$repo/releases/latest"
+  if command -v gh >/dev/null 2>&1 && GH_PROMPT_DISABLED=1 gh auth status >/dev/null 2>&1; then
+    gh release view --repo amxv/slingring --json tagName --jq '.tagName'
+  else
+    curl --proto '=https' --tlsv1.2 -fsSIL --max-time 20 -o /dev/null \
+      -w 'Latest release: %{url_effective}\n' "$repo/releases/latest"
+  fi
   exit 0
 fi
 
@@ -58,8 +61,8 @@ if [ "$mac" = 0 ]; then
   trap 'rm -rf "$stage"' EXIT HUP INT TERM
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
     "$base/$cli-installer.sh" -o "$stage/installer.sh"
-  __CLI_ENV___INSTALL_DIR="$install_dir"
-  export __CLI_ENV___INSTALL_DIR
+  SLINGRING_INSTALL_DIR="$install_dir"
+  export SLINGRING_INSTALL_DIR
   if ! command -v sha256sum >/dev/null 2>&1; then
     command -v shasum >/dev/null 2>&1 || { echo 'sha256sum or shasum is required' >&2; exit 1; }
     printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$stage/sha256sum"
@@ -76,14 +79,30 @@ done
 umask 077
 stage=$(mktemp -d "${TMPDIR:-/tmp}/$cli-install.XXXXXXXX")
 trap 'rm -rf "$stage"' EXIT HUP INT TERM
+download_asset() {
+  name=$1
+  destination=$2
+  if command -v gh >/dev/null 2>&1 && GH_PROMPT_DISABLED=1 gh auth status >/dev/null 2>&1; then
+    if [ -n "$version" ]; then
+      GH_PROMPT_DISABLED=1 gh release download "v$version" --repo amxv/slingring --pattern "$name" --output "$destination"
+    else
+      GH_PROMPT_DISABLED=1 gh release download --repo amxv/slingring --pattern "$name" --output "$destination"
+    fi
+  else
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$name" -o "$destination" || {
+      echo 'Private releases require an authenticated gh CLI with repository access.' >&2
+      return 1
+    }
+  fi
+}
 if [ "$mac" = 1 ]; then
   asset="${binary}_darwin_${arch}.tar.gz"
-  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$asset.sha256" -o "$stage/sums"
+  download_asset "$asset.sha256" "$stage/sums"
 else
   asset="${binary}_linux_${arch}"
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/SHA256SUMS" -o "$stage/sums"
 fi
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$asset" -o "$stage/$asset"
+download_asset "$asset" "$stage/$asset"
 if [ "$mac" = 1 ]; then
   expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
 else
@@ -100,6 +119,7 @@ fi
 if [ "$mac" = 1 ]; then
   mkdir "$stage/unpacked"
   tar -tzf "$stage/$asset" | while IFS= read -r entry; do
+    case "$entry" in /*|../*|*/../*|*/..) echo 'Unsafe archive path' >&2; exit 1 ;; esac
     case "$entry" in
       "$cli"|"$app"|"$app/"|"$app/"*|LICENSE) ;;
       *) echo "Unexpected or unsafe archive member: $entry" >&2; exit 1 ;;
@@ -177,7 +197,7 @@ fi
 rm -rf "$backup/old-app"
 rm -f "$backup/old-cli"
 printf 'Installed %s and %s at %s\n' "$cli" "$app" "$install_dir"
-if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$action" = install ] || [ "$was_running" = 1 ]; }; then
+if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$was_running" = 1 ] || [ "${CLI_LAUNCH_MENU_BAR:-0}" = 1 ]; }; then
   /usr/bin/open -n -g "$app_dest" --args --after-upgrade ||
     echo "Installed successfully, but could not launch $app; open it manually." >&2
 fi

@@ -1,0 +1,54 @@
+name: Relay and browser adapter
+
+on:
+  push:
+    branches: [main]
+    paths: ["relay/**", "extension/**", ".github/workflows/relay.yml"]
+  pull_request:
+    paths: ["relay/**", "extension/**", ".github/workflows/relay.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Install locked development dependencies
+        working-directory: relay
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        working-directory: relay
+        run: bun run check
+      - name: Test transport and DOM adapters
+        working-directory: relay
+        run: bun run test
+      - name: Validate Worker bundle
+        working-directory: relay
+        run: bun run dry-run
+  deploy:
+    if: github.event_name != 'pull_request' && vars.DEPLOY_RELAY == 'true'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+        working-directory: relay
+      - name: Deploy code, preserving provisioned Worker secrets
+        working-directory: relay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_TOKEN }}
+          WRANGLER_SEND_METRICS: "false"
+        run: bunx wrangler deploy

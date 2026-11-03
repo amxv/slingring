@@ -1,12 +1,11 @@
 // Bootstrap edits only this identity block; prose pages remain project-owned.
 const generatedIdentity = {
-  name: "mycli",
-  strapline: "A Rust CLI ready to ship",
-  description:
-    "Documentation for mycli, a Rust command-line starter with tests, dist-powered releases, npm installation, and an isolated docs site.",
-  repoUrl: "https://github.com/amxv/rust-cli-template",
-  footerText: "A Rust CLI with build, release, installer, and documentation plumbing ready from the first commit.",
-  distributionText: "GitHub Releases and npm packages are driven by dist."
+  "name": "slingring",
+  "strapline": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
+  "description": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
+  "repoUrl": "https://github.com/amxv/slingring",
+  "footerText": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
+  "distributionText": "GitHub Releases, install scripts, and checksums are generated without npm."
 } as const;
 
 export const siteConfig = {

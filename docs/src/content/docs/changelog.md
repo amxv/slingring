@@ -1,14 +1,11 @@
 ---
 title: Changelog
-description: Release notes for this CLI.
+description: Release status and user-visible changes.
 order: 99
 category: Distribution
-summary: User-facing release history.
+summary: Release status and user-visible changes.
 ---
 
-Keep the newest release first. Describe user-visible behavior and important installation or compatibility changes rather than copying raw commit subjects.
+## Unreleased
 
-## 0.1.0 - YYYY-MM-DD
-
-- Initial release.
-- Replace this placeholder with the first usable command set before tagging.
+Initial private implementation: local and remote task handoff, explicit reasoning modes, status metadata, and an optional native menu bar. No public release or anonymous installer availability is asserted. Published release notes will record validated behavior and compatibility changes.

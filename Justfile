@@ -4,15 +4,6 @@ set positional-arguments
 default:
     @just --list
 
-bootstrap *args:
-    python3 scripts/bootstrap.py "$@"
-
-bootstrap-clean:
-    python3 scripts/cleanup.py
-
-vercel-provision:
-    node scripts/provision-vercel.mjs
-
 fmt:
     cargo fmt --all
 
