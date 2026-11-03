@@ -47,12 +47,15 @@ After the one-time [remote setup](https://slingring.ashray.xyz/docs/remote), cop
 slingring remote url | pbcopy
 ```
 
-Add it to your assistant as a remote MCP server. URL-key connections use **No authentication** in the client because the private URL itself is the credential. Keep it secret. Two text-only tools are available:
+Add it to your assistant as a remote MCP server. URL-key connections use **No authentication** in the client because the private URL itself is the credential. Keep it secret. Three text-only tools are available:
 
-- `new_task(prompt, reasoning_effort?)` starts a conversation.
-- `send_message(chatgpt_url, message)` sends a follow-up to an existing `https://chatgpt.com/c/...` conversation and preserves its reasoning effort.
+- `new_task(prompt, reasoning_effort?, request_id?)` starts a conversation.
+- `send_message(chatgpt_url, message, request_id?)` follows up in an existing chat and preserves its reasoning effort.
+- `get_job_status(request_id)` reads the Mac's journal without submitting anything, including when an earlier MCP caller timed out.
 
-Follow-ups wait for the voice button and no stop control before filling the composer. They never interrupt a response. Use an exact conversation URL without a query or fragment; other routes are unsupported. Both tools are also available through local `slingring mcp`, implemented with the official Rust MCP SDK. Images are available for local `new-task` and `send-message` CLI commands only; remote and stdio MCP tool arguments remain text-only.
+For potentially slow requests, **choose and keep a unique `request_id` before calling**. If the client times out, query `get_job_status` rather than sending again. `submitted` means a confirmed start, `not_submitted` means a definite pre-submit failure, `in_progress` means the Mac is still working, and `uncertain` or `unknown` must never be blindly retried. See private `~/.config/slingring/events.log` for safe startup stage/timing diagnostics.
+
+Follow-ups wait for the voice button and no stop control before filling the composer. They never interrupt a response. Use an exact conversation URL without a query or fragment; other routes are unsupported. All three tools are also available through local `slingring mcp`, implemented with the official Rust MCP SDK. Images are available for local `new-task` and `send-message` CLI commands only; remote and stdio MCP tool arguments remain text-only.
 
 Remote access needs an awake, online Mac and your own Cloudflare relay. Local use needs neither a cloud service nor a background app. See [relay provisioning](https://slingring.ashray.xyz/docs/reference/relay) for that optional setup.
 
@@ -60,7 +63,7 @@ Remote access needs an awake, online Mac and your own Cloudflare relay. Local us
 
 Up to 32 requests share one serial queue. A follow-up waiting for a busy chat uses the existing startup timeout and can delay later tasks. The queue does not prevent a person or another client from writing to the same chat. The browser closes when the queue drains. Local-only mode leaves no Slingring process between tasks. Remote mode keeps one small push connection. The optional menu bar is a CLI wrapper, not another browser.
 
-If a submission is **uncertain**, inspect ChatGPT and `slingring jobs --json` before trying again. Slingring never automatically retries a possibly submitted prompt.
+If a submission is **uncertain**, inspect ChatGPT and `slingring jobs --request-id ID --json` before trying again. Slingring never automatically retries a possibly submitted prompt.
 
 ## Documentation
 

@@ -85,6 +85,18 @@ describe('HTTP framing', () => {
     expect(await reply.json()).toEqual(response);
     expect(reply.headers.get('Cache-Control')).toBe('no-store');
     expect(reply.headers.get('Content-Type')).toBe('application/json');
+    expect(reply.headers.get('X-Slingring-Request-Id')).toBe('one');
+  });
+  it('echoes a caller-chosen request ID for recovery and never changes the MCP payload', async () => {
+    const body = { jsonrpc: '2.0', id: 3, method: 'tools/call', params: {
+      name: 'new_task', arguments: { prompt: 'PRIVATE test prompt', request_id: 'chosen-36' } } };
+    const call = relay.fetch(req(body)); await sent();
+    expect(JSON.parse(socket.frames[0]).request).toEqual(body);
+    result({ jsonrpc: '2.0', id: 3, result: { content: [] } });
+    const response = await call;
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Slingring-Request-Id')).toBe('chosen-36');
+    expect(await response.json()).toEqual({ jsonrpc: '2.0', id: 3, result: { content: [] } });
   });
   it('acknowledges notifications only after daemon confirms delivery', async () => {
     const promise = relay.fetch(req({ jsonrpc: '2.0', method: 'notifications/initialized' }));
@@ -123,6 +135,20 @@ describe('HTTP framing', () => {
   });
 });
 describe('pending lifecycle', () => {
+  it('can relay a fast read-only status request while an earlier write is still pending', async () => {
+    const first = relay.fetch(req({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'new_task',arguments:{prompt:'test',request_id:'long-request'}}}));
+    await sent();
+    const firstFrame = JSON.parse(socket.frames[0]);
+    const lookup = relay.fetch(req({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'get_job_status',arguments:{request_id:'long-request'}}}));
+    await sent(2);
+    const lookupFrame = JSON.parse(socket.frames[1]);
+    expect(lookupFrame.request.params.name).toBe('get_job_status');
+    relay.webSocketMessage(socket as any, JSON.stringify({type:'rpc_result',id:lookupFrame.id,response:{jsonrpc:'2.0',id:2,result:{structuredContent:{outcome:'in_progress'}}}}));
+    expect((await (await lookup).json() as any).result.structuredContent.outcome).toBe('in_progress');
+    relay.webSocketMessage(socket as any, JSON.stringify({type:'rpc_result',id:firstFrame.id,response:{jsonrpc:'2.0',id:1,result:{structuredContent:{job_id:'long-request'}}}}));
+    expect((await first).status).toBe(200);
+    expect(socket.frames).toHaveLength(2);
+  });
   it('accepts a heartbeat fallback without disturbing pending requests', async () => {
     const call=relay.fetch(req());await sent();
     const frame=JSON.parse(socket.frames[0]);
@@ -150,6 +176,21 @@ describe('pending lifecycle', () => {
     await sent();
     await vi.advanceTimersByTimeAsync(WAIT_MS);
     expect((await next).status).toBe(504); expect(socket.frames).toHaveLength(1);
+  });
+  it('returns a recovery receipt on relay deadline, never inferring that the Mac did not submit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const body = { jsonrpc: '2.0', id: 7, method: 'tools/call', params: {
+      name: 'send_message', arguments: { chatgpt_url: 'https://chatgpt.com/c/existing', message: 'PRIVATE', request_id: 'late-outcome' } } };
+    const call = relay.fetch(req(body)); await sent();
+    expect(JSON.parse(socket.frames[0]).expires_at).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(WAIT_MS);
+    const response = await call;
+    expect(response.status).toBe(504);
+    expect(response.headers.get('X-Slingring-Request-Id')).toBe('late-outcome');
+    const result = await response.json() as any;
+    expect(result).toMatchObject({ request_id: 'late-outcome', outcome: 'unknown', recovery_tool: 'get_job_status' });
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    expect(socket.frames).toHaveLength(1);
   });
   it.each(['garbage', JSON.stringify({ type: 'unknown' }), 'x'.repeat(MAX_BYTES + 1)])('rejects invalid frames', async message => {
     const call = relay.fetch(req()); await sent(); relay.webSocketMessage(socket as any, message);

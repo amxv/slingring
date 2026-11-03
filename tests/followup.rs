@@ -41,13 +41,17 @@ fn request(arguments: Value) -> Value {
 }
 
 #[test]
-fn followup_tool_has_two_strict_fields_and_does_not_accept_creation_options() {
+fn followup_tool_keeps_strict_fields_plus_explicit_recovery_id() {
     let tool = slingring::mcp::message_tool();
     assert_eq!(tool["name"], "send_message");
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     let fields = tool["inputSchema"]["properties"].as_object().unwrap();
-    assert_eq!(fields.len(), 2);
-    assert!(fields.contains_key("chatgpt_url") && fields.contains_key("message"));
+    assert_eq!(fields.len(), 3);
+    assert!(
+        fields.contains_key("chatgpt_url")
+            && fields.contains_key("message")
+            && fields.contains_key("request_id")
+    );
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
     assert_eq!(tool["annotations"]["openWorldHint"], false);
     assert_eq!(tool["annotations"]["idempotentHint"], false);
@@ -61,7 +65,7 @@ fn followup_tool_has_two_strict_fields_and_does_not_accept_creation_options() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["new_task", "send_message"]);
+    assert_eq!(names, ["new_task", "send_message", "get_job_status"]);
 
     for field in [
         "prompt",

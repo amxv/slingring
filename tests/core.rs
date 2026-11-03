@@ -133,7 +133,7 @@ fn remote_schema_and_validation_do_not_accept_files_or_unknown_fields() {
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     assert_eq!(
         tool["inputSchema"]["properties"].as_object().unwrap().len(),
-        2
+        3
     );
     for key in ["image_paths", "images", "attachments", "profile", "model"] {
         let request =

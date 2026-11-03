@@ -78,6 +78,9 @@ pub enum Command {
     Jobs {
         #[arg(long)]
         json: bool,
+        /// Inspect a single recorded request without submitting anything.
+        #[arg(long)]
+        request_id: Option<String>,
     },
     Service {
         #[command(subcommand)]

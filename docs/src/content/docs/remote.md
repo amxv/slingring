@@ -25,11 +25,23 @@ Keep the entire URL private. Anyone who has it can submit prompts through your a
 
 Ask it to use `new_task` with your prompt and, optionally, a reasoning level. For example: “Start a ChatGPT chat to review this plan using High reasoning, then give me the link.”
 
-`new_task` accepts only `prompt` and optional `reasoning_effort`. Leave effort out, or leave it blank, to use the default configured on your Mac.
+`new_task` accepts `prompt`, optional `reasoning_effort`, and optional `request_id`. Leave effort out, or leave it blank, to use the default configured on your Mac. Choose a fresh unique `request_id` before starting any job that may outlast your MCP client's timeout.
 
-To continue that chat, ask the assistant to call `send_message` with `chatgpt_url` and `message`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. It returns the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
+To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, and optionally a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. It returns the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
 
-Both tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests. If a result is uncertain, inspect the conversation and `slingring jobs --json` before sending anything again. See [CLI and MCP reference](/docs/command-reference) for URL and queue limits.
+Both write tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests.
+
+### If your agent times out
+
+The Mac may **keep working after the calling agent stops waiting**. A caller's timeout does not establish that the message failed or was sent. Instead of resubmitting, use the read-only `get_job_status` tool with the exact `request_id` you chose before the call:
+
+```json
+{"name":"get_job_status","arguments":{"request_id":"review-20261103-001"}}
+```
+
+The result distinguishes `in_progress`, `submitted`, `not_submitted`, `uncertain`, and `unknown` (missing/evicted record). Only `not_submitted` confirms nothing was sent; a missing record is **not** proof of failure. For a terminal failure, consult the recorded phase/error and the Mac's private `events.log`. Locally, run `slingring jobs --request-id review-20261103-001 --json`. Never repeat a message merely because a call timed out.
+
+The default **local CLI** browser-start budget is 180 seconds after queue admission, excluding local queue waiting. The **remote relay** waits up to 240 seconds, with a 230-second Mac-side end-to-end deadline including queue wait; the browser budget may be shorter. Your MCP client may have a smaller independent timeout. Slingring does not override that client's timeout. See [CLI and MCP reference](/docs/command-reference) for details.
 
 ## Keep your Mac available
 

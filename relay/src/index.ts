@@ -142,14 +142,24 @@ export class Relay {
     if (this.pending.size >= MAX_PENDING) return reply(429, { error: 'Relay busy' });
     const id = crypto.randomUUID();
     const notification = !Object.hasOwn(body, 'id');
+    // The caller must know the ID BEFORE a slow request begins to recover a
+    // result after its own timeout. Prefer its explicit request_id or header.
+    const args = object(body.params) && object(body.params.arguments) ? body.params.arguments : null;
+    const declared = typeof args?.request_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(args.request_id)
+      ? args.request_id : null;
+    const receipt = key ?? declared ?? id;
     const frame = JSON.stringify({ type: 'rpc', id, request: body, expires_at: Date.now() + WAIT_MS - 10_000,
       ...(key === null ? {} : { idempotency_key: key }) });
     if (encoder.encode(frame).length > MAX_BYTES) return reply(413, { error: 'Relay frame too large' });
     return new Promise<Response>(resolve => {
-      const timer = setTimeout(() => finish(reply(504, { error: 'Device response timeout; outcome uncertain; do not automatically retry' })), WAIT_MS);
+      const timer = setTimeout(() => finish(reply(504, { error: 'Device response timeout. The Mac may still complete this job. Do not resubmit.',
+        request_id: receipt, outcome: 'unknown', recovery_tool: 'get_job_status' })), WAIT_MS);
       const finish = (response: Response) => {
         clearTimeout(timer);
         this.pending.delete(id);
+        // Useful when an HTTP response arrives, but NOT a replacement for
+        // passing request_id before launch if the caller times out first.
+        response.headers.set('X-Slingring-Request-Id', receipt);
         resolve(response);
       };
       this.pending.set(id, { finish, notification });

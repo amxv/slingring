@@ -30,7 +30,7 @@ impl ServerHandler for LocalServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("slingring", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use new_task to start a ChatGPT Chat conversation and send_message to continue an existing chat. Both submit through your account and return the chat URL, never generated answer text. Do not retry uncertain submissions. Files are available through the local CLI only.")
+            .with_instructions("Use new_task to start a ChatGPT Chat and send_message to follow up. Provide a unique request_id before calling either tool, and use the read-only get_job_status tool to recover status after a timeout without resubmitting. Never retry uncertain submissions. Files remain local CLI-only.")
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -58,6 +58,25 @@ impl ServerHandler for LocalServer {
         }
         let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call", "params":{
             "name": request.name, "arguments": request.arguments.unwrap_or_default()}});
+        if mcp::status_request(&body) {
+            let response = mcp::status_response(&self.root, &body);
+            if let Some(error) = response.get("error") {
+                return Err(ErrorData::invalid_params(
+                    error["message"]
+                        .as_str()
+                        .unwrap_or("Invalid status lookup")
+                        .to_owned(),
+                    None,
+                ));
+            }
+            let result: CallToolResult = serde_json::from_value(response["result"].clone())
+                .map_err(|_| ErrorData::internal_error("Invalid status result", None))?;
+            return Ok(result.into());
+        }
+        let request_id = mcp::declared_request_id(&body)
+            .map_err(|message| ErrorData::invalid_params(message, None))?
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let task =
             mcp::arguments(&body).map_err(|message| ErrorData::invalid_params(message, None))?;
         let config = Config::load(&self.root)
@@ -71,7 +90,7 @@ impl ServerHandler for LocalServer {
             &self.root,
             &daemon::Request::Mcp {
                 body,
-                key: uuid::Uuid::new_v4().to_string(),
+                key: request_id,
             },
         )
         .await

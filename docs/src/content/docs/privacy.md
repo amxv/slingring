@@ -9,7 +9,7 @@ category: Reference
 
 Slingring sends the requested prompt or follow-up message and any local new-task CLI attachments to ChatGPT using your chosen Chrome login. Remote requests, including follow-up target URLs and messages, also pass through your relay. It detects whether fresh assistant activity is present but does not return, log, or save generated answer text.
 
-Chat URLs, including follow-up targets, timestamps, status, and request fingerprints are stored in a bounded local journal. Prompts, message text, and image contents are not persisted in that journal. The relay forwards requests in memory; it does not keep a durable message queue. Messages sent to ChatGPT remain subject to ChatGPT's conversation storage settings.
+Chat URLs, including follow-up targets, timestamps, status, phase, elapsed time, and request fingerprints are stored in a bounded local journal. Prompts, message text, and image contents are not persisted in that journal. A separate private, rotated `events.log` stores only validated request IDs, static phase/status codes and timings; it never includes raw stdout/stderr, tokens, URLs, prompts, or generated answers. The relay forwards requests in memory; it does not keep a durable message queue. Messages sent to ChatGPT remain subject to ChatGPT's conversation storage settings.
 
 ## Local security
 
@@ -21,9 +21,9 @@ The browser runs with an isolated temporary profile copy. Native Messaging regis
 
 Anyone with the client token or private MCP URL can start chats and send follow-ups to accessible chats when they know the conversation URL. Use separate high-entropy client and device credentials. Never publish a connection URL, commit credentials, or include them in support logs. Rotate exposed credentials in Cloudflare and reconfigure the Mac.
 
-MCP `new_task` accepts prompt text and optional reasoning effort. `send_message` accepts message text and an exact `https://chatgpt.com/c/ID` target; IDs are limited to 1..128 ASCII letters, digits, or hyphens, without queries or fragments. Other destinations and routes are rejected. Remote callers cannot select image paths, browser profiles, or shell commands. Follow-ups preserve the existing effort and never interrupt a response. The queue cannot prevent concurrent writes by a person or another client.
+MCP `new_task` accepts prompt text, optional reasoning effort, and optional unique `request_id`. `send_message` accepts message text, an exact `https://chatgpt.com/c/ID` target and optional `request_id`; chat IDs are limited to 1..128 ASCII letters, digits, or hyphens, without queries or fragments. A third read-only `get_job_status(request_id)` returns metadata and possibly a conversation URL from the Mac's journal, but cannot start a browser or send any message. These IDs are not credentials; never embed a secret in them. Other destinations and routes are rejected. Remote callers cannot select image paths, browser profiles, or shell commands. Follow-ups preserve the existing effort and never interrupt a response. The queue cannot prevent concurrent writes by a person or another client.
 
-Both tools advertise `readOnlyHint: true` and `openWorldHint: false` as requested metadata. Their actual effect is to send a message and create or modify a conversation. These hints are not authorization controls or a security boundary.
+All tools advertise `readOnlyHint: true` and `openWorldHint: false` as requested metadata. The two write tools still send messages and create or modify conversations; the status tool does not. Hints are not authorization controls or a security boundary.
 
 ## Website compatibility
 

@@ -70,8 +70,9 @@ async fn connection(
                         let value: Value = serde_json::from_str(&text)?;
                         ensure!(value["type"] == "rpc" && value["id"].as_str().is_some_and(|v| !v.is_empty() && v.len() <= 128)
                             && value["request"].is_object(), "invalid relay envelope");
+                        let declared = crate::mcp::declared_request_id(&value["request"]).ok().flatten();
                         let key = match value.get("idempotency_key") {
-                            None | Some(Value::Null) => value["id"].as_str().unwrap_or_default().to_string(),
+                            None | Some(Value::Null) => declared.unwrap_or_else(||value["id"].as_str().unwrap_or_default()).to_string(),
                             Some(Value::String(k)) if !k.is_empty() && k.len() <= 100 && k.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b,b'-'|b'_')) => k.clone(),
                             _ => anyhow::bail!("invalid idempotency key"),
                         };

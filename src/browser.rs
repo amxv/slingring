@@ -14,6 +14,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 use tokio::net::{TcpStream, UnixListener};
@@ -25,6 +26,33 @@ pub fn install_extension(root: &Path) -> Result<PathBuf> {
 pub fn session(root: &Path) -> String {
     let digest = format!("{:x}", Sha256::digest(root.to_string_lossy().as_bytes()));
     format!("slingring-{}", &digest[..12])
+}
+#[derive(Debug)]
+struct RunnerProblem(&'static str);
+impl std::fmt::Display for RunnerProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for RunnerProblem {}
+fn problem(kind: &'static str) -> anyhow::Error {
+    RunnerProblem(kind).into()
+}
+fn launch_stage(error: &anyhow::Error, retry: bool) -> &'static str {
+    match (retry, error.downcast_ref::<RunnerProblem>().map(|e| e.0)) {
+        (false, Some("timeout")) => "browser_launch_timeout",
+        (false, Some("spawn")) => "browser_launch_spawn_error",
+        (false, Some("exit")) => "browser_launch_nonzero_exit",
+        (false, Some("json")) => "browser_launch_invalid_json",
+        (false, Some("response")) => "browser_launch_unsuccessful",
+        (false, _) => "browser_launch_other_error",
+        (true, Some("timeout")) => "browser_retry_timeout",
+        (true, Some("spawn")) => "browser_retry_spawn_error",
+        (true, Some("exit")) => "browser_retry_nonzero_exit",
+        (true, Some("json")) => "browser_retry_invalid_json",
+        (true, Some("response")) => "browser_retry_unsuccessful",
+        (true, _) => "browser_retry_other_error",
+    }
 }
 async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     ensure!(
@@ -57,19 +85,22 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(65), command.output())
-        .await
-        .context("browser command timed out")??;
+    let output = match tokio::time::timeout(Duration::from_secs(65), command.output()).await {
+        Err(_) => return Err(problem("timeout")),
+        Ok(Err(_)) => return Err(problem("spawn")),
+        Ok(Ok(output)) => output,
+    };
     ensure!(
         output.stdout.len() <= 2 * 1024 * 1024,
         "browser response too large"
     );
-    let value: Value =
-        serde_json::from_slice(&output.stdout).context("browser command returned invalid JSON")?;
-    ensure!(
-        output.status.success() && value["success"] == true,
-        "patched browser command failed; run agent-browser-browse doctor"
-    );
+    if !output.status.success() {
+        return Err(problem("exit"));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| problem("json"))?;
+    if value["success"] != true {
+        return Err(problem("response"));
+    }
     Ok(value["data"].clone())
 }
 
@@ -251,21 +282,36 @@ fn trace(stage: &str) {
 }
 
 pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResult> {
+    run_with_progress(config, task, task_id, Arc::new(|_| {})).await
+}
+
+pub async fn run_with_progress(
+    config: &Config,
+    task: &Task,
+    task_id: &str,
+    progress: Arc<dyn Fn(&'static str) + Send + Sync>,
+) -> Result<TaskResult> {
     trace("launch");
+    progress("browser_launch");
     let deadline = tokio::time::Instant::now()
         + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
     let extension = native::assets(&root)?;
-    if agent(config, &["open", "about:blank"]).await.is_err() {
+    if let Err(error) = agent(config, &["open", "about:blank"]).await {
         // This is strictly before extension installation and before ChatGPT is
         // opened. A stale runner/socket may be recreated once without any risk
         // of replaying a prompt. No submission or UI action is retried here.
+        progress(launch_stage(&error, false));
         trace("retry_blank_browser_launch");
+        progress("browser_retry_cleanup");
         let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
-        agent(config, &["open", "about:blank"])
-            .await
-            .map_err(|_| failure("browser_start_failed", false, None))?;
+        progress("browser_retry");
+        if let Err(error) = agent(config, &["open", "about:blank"]).await {
+            progress(launch_stage(&error, true));
+            return Err(failure("browser_start_failed", false, None));
+        }
     }
+    progress("browser_endpoint");
     let endpoint = agent(config, &["get", "cdp-url"])
         .await
         .map_err(|_| failure("browser_endpoint_unavailable", false, None))?;
@@ -275,6 +321,7 @@ pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResu
             .context("browser endpoint missing")?,
     )
     .await?;
+    progress("browser_profile_validation");
     if std::env::var_os("SLINGRING_TRACE").is_some() {
         config::atomic(
             &root.join("debug-browser.json"),
@@ -285,8 +332,10 @@ pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResu
         .owned_profile()
         .await
         .map_err(|_| failure("isolated_profile_unverified", false, None))?;
+    progress("native_registration");
     native::register(&root, &browser_data)
         .map_err(|_| failure("native_registration_failed", false, None))?;
+    progress("extension_loading");
     let loaded = cdp
         .call("Extensions.loadUnpacked", json!({"path":extension}), None)
         .await
@@ -319,6 +368,7 @@ pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResu
             None,
         )
         .await?;
+    progress("native_handshake");
     let controller_id = controller["targetId"]
         .as_str()
         .context("extension controller missing")?
@@ -335,6 +385,7 @@ pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResu
     native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt(),
         "chatgpt_url":task.conversation_url(),"effort":task.reasoning_effort(),"image_count":task.image_paths().len(),"timeout_ms":config.start_timeout_secs*1000,
         "deadline_ms":crate::queue::now()+deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64})).await?;
+    progress("chat_mode_verification");
     let mut submitted = false;
     let mut conversation_url = task.conversation_url().map(str::to_string);
     loop {
@@ -374,6 +425,7 @@ pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResu
                 trace("conversation_identified");
             }
             Some("upload") if !submitted && !task.image_paths().is_empty() => {
+                progress("image_upload");
                 let selector = event["selector"]
                     .as_str()
                     .context("image input selector missing")?;
@@ -385,9 +437,11 @@ pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResu
             Some("will_submit") if !submitted => {
                 // The queue persisted submission intent before this method ran.
                 submitted = true;
+                progress("submission_authorized");
                 native::write(&mut socket, &json!({"type":"continue"})).await?;
             }
             Some("started") if submitted => {
+                progress("activity_confirmed");
                 let result = TaskResult {
                     job_id: task_id.into(),
                     url: event["url"].as_str().context("task URL missing")?.into(),
@@ -438,4 +492,43 @@ pub async fn close(config: &Config) -> Result<()> {
         let _ = std::fs::remove_file(root.join("debug-browser.json"));
     }
     agent(config, &["close"]).await.map(|_| ())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::{launch_stage, problem};
+
+    #[test]
+    fn runner_categories_are_static_and_identify_first_and_second_attempts() {
+        for (kind, first, second) in [
+            ("timeout", "browser_launch_timeout", "browser_retry_timeout"),
+            (
+                "spawn",
+                "browser_launch_spawn_error",
+                "browser_retry_spawn_error",
+            ),
+            (
+                "exit",
+                "browser_launch_nonzero_exit",
+                "browser_retry_nonzero_exit",
+            ),
+            (
+                "json",
+                "browser_launch_invalid_json",
+                "browser_retry_invalid_json",
+            ),
+            (
+                "response",
+                "browser_launch_unsuccessful",
+                "browser_retry_unsuccessful",
+            ),
+        ] {
+            let err = problem(kind);
+            assert_eq!(launch_stage(&err, false), first);
+            assert_eq!(launch_stage(&err, true), second);
+        }
+        let unknown = anyhow::anyhow!("SENSITIVE unexpected error");
+        assert_eq!(launch_stage(&unknown, false), "browser_launch_other_error");
+        assert_eq!(launch_stage(&unknown, true), "browser_retry_other_error");
+    }
 }

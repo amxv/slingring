@@ -19,7 +19,7 @@ slingring send-message CHATGPT_URL [MESSAGE] [--stdin | --message-file FILE]
 slingring config show [--json]
 slingring config set KEY VALUE
 slingring status [--json]
-slingring jobs [--json]
+slingring jobs [--request-id ID] [--json]
 slingring service start|stop|restart|install|uninstall|status
 slingring remote configure --url wss://HOST/device --token-stdin [--mcp-url URL]
 slingring remote on|off|status|url
@@ -37,30 +37,32 @@ slingring auto-update on|off|status
 
 The default state directory is `~/.config/slingring`. `SLINGRING_HOME` can select another absolute directory. Supported `config set` keys include `profile`, `browser-binary`, `default-effort`, `timeout-secs`, and `heartbeat-secs`.
 
-The default task-start timeout is 180 seconds, including follow-up readiness. Local queue waiting does not consume that per-task budget. Remote calls have an additional end-to-end deadline that includes queue waiting. Status and configuration output redact credentials. Metadata discovery and profile listing do not open a browser.
+The default task-start timeout is 180 seconds, including follow-up readiness. Local queue waiting does not consume that per-task budget. Remote Cloudflare requests have a 240-second HTTP hold with a 230-second Mac-side deadline (including queue wait), and the configured 180-second browser-start budget is the tighter limit when applicable. A remote MCP client can time out independently, often before the Mac finishes. Timed-out client calls do **not** cancel an already running submission. The browser can close before journaling the terminal result, adding to caller-observed elapsed time. Status and configuration output redact credentials. Metadata discovery and profile listing do not open a browser.
 
 ## MCP tools
 
-`new_task` starts a conversation. It accepts only `prompt` and optional `reasoning_effort`; omitted or blank effort uses the configured default.
+`new_task` starts a conversation. It accepts `prompt`, optional `reasoning_effort`, and optional `request_id`; omitted or blank effort uses the configured default.
 
 ```json
 {
   "name": "new_task",
   "arguments": {
     "prompt": "Review this plan.",
-    "reasoning_effort": "High"
+    "reasoning_effort": "High",
+    "request_id": "review-001"
   }
 }
 ```
 
-`send_message` follows up on an existing conversation. It accepts exactly two required strings and preserves the chat's reasoning effort:
+`send_message` follows up on an existing conversation. It accepts two required strings and optional `request_id`, preserving the chat's reasoning effort:
 
 ```json
 {
   "name": "send_message",
   "arguments": {
     "chatgpt_url": "https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef",
-    "message": "Now compare the two strongest options."
+    "message": "Now compare the two strongest options.",
+    "request_id": "followup-002"
   }
 }
 ```
@@ -73,9 +75,20 @@ slingring send-message 'https://chatgpt.com/c/YOUR-CHAT-ID' 'Review this screens
 
 The tool establishes Chat mode on the home page before opening the target conversation. It waits for a visible voice button with no stop control before filling the message. It never interrupts an existing response. It checks the target again before sending and returns only after fresh thinking, working, or response activity begins for the new turn. Historical answers do not establish success. If readiness is not reached within the startup budget, the follow-up fails without sending; uncertain results after submission authorization still require inspection. If the site replaces or virtualizes prior turns during submission, the conservative detector may leave the result uncertain even when the message was accepted.
 
-Both tools reject unknown properties. Their advertised hints are `readOnlyHint: true`, `openWorldHint: false`, `destructiveHint: false`, and `idempotentHint: false`. These are client-facing metadata, not authorization controls: **both tools send a message through your account, creating or modifying a conversation**. Grant access accordingly.
+Both write tools reject unknown properties. Their advertised hints are `readOnlyHint: true`, `openWorldHint: false`, `destructiveHint: false`, and `idempotentHint: false`. These are client-facing metadata, not authorization controls: **both tools send a message through your account, creating or modifying a conversation**. Grant access accordingly.
 
-The remote relay supports initialization, ping, tool discovery, and tool calls with negotiated protocol versions 2025-03-26, 2025-06-18, and 2025-11-25. Streamable HTTP uses POST JSON responses; GET and DELETE are not implemented. Local `slingring mcp` uses the official `rmcp` Rust SDK for stdio transport and protocol negotiation and exposes the same two text-only tools. The local stdio SDK requires the standard MCP initialization handshake.
+`get_job_status(request_id)` is a third, **read-only** MCP tool. It looks up one recorded job on the Mac and never submits, retries, or launches a browser. Its sole required parameter is a 1..100-character ID containing only ASCII letters, digits, underscores or hyphens. Use the same ID on the original write tool before sending, or set the equivalent `Idempotency-Key` HTTP header when using the relay directly. If both are supplied, they must match. IDs must be unique to a logical request; Slingring rejects a different payload using the same ID.
+
+```json
+{
+  "name": "get_job_status",
+  "arguments": { "request_id": "review-001" }
+}
+```
+
+The tool returns journal metadata (status, phase, elapsed milliseconds, error code, URL if known) and a recovery classification: `in_progress`, `submitted`, `not_submitted`, `uncertain`, or `unknown`. `unknown` also covers records pruned from the bounded journal and is **not** permission to retry. Querying status does not keep the browser open. The Mac stores bounded, payload-free lifecycle events in `~/.config/slingring/events.log` (plus an optional previous rotated segment), with browser launch/retry categories and elapsed times. No raw browser stdout/stderr, prompts, generated answers, tokens or URLs are written to that diagnostics log.
+
+The remote relay supports initialization, ping, tool discovery, and tool calls with negotiated protocol versions 2025-03-26, 2025-06-18, and 2025-11-25. Streamable HTTP uses POST JSON responses; GET and DELETE are not implemented. Local `slingring mcp` uses the official `rmcp` Rust SDK for stdio transport and protocol negotiation and exposes the same three text-only tools. The local stdio SDK requires the standard MCP initialization handshake.
 
 ## Limits
 
@@ -83,6 +96,6 @@ Prompts and follow-up messages must be nonblank and are limited to 128 KiB each;
 
 ## Idempotency and uncertainty
 
-Use `--request-id` with the local new-task or send-message CLI, or `Idempotency-Key` on remote HTTP requests, to recover an identical request. IDs are bound to the operation and selected profile, plus the prompt/effort/image content for a new task or target URL/message/image content for a follow-up. A different payload or operation using an existing ID is rejected.
+Use `--request-id` with local CLI operations, or `request_id` in remote MCP write arguments (or `Idempotency-Key` for raw HTTP), to identify a request **before** submitting. IDs are bound to the operation and selected profile, plus the prompt/effort/image content for a new task or target URL/message/image content for a follow-up. A different payload or operation using an existing ID is rejected. The HTTP relay echoes `X-Slingring-Request-Id` if a response arrives, but that header is not available if the caller times out before receiving a response. The relay's own 504 contains the request ID, `outcome: unknown`, and the status tool name; it does not assert failure.
 
 A successful result contains `job_id`, `url`, `reasoning_effort`, and `evidence`. A follow-up returns the same target URL. `started` means genuine activity was observed, not that the response is complete. No generated answer is returned. `uncertain` means submission may have happened. Never automatically repeat a message or create a replacement after an uncertain outcome.

@@ -31,6 +31,17 @@ fn status_does_not_start_a_service_or_browser() {
         .stdout(predicate::str::contains("\"running\":false"));
     assert!(!home.path().join("slingring.sock").exists());
     assert!(!home.path().join("browser.sock").exists());
+    let status = cli(home.path())
+        .args(["jobs", "--request-id", "never-sent", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&status).unwrap();
+    assert_eq!(value["known"], false);
+    assert_eq!(value["outcome"], "unknown");
+    assert!(!home.path().join("slingring.sock").exists());
 }
 #[test]
 fn config_round_trip_and_remote_errors_do_not_launch_a_browser() {
@@ -117,17 +128,27 @@ fn stdio_metadata_is_browser_free_and_files_are_never_exposed() {
         "name":"send_message","arguments":{"chatgpt_url":"https://chatgpt.com/c/example","message":"test","image_paths":["/private/file"]}}})).unwrap();
     input.flush().unwrap();
     let rejection = receive();
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{
+        "name":"get_job_status","arguments":{"request_id":"not-ever-submitted"}}})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let status = receive();
     drop(input);
     assert!(child.wait().unwrap().success());
-    let messages = [init, listing, rejection];
-    assert_eq!(messages.len(), 3);
+    let messages = [init, listing, rejection, status];
+    assert_eq!(messages.len(), 4);
     assert_eq!(messages[0]["id"], 1);
     assert_eq!(messages[0]["result"]["protocolVersion"], "2025-11-25");
     let value = &messages[1];
     assert_eq!(value["id"], 2);
-    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 2);
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 3);
     assert_eq!(value["result"]["tools"][0]["name"], "new_task");
     assert_eq!(value["result"]["tools"][1]["name"], "send_message");
+    assert_eq!(value["result"]["tools"][2]["name"], "get_job_status");
     assert_eq!(
         value["result"]["tools"][0]["annotations"]["readOnlyHint"],
         true
@@ -139,5 +160,10 @@ fn stdio_metadata_is_browser_free_and_files_are_never_exposed() {
     assert!(!messages[1].to_string().contains("image_paths"));
     assert_eq!(messages[2]["id"], 3);
     assert!(messages[2]["error"].is_object());
+    assert_eq!(messages[3]["id"], 4);
+    assert_eq!(
+        messages[3]["result"]["structuredContent"]["outcome"],
+        "unknown"
+    );
     assert!(!home.path().join("slingring.sock").exists());
 }

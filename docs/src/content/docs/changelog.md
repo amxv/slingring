@@ -8,7 +8,9 @@ summary: Release status and user-visible changes.
 
 ## Unreleased
 
-Use the official `rmcp` Rust SDK for local stdio MCP protocol handling and transport, preserving the existing remote relay integration and strict two-tool, text-only MCP boundary. Add `slingring send-message` with local image attachments, file/stdin message input, and request-ID recovery. Follow-up images use the existing isolated browser upload path, with readiness and unchanged-conversation checks before submission. No generated answers are extracted.
+Add per-request read-only remote recovery with `request_id` and `get_job_status`, bounded private startup-stage/timing diagnostics, and caller-visible job receipts on remote HTTP results/timeouts. Clarify that the relay can wait longer than an MCP client and that a timed-out caller does not imply an unsent message. Keep strict no-replay behavior, no generated-answer extraction, and existing remote MCP transport. This work is a separate stacked PR and not yet released.
+
+Use the official `rmcp` Rust SDK for local stdio MCP protocol handling and transport, preserving the existing remote relay integration and strict text-only MCP boundary. Add `slingring send-message` with local image attachments, file/stdin message input, and request-ID recovery. Follow-up images use the existing isolated browser upload path, with readiness and unchanged-conversation checks before submission. No generated answers are extracted.
 
 ## 0.3.0 · 3 November 2026
 

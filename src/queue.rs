@@ -30,12 +30,32 @@ pub trait Backend: Send + Sync + 'static {
         task: &'a Task,
         id: &'a str,
     ) -> BrowserFuture<'a, TaskResult>;
+    /// Optional metadata-only progress for caller-visible diagnostics. Test
+    /// backends and existing integrations need not implement this hook.
+    fn run_with_progress<'a>(
+        &'a self,
+        config: &'a Config,
+        task: &'a Task,
+        id: &'a str,
+        _progress: Arc<dyn Fn(&'static str) + Send + Sync>,
+    ) -> BrowserFuture<'a, TaskResult> {
+        self.run(config, task, id)
+    }
     fn close<'a>(&'a self, config: &'a Config) -> BrowserFuture<'a, ()>;
 }
 pub struct Browser;
 impl Backend for Browser {
     fn run<'a>(&'a self, c: &'a Config, t: &'a Task, id: &'a str) -> BrowserFuture<'a, TaskResult> {
         Box::pin(crate::browser::run(c, t, id))
+    }
+    fn run_with_progress<'a>(
+        &'a self,
+        c: &'a Config,
+        t: &'a Task,
+        id: &'a str,
+        progress: Arc<dyn Fn(&'static str) + Send + Sync>,
+    ) -> BrowserFuture<'a, TaskResult> {
+        Box::pin(crate::browser::run_with_progress(c, t, id, progress))
     }
     fn close<'a>(&'a self, c: &'a Config) -> BrowserFuture<'a, ()> {
         Box::pin(crate::browser::close(c))
@@ -52,6 +72,10 @@ pub struct Job {
     pub error: Option<String>,
     pub url: Option<String>,
     #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub phase_at: Option<u64>,
+    #[serde(default)]
     fingerprint: String,
 }
 impl Job {
@@ -60,7 +84,9 @@ impl Job {
     }
     pub fn public(&self) -> serde_json::Value {
         serde_json::json!({"id":self.id,"status":self.status,"created_at":self.created_at,
-            "finished_at":self.finished_at,"result":self.result,"error":self.error,"url":self.url})
+            "finished_at":self.finished_at,"result":self.result,"error":self.error,"url":self.url,
+            "phase":self.phase,"phase_at":self.phase_at,
+            "elapsed_ms":self.finished_at.unwrap_or_else(now).saturating_sub(self.created_at)})
     }
     fn outcome(&self) -> Result<TaskResult> {
         self.result.clone().ok_or_else(|| {
@@ -73,11 +99,69 @@ impl Job {
         })
     }
 }
+pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value {
+    let Some(job) = job else {
+        return serde_json::json!({"request_id":request_id,"known":false,"outcome":"unknown",
+            "guidance":"Record not found or pruned. Absence is NOT proof that nothing was submitted. Inspect the chat and Mac journal before deciding whether to submit a new request."});
+    };
+    let (outcome, guidance) = match job.status.as_str() {
+        "queued" | "starting" => (
+            "in_progress",
+            "Job is still pending. Query this same request_id later; do not submit it again.",
+        ),
+        "started" => (
+            "submitted",
+            "Message submission was confirmed. Open the returned conversation URL; do not send it again.",
+        ),
+        "failed" => (
+            "not_submitted",
+            "The journal confirms nothing was submitted. Diagnose the failure before consciously creating a new request.",
+        ),
+        _ => (
+            "uncertain",
+            "Submission may have occurred. Inspect the conversation; never automatically retry or treat a missing URL as evidence of failure.",
+        ),
+    };
+    let diagnosis = match job
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+    {
+        "chat_mode_unverified" => {
+            "Chat mode could not be positively verified before submission. Confirm the configured Chrome account opens Chat (not Work) and check session/profile readiness. Inspect events.log for the stage and elapsed time."
+        }
+        "browser_start_failed" => {
+            "The isolated browser failed to start twice. Inspect events.log for safe launch/retry categories (timeout, spawn, exit, invalid JSON or unsuccessful response); verify the pinned browser helper with slingring browser status and agent-browser-browse doctor."
+        }
+        "browser_endpoint_unavailable"
+        | "isolated_profile_unverified"
+        | "native_registration_failed"
+        | "extension_installation_failed"
+        | "native_connection_failed" => {
+            "Browser or native bridge setup failed before submission. Inspect events.log, verify the pinned browser helper and selected Chrome profile, then diagnose before a new request."
+        }
+        _ => {
+            "Use the recorded phase and outcome; inspect the Mac journal and conversation before choosing any further action."
+        }
+    };
+    serde_json::json!({"request_id":request_id,"known":true,"outcome":outcome,
+        "guidance":guidance,"diagnosis":diagnosis,"job":job.public()})
+}
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+pub fn valid_job_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':'))
 }
 pub fn records(root: &Path) -> Result<VecDeque<Job>> {
     let path = root.join("journal.json");
@@ -111,6 +195,17 @@ impl State {
         )
     }
     fn finish(&mut self, id: &str, result: Result<TaskResult>, status: &str) -> Result<()> {
+        let safe_code = match &result {
+            Ok(_) => "activity_confirmed",
+            Err(error) => error
+                .downcast_ref::<StartError>()
+                .map(|e| e.code.as_str())
+                .filter(|c| {
+                    c.len() <= 100 && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                })
+                .unwrap_or("operation_error"),
+        }
+        .to_owned();
         let job = self
             .jobs
             .iter_mut()
@@ -131,6 +226,23 @@ impl State {
             }
         }
         let saved = self.save();
+        if saved.is_ok() {
+            let job = self
+                .jobs
+                .iter()
+                .find(|job| job.id == id)
+                .context("job missing")?;
+            crate::diagnostics::event(
+                &self.root,
+                id,
+                "finished",
+                status,
+                &safe_code,
+                job.finished_at
+                    .unwrap_or_else(now)
+                    .saturating_sub(job.created_at),
+            );
+        }
         let job = self
             .jobs
             .iter()
@@ -237,14 +349,7 @@ impl Queue {
         config: Config,
         deadline: Option<Instant>,
     ) -> Result<TaskResult> {
-        ensure!(
-            !id.is_empty()
-                && id.len() <= 128
-                && id
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':')),
-            "invalid request ID"
-        );
+        ensure!(valid_job_id(&id), "invalid request ID");
         let task = task.into().resolve(&config)?;
         let fingerprint = task.fingerprint(&config.profile)?;
         let (tx, rx) = oneshot::channel();
@@ -278,6 +383,8 @@ impl Queue {
                     result: None,
                     error: None,
                     url: task.conversation_url().map(str::to_string),
+                    phase: Some("queued".into()),
+                    phase_at: Some(now()),
                     fingerprint,
                 });
                 if let Err(e) = state.save() {
@@ -285,6 +392,7 @@ impl Queue {
                     return Err(e).context("cannot persist task metadata");
                 }
                 state.waiters.insert(id.clone(), vec![tx]);
+                crate::diagnostics::event(&state.root, &id, "queued", "in_progress", "none", 0);
                 permit.send(Item {
                     id,
                     task,
@@ -317,7 +425,12 @@ async fn work(
                     true
                 } else {
                     let job = state.jobs.iter_mut().find(|j| j.id == id).context("job missing")?;
-                    job.status = "starting".into(); state.save()?;
+                    job.status = "starting".into();
+                    job.phase = Some("starting".into());
+                    job.phase_at = Some(now());
+                    let elapsed = now().saturating_sub(job.created_at);
+                    state.save()?;
+                    crate::diagnostics::event(&state.root, &id, "starting", "in_progress", "none", elapsed);
                     false
                 }
             };
@@ -334,10 +447,24 @@ async fn work(
             let deadline = deadline.map_or(own_deadline, |external| external.min(own_deadline));
             config.start_timeout_secs = deadline.saturating_duration_since(Instant::now()).as_secs().max(1);
             open_config = Some(config.clone());
+            let state = queue.state.clone();
+            let progress_id = id.clone();
+            let progress: Arc<dyn Fn(&'static str) + Send + Sync> = Arc::new(move |stage| {
+                let mut state = state.lock().expect("queue lock");
+                let mut elapsed = None;
+                if let Some(job) = state.jobs.iter_mut().find(|j| j.id == progress_id && j.active()) {
+                    job.phase = Some(stage.into());
+                    job.phase_at = Some(now());
+                    elapsed = Some(now().saturating_sub(job.created_at));
+                }
+                if let Some(elapsed) = elapsed && state.save().is_ok() {
+                    crate::diagnostics::event(&state.root, &progress_id, stage, "in_progress", "none", elapsed);
+                }
+            });
             let result = tokio::select! {
                 biased;
                 _ = stop.changed() => Err(anyhow::anyhow!("service stopped during submission; inspect queue before retrying")),
-                r = tokio::time::timeout_at(deadline, backend.run(&config, &task, &id)) => match r {
+                r = tokio::time::timeout_at(deadline, backend.run_with_progress(&config, &task, &id, progress)) => match r {
                     Ok(Ok(mut result)) => {
                         result.job_id = id.clone();
                         task.validate_result(&result).map(|()| result)

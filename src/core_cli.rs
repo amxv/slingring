@@ -270,7 +270,18 @@ pub async fn run(command: Command) -> Result<()> {
             }
         }
         Command::Status { .. } => output(status(&root).await?),
-        Command::Jobs { .. } => {
+        Command::Jobs { request_id, .. } => {
+            if let Some(request_id) = request_id {
+                ensure!(
+                    crate::queue::valid_job_id(&request_id),
+                    "invalid request ID"
+                );
+                let records = crate::queue::records(&root)?;
+                return output(crate::queue::recovery_status(
+                    records.iter().find(|job| job.id == request_id),
+                    &request_id,
+                ));
+            }
             let rows = if daemon::running(&root).await {
                 daemon::call(&root, &Request::Queue).await?
             } else {
