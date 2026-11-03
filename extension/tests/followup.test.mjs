@@ -189,7 +189,8 @@ test('local image follow-up uses existing conversation and waits for an uploaded
     '<input type="file" multiple aria-label="Attach photos" accept="image/*">');
   const prepared=await p.prepare({image_count:1});
   assert.equal(prepared.ok,true);
-  assert.equal(prepared.upload_selector,'input[type="file"][multiple][aria-label="Attach photos"]');
+  assert.match(prepared.upload_selector,/^input\[type="file"\]\[data-slingring-upload="[a-f0-9-]{36}"\]$/);
+  assert.equal(p.d.querySelectorAll(prepared.upload_selector).length,1);
   assert.equal(p.clicks,0);
   p.d.querySelector('form').insertAdjacentHTML('beforeend',
     '<button aria-label="Remove photo">Remove uploaded photo</button>');
@@ -197,6 +198,62 @@ test('local image follow-up uses existing conversation and waits for an uploaded
   assert.equal(result.ok,true);assert.equal(result.url,target);assert.equal(p.clicks,1);
   assert.equal(p.events.filter(e=>e.event==='will_submit').length,1);
   p.close();
+});
+
+test('upload progress is awaited without confusing it with a generating response',async()=>{
+  const p=page();
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend','<div id="upload-progress" role="progressbar"></div>');
+  const pending=p.submit();assert.equal(p.clicks,0);
+  p.w.setTimeout(()=>{
+    p.d.querySelector('#upload-progress').remove();
+    p.d.querySelector('form').insertAdjacentHTML('beforeend','<button aria-label="Remove photo">Remove</button>');
+  },20);
+  assert.equal((await pending).ok,true);assert.equal(p.clicks,1);p.close();
+});
+
+test('paragraph rehydration retains exact multiline prompt while real edits abort untouched',async()=>{
+  const multiline='Line one\nLine two';
+  const p=page({modernEditor:true,onSend:({d,appendUser,appendThinking})=>{
+    appendUser(multiline);appendThinking();d.querySelector('[aria-label="Ask ChatGPT"]').textContent='';
+  }});
+  assert.equal((await p.prepare({prompt:multiline})).ok,true);
+  const input=p.api.composer();input.innerHTML='<p>Line one</p><p>Line two</p>';
+  Object.defineProperty(input,'innerText',{value:'Line one\n\nLine two',configurable:true});
+  assert.equal(p.api.editorText(input),multiline);assert.equal((await p.submit()).ok,true);
+  assert.equal(p.clicks,1);p.close();
+  for(const [value,code] of [['A real replacement draft','prompt_changed'],['','prompt_lost']]) {
+    const q=page();assert.equal((await q.prepare()).ok,true);q.api.composer().value=value;
+    assert.equal((await q.submit()).code,code);assert.equal(q.api.composer().value,value);
+    assert.equal(q.clicks,0);assert.equal(q.events.some(e=>e.event==='will_submit'),false);q.close();
+  }
+});
+
+test('whitespace-only existing drafts are preserved and never taken over',async()=>{
+  const p=page();p.api.composer().value='  \n ';
+  assert.equal((await p.prepare()).code,'unrelated_draft_present');
+  assert.equal(p.api.composer().value,'  \n ');assert.equal(p.clicks,0);p.close();
+});
+
+test('draft appearing while the empty composer settles is preserved without any fill',async()=>{
+  const p=page(),pending=p.prepare();
+  p.w.setTimeout(()=>{p.api.composer().value='User typed while loading';},25);
+  assert.equal((await pending).code,'unrelated_draft_present');
+  assert.equal(p.api.composer().value,'User typed while loading');assert.equal(p.clicks,0);p.close();
+});
+
+test('missing conversation composer fails clearly and never fills or authorizes submission',async()=>{
+  const p=page();p.api.composer().remove();
+  assert.equal((await p.prepare()).code,'composer_unavailable');
+  assert.equal(p.events.some(e=>e.event==='will_submit'),false);assert.equal(p.clicks,0);p.close();
+});
+
+test('new chat rejects identical saved draft and preserves it',async()=>{
+  const p=page({url:'https://chatgpt.com/'});p.api.composer().value=prompt;
+  p.d.querySelector('#old-user').remove();p.d.querySelector('[data-message-author-role="assistant"]').remove();
+  assert.equal((await p.prepare({chatgpt_url:null})).code,'unrelated_draft_present');
+  assert.equal(p.api.composer().value,prompt);assert.equal(p.clicks,0);p.close();
 });
 
 test('follow-up images must finish uploading, and cannot disappear during authorization',async()=>{

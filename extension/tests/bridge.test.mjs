@@ -5,15 +5,17 @@ import {JSDOM} from 'jsdom';
 
 const source=readFileSync(new URL('../bridge.js',import.meta.url),'utf8');
 const target='https://chatgpt.com/c/existing-conversation';
-async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=null}={}) {
+const bootstrap='about:blank#slingring-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=null,tabUrl=bootstrap,initialBlank=false}={}) {
   const page=new JSDOM('<body></body>',{url:'chrome-extension://test-extension/bridge.html#token=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa&job=test-job',runScripts:'outside-only'});
   const w=page.window,events=[],navigations=[],contentRequests=[],removed=[],order=[];
-  let nativeListener,runtimeListener,resolve;
+  let nativeListener,runtimeListener,resolve,updatedListener,tabCommitted=!initialBlank;
   const finished=new Promise(done=>{resolve=done;});
   const post=value=>w.queueMicrotask(()=>nativeListener(value));
   const native={onMessage:{addListener:fn=>{nativeListener=fn;}},onDisconnect:{addListener:()=>{}},postMessage:message=>{
     events.push(message);
-    if(message.type==='hello')post({type:'task',job:'test-job',prompt:'test message',effort:null,image_count:0,chatgpt_url:target,...task});
+    if(message.type==='hello')post({type:'task',job:'test-job',prompt:'test message',effort:null,image_count:0,chatgpt_url:target,tab_url:bootstrap,...task});
+    if(message.type==='bind_tab'){assert.equal(tabCommitted,true);post({type:'tab_bound',ok:true});}
     if(message.type==='upload')post({type:'uploaded',ok:true});
     if(message.type==='will_submit')post({type:'continue'});
     if(message.type==='started')post({type:'ack'});
@@ -21,7 +23,13 @@ async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=nul
   }};
   const sender={id:'test-extension',tab:{id:5},frameId:0,url:senderUrl};
   w.chrome={runtime:{id:'test-extension',connectNative:()=>native,onMessage:{addListener:fn=>{runtimeListener=fn;}}},tabs:{
+    onUpdated:{addListener:fn=>{updatedListener=fn;},removeListener:()=>{updatedListener=null;}},
     create:async data=>{navigations.push(data.url);return {id:5};},
+    get:async id=>{
+      assert.equal(id,5);
+      if(!tabCommitted){w.setTimeout(()=>{tabCommitted=true;updatedListener?.(id,{url:tabUrl},{id,url:tabUrl});},10);return {id,url:'about:blank'};}
+      return {id,url:tabUrl};
+    },
     update:async (id,data)=>{
       assert.equal(id,5);navigations.push(data.url);order.push(`navigate:${data.url}`);
       w.queueMicrotask(()=>runtimeListener({kind:'slingring',event:'ready'},{...sender,url:data.url},()=>{}));
@@ -45,11 +53,12 @@ async function run({task={},resultUrl=target,senderUrl=target,bootstrapError=nul
 
 test('bridge bootstraps Chat at home, then opens the exact follow-up in the same owned tab',async()=>{
   const r=await run();
-  assert.deepEqual(r.navigations,['about:blank','https://chatgpt.com/',target]);
+  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/',target]);
+  assert.equal(r.events.filter(e=>e.type==='bind_tab').length,1);
   assert.deepEqual(r.order,['navigate:https://chatgpt.com/','ensure_chat',`navigate:${target}`,'prepare','submit']);
   assert.equal(r.contentRequests.find(m=>m.action==='prepare').chatgpt_url,target);
-  const bootstrap=r.contentRequests.find(m=>m.action==='ensure_chat');
-  assert.equal(typeof bootstrap.deadline_ms,'number');assert.equal(bootstrap.prompt,undefined);assert.equal(bootstrap.effort,undefined);
+  const preparation=r.contentRequests.find(m=>m.action==='ensure_chat');
+  assert.equal(typeof preparation.deadline_ms,'number');assert.equal(preparation.prompt,undefined);assert.equal(preparation.effort,undefined);
   assert.equal(r.contentRequests.filter(m=>m.action==='submit').length,1);
   assert.equal(r.terminal.type,'released');assert(r.removed.includes(5));
   assert.equal(r.events.find(e=>e.type==='started').url,target);
@@ -57,14 +66,14 @@ test('bridge bootstraps Chat at home, then opens the exact follow-up in the same
 
 test('new_task still navigates home and allows its newly created conversation URL',async()=>{
   const r=await run({task:{chatgpt_url:null},senderUrl:'https://chatgpt.com/'});
-  assert.deepEqual(r.navigations,['about:blank','https://chatgpt.com/']);
+  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/']);
   assert.equal(r.contentRequests[0].chatgpt_url,null);assert.equal(r.terminal.type,'released');
   assert.equal(r.contentRequests.some(m=>m.action==='ensure_chat'),false);
 });
 
 test('local follow-up images use the existing native upload handshake before submission',async()=>{
   const r=await run({task:{image_count:2}});
-  assert.deepEqual(r.navigations,['about:blank','https://chatgpt.com/',target]);
+  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/',target]);
   assert.equal(r.contentRequests.find(m=>m.action==='prepare').image_count,2);
   assert.equal(r.events.filter(e=>e.type==='upload').length,1);
   assert.equal(r.events.find(e=>e.type==='upload').selector,'input[type="file"][multiple]');
@@ -74,7 +83,7 @@ test('local follow-up images use the existing native upload handshake before sub
 
 test('failed Chat bootstrap never navigates to the target or prepares a message',async()=>{
   const r=await run({bootstrapError:'chat_mode_unverified'});
-  assert.deepEqual(r.navigations,['about:blank','https://chatgpt.com/']);
+  assert.deepEqual(r.navigations,[bootstrap,'https://chatgpt.com/']);
   assert.deepEqual(r.contentRequests.map(m=>m.action),['ensure_chat']);
   assert.equal(r.terminal.code,'chat_mode_unverified');assert.equal(r.terminal.submitted,false);
   assert.equal(r.events.some(e=>e.type==='will_submit'),false);
@@ -113,4 +122,17 @@ test('bridge rejects wrong or malformed result URLs after submission without ret
     assert.equal(r.events.filter(e=>e.type==='started').length,0);
     assert.equal(r.contentRequests.filter(m=>m.action==='submit').length,1);
   }
+});
+
+test('native tab binding is required before navigation and rejects a changed bootstrap tab',async()=>{
+  const invalid=await run({task:{tab_url:'about:blank'}});
+  assert.equal(invalid.terminal.code,'invalid_tab_bootstrap');assert.equal(invalid.navigations.length,0);
+  const moved=await run({tabUrl:'https://chatgpt.com/c/another'});
+  assert.equal(moved.terminal.code,'tab_changed_before_navigation');
+  assert.deepEqual(moved.navigations,[bootstrap]);assert.equal(moved.contentRequests.length,0);
+});
+
+test('native tab binding waits for the nonce URL to commit before querying CDP',async()=>{
+  const result=await run({initialBlank:true});
+  assert.equal(result.terminal.type,'released');assert.equal(result.events.filter(e=>e.type==='bind_tab').length,1);
 });

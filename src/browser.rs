@@ -69,6 +69,12 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             .unwrap_or_else(|| config.start_timeout_secs.saturating_add(60))
     );
     let mut command = tokio::process::Command::new(&config.browser_binary);
+    // The persisted application setting owns visibility, not a daemon's
+    // inherited shell environment. Fork defaults retain fingerprint settings.
+    command.env_remove("AGENT_BROWSER_HEADED");
+    if config.browser_headed {
+        command.arg("--headed");
+    }
     command
         .args([
             "--session",
@@ -108,8 +114,37 @@ struct Cdp {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     id: u64,
 }
+#[derive(Clone, Debug)]
+struct ChatTarget {
+    id: String,
+    url: String,
+}
+fn owned_profile_from_command(command: &str, headed: bool) -> Result<PathBuf> {
+    let headless = command
+        .split_whitespace()
+        .any(|word| word == "--headless" || word.starts_with("--headless="));
+    ensure!(
+        headless != headed,
+        "owned browser visibility does not match configuration"
+    );
+    let directory = command
+        .split_once("--user-data-dir=")
+        .map(|(_, rest)| rest.split(" --").next().unwrap_or("").trim())
+        .filter(|value| !value.is_empty())
+        .context("owned browser profile directory missing")?;
+    let directory = PathBuf::from(directory).canonicalize()?;
+    ensure!(
+        directory.starts_with(std::env::temp_dir().canonicalize()?)
+            && directory
+                .file_name()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| v.starts_with("agent-browser-profile-")),
+        "refusing to register outside an isolated browser profile"
+    );
+    Ok(directory)
+}
 impl Cdp {
-    async fn owned_profile(&mut self) -> Result<PathBuf> {
+    async fn owned_profile(&mut self, headed: bool) -> Result<PathBuf> {
         let info = self
             .call("SystemInfo.getProcessInfo", json!({}), None)
             .await?;
@@ -132,25 +167,7 @@ impl Cdp {
             "could not inspect owned browser process"
         );
         let command = String::from_utf8(output.stdout)?;
-        ensure!(
-            command.contains("--headless=new"),
-            "owned browser is not headless"
-        );
-        let directory = command
-            .split_once("--user-data-dir=")
-            .map(|(_, rest)| rest.split(" --").next().unwrap_or("").trim())
-            .filter(|value| !value.is_empty())
-            .context("owned browser profile directory missing")?;
-        let directory = PathBuf::from(directory).canonicalize()?;
-        ensure!(
-            directory.starts_with(std::env::temp_dir().canonicalize()?)
-                && directory
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .is_some_and(|v| v.starts_with("agent-browser-profile-")),
-            "refusing to register outside an isolated browser profile"
-        );
-        Ok(directory)
+        owned_profile_from_command(&command, headed)
     }
     async fn connect(endpoint: &str) -> Result<Self> {
         let url = url::Url::parse(endpoint)?;
@@ -198,29 +215,55 @@ impl Cdp {
         })
         .await?
     }
-    async fn upload(&mut self, selector: &str, files: &[PathBuf]) -> Result<()> {
-        ensure!(
-            selector.len() <= 1024 && selector.starts_with("input[type=\"file\"]"),
-            "unexpected image selector"
-        );
+    async fn bind_tab(&mut self, bootstrap: &str, url: &str) -> Result<ChatTarget> {
         let targets = self.call("Target.getTargets", json!({}), None).await?;
         let candidates: Vec<_> = targets["targetInfos"]
             .as_array()
             .context("missing browser targets")?
             .iter()
-            .filter(|t| t["type"] == "page" && t["url"] == "https://chatgpt.com/")
+            .filter(|t| t["type"] == "page" && t["url"] == bootstrap)
             .collect();
         ensure!(
             candidates.len() == 1,
-            "could not identify exactly one owned new chat"
+            "could not bind exactly one owned task tab"
         );
-        let target = candidates[0]["targetId"]
+        let id = candidates[0]["targetId"]
             .as_str()
-            .context("missing chat target")?;
+            .filter(|id| !id.is_empty())
+            .context("missing chat target")?
+            .to_string();
+        Ok(ChatTarget {
+            id,
+            url: url.into(),
+        })
+    }
+    async fn assert_target(&mut self, target: &ChatTarget) -> Result<()> {
+        let info = self
+            .call("Target.getTargetInfo", json!({"targetId":target.id}), None)
+            .await?;
+        ensure!(
+            info["targetInfo"]["targetId"] == target.id
+                && info["targetInfo"]["type"] == "page"
+                && info["targetInfo"]["url"] == target.url,
+            "owned task tab changed"
+        );
+        Ok(())
+    }
+    async fn upload(
+        &mut self,
+        target: &ChatTarget,
+        selector: &str,
+        files: &[PathBuf],
+    ) -> Result<()> {
+        ensure!(
+            selector.len() <= 1024 && selector.starts_with("input[type=\"file\"]"),
+            "unexpected image selector"
+        );
+        self.assert_target(target).await?;
         let attached = self
             .call(
                 "Target.attachToTarget",
-                json!({"targetId":target,"flatten":true}),
+                json!({"targetId":target.id,"flatten":true}),
                 None,
             )
             .await?;
@@ -231,20 +274,30 @@ impl Cdp {
             let doc = self
                 .call("DOM.getDocument", json!({"depth":0}), Some(session))
                 .await?;
+            ensure!(
+                doc["root"]["documentURL"] == target.url,
+                "image document changed"
+            );
             let input = self
                 .call(
-                    "DOM.querySelector",
+                    "DOM.querySelectorAll",
                     json!({"nodeId":doc["root"]["nodeId"],"selector":selector}),
                     Some(session),
                 )
                 .await?;
+            let nodes = input["nodeIds"]
+                .as_array()
+                .context("image input not found")?;
             ensure!(
-                input["nodeId"].as_i64().is_some_and(|n| n > 0),
-                "image input not found"
+                nodes.len() == 1 && nodes[0].as_i64().is_some_and(|n| n > 0),
+                "image input is missing or ambiguous"
             );
+            // Recheck after DOM discovery. Navigations invalidate the captured
+            // document node, so setFileInputFiles cannot follow a new document.
+            self.assert_target(target).await?;
             self.call(
                 "DOM.setFileInputFiles",
-                json!({"nodeId":input["nodeId"],"files":files}),
+                json!({"nodeId":nodes[0],"files":files}),
                 Some(session),
             )
             .await?;
@@ -329,7 +382,7 @@ pub async fn run_with_progress(
         )?;
     }
     let browser_data = cdp
-        .owned_profile()
+        .owned_profile(config.browser_headed)
         .await
         .map_err(|_| failure("isolated_profile_unverified", false, None))?;
     progress("native_registration");
@@ -382,11 +435,13 @@ pub async fn run_with_progress(
         hello["type"] == "hello" && hello["token"] == token && hello["job"] == task_id,
         "native session authentication failed"
     );
-    native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt(),
+    let bootstrap = format!("about:blank#slingring-{token}");
+    native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt(),"tab_url":bootstrap,
         "chatgpt_url":task.conversation_url(),"effort":task.reasoning_effort(),"image_count":task.image_paths().len(),"timeout_ms":config.start_timeout_secs*1000,
         "deadline_ms":crate::queue::now()+deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64})).await?;
     progress("chat_mode_verification");
     let mut submitted = false;
+    let mut target = None;
     let mut conversation_url = task.conversation_url().map(str::to_string);
     loop {
         let event = tokio::time::timeout_at(deadline, native::read(&mut socket))
@@ -413,6 +468,33 @@ pub async fn run_with_progress(
             trace(kind);
         }
         match event["type"].as_str() {
+            Some("bind_tab") if !submitted && target.is_none() => {
+                target = Some(
+                    cdp.bind_tab(
+                        &bootstrap,
+                        task.conversation_url().unwrap_or("https://chatgpt.com/"),
+                    )
+                    .await
+                    .map_err(|_| failure("tab_binding_failed", false, conversation_url.clone()))?,
+                );
+                native::write(&mut socket, &json!({"type":"tab_bound","ok":true})).await?;
+            }
+            Some("progress") => {
+                let stage = match event["stage"].as_str() {
+                    Some("chat_loading") => "chat_loading",
+                    Some("chat_mode_verification") => "chat_mode_verification",
+                    Some("conversation_loading") => "conversation_loading",
+                    Some("composer_ready") => "composer_ready",
+                    Some("effort_selection") => "effort_selection",
+                    Some("prompt_filling") => "prompt_filling",
+                    Some("prompt_verification") => "prompt_verification",
+                    Some("attachment_wait") => "attachment_wait",
+                    Some("send_ready") => "send_ready",
+                    Some("activity_wait") => "activity_wait",
+                    _ => return Err(failure("invalid_native_event", submitted, conversation_url)),
+                };
+                progress(stage);
+            }
             Some("conversation") if submitted => {
                 let url = event["url"]
                     .as_str()
@@ -429,12 +511,21 @@ pub async fn run_with_progress(
                 let selector = event["selector"]
                     .as_str()
                     .context("image input selector missing")?;
-                cdp.upload(selector, task.image_paths())
+                let owned = target.as_ref().ok_or_else(|| {
+                    failure("tab_binding_failed", false, conversation_url.clone())
+                })?;
+                cdp.upload(owned, selector, task.image_paths())
                     .await
                     .map_err(|_| failure("image_upload_failed", false, None))?;
                 native::write(&mut socket, &json!({"type":"uploaded","ok":true})).await?;
             }
             Some("will_submit") if !submitted => {
+                let owned = target.as_ref().ok_or_else(|| {
+                    failure("tab_binding_failed", false, conversation_url.clone())
+                })?;
+                cdp.assert_target(owned).await.map_err(|_| {
+                    failure("conversation_changed", false, conversation_url.clone())
+                })?;
                 // The queue persisted submission intent before this method ran.
                 submitted = true;
                 progress("submission_authorized");
@@ -532,3 +623,7 @@ mod diagnostic_tests {
         assert_eq!(launch_stage(&unknown, true), "browser_retry_other_error");
     }
 }
+
+#[cfg(test)]
+#[path = "browser_tests.rs"]
+mod boundary_tests;

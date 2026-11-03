@@ -12,6 +12,8 @@ test('submission re-queries a React-replaced send button after the native acknow
   old.addEventListener('click',()=>assert.fail('detached stale button was clicked'));
   w.__slingringDOM={
     ensureChat:async()=>{},setEffort:async()=> 'Medium',fill:value=>{d.querySelector('#prompt').value=value;},
+    hasDraft:()=>false,noAttachments:()=>true,followupIdle:()=>true,visible:()=>true,stableComposer:async()=>d.querySelector('#prompt'),
+    promptEquals:(input,value)=>input?.value===value,promptState:value=>d.querySelector('#prompt').value===value?'matches':'prompt_changed',
     composer:()=>d.querySelector('#prompt'),text:e=>e.value.trim(),normal:value=>value.trim(),
     uploadSelector:async()=>null,attachmentsReady:()=>true,sendButton:()=>d.querySelector('#send'),
     chatVerified:()=>true,currentEffort:()=> 'Medium',canonicalUrl:()=>submitted?'https://chatgpt.com/c/test':null,
