@@ -20,6 +20,21 @@ impl Drop for StopOnDrop {
 fn daemon_starts_authenticates_status_and_cleans_up_endpoint() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("isolated-state");
+    std::fs::create_dir_all(&root).unwrap();
+    // Local-only mode intentionally stops after two idle seconds. Keep this
+    // isolated test daemon alive with a *loopback-only* unreachable relay,
+    // so slow Windows process/ACL checks cannot race its idle shutdown.
+    // No external network, browser, credentials, or ChatGPT task is involved.
+    std::fs::write(
+        root.join("config.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "remote_enabled": true,
+            "relay_url": "wss://127.0.0.1:9",
+            "device_token": "00000000000000000000000000000000"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_slingring"));
     let _stop = StopOnDrop {
         executable: executable.clone(),
