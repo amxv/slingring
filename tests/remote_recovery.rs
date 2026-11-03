@@ -285,6 +285,13 @@ async fn expired_before_launch_is_known_safe_without_running_backend() -> Result
 #[tokio::test]
 async fn crashed_owner_is_classified_without_restarting_or_mutating_history() -> Result<()> {
     let dir = tempfile::tempdir()?;
+    // Model a daemon that has established both durable ownership sidecars.
+    // A missing sidecar is deliberately ambiguous after the recovery fix.
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.path().join("daemon.lock"))?;
     let backend = Arc::new(FakeBrowser::new(false));
     let (_stop, receiver) = watch::channel(false);
     let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;

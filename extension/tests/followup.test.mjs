@@ -193,7 +193,7 @@ test('local image follow-up uses existing conversation and waits for an uploaded
   assert.equal(p.d.querySelectorAll(prepared.upload_selector).length,1);
   assert.equal(p.clicks,0);
   p.d.querySelector('form').insertAdjacentHTML('beforeend',
-    '<button aria-label="Remove photo">Remove uploaded photo</button>');
+    '<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove uploaded photo</button></div>');
   const result=await p.submit();
   assert.equal(result.ok,true);assert.equal(result.url,target);assert.equal(p.clicks,1);
   assert.equal(p.events.filter(e=>e.event==='will_submit').length,1);
@@ -208,7 +208,7 @@ test('upload progress is awaited without confusing it with a generating response
   const pending=p.submit();assert.equal(p.clicks,0);
   p.w.setTimeout(()=>{
     p.d.querySelector('#upload-progress').remove();
-    p.d.querySelector('form').insertAdjacentHTML('beforeend','<button aria-label="Remove photo">Remove</button>');
+    p.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove</button></div>');
   },20);
   assert.equal((await pending).ok,true);assert.equal(p.clicks,1);p.close();
 });
@@ -222,6 +222,8 @@ test('an uploaded card with both thumbnail and remove control counts as one imag
 
 test('extra or ambiguous attachments cannot be sent with an expected single image',async()=>{
   for(const html of [
+    '<div class="uploaded"><img src="blob:expected"><button aria-label="Remove photo">Remove</button></div>',
+    '<div class="uploaded"><img src="blob:expected"><button aria-label="Remove photo">Remove</button></div><div class="replacement"><img src="blob:user"></div>',
     '<button aria-label="Remove expected photo">Remove</button><button aria-label="Remove user file">Remove</button>',
     '<div data-testid="file-thumbnail"></div><button aria-label="Remove user file">Remove</button>',
     '<div class="file-card"><div data-testid="file-thumbnail"></div><button aria-label="Remove photo">Remove</button></div>',
@@ -235,6 +237,20 @@ test('extra or ambiguous attachments cannot be sent with an expected single imag
     assert.equal((await p.submit()).code,'images_not_ready');assert.equal(p.clicks,0);
     assert.equal(p.events.some(e=>e.event==='will_submit'),false);p.close();
   }
+});
+
+test('remove-only previews cannot hide sibling replacements behind stable buttons',async()=>{
+  const p=page();p.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
+  assert.equal((await p.prepare({image_count:1})).ok,true);
+  p.d.querySelector('form').insertAdjacentHTML('beforeend',
+    '<div class="attachment"><img id="preview" src="blob:expected"><button aria-label="Remove photo">Remove</button></div>');
+  assert.equal(p.api.attachmentCount(),null);
+  assert.equal(p.api.watchAttachments(),null);
+  p.d.querySelector('#preview').setAttribute('src','blob:replacement');
+  assert.equal(p.api.attachmentsReady(1),false);
+  assert.equal((await p.submit()).code,'images_not_ready');
+  assert.equal(p.clicks,0);assert.equal(p.events.some(e=>e.event==='will_submit'),false);
+  assert.equal(p.d.querySelector('#preview').getAttribute('src'),'blob:replacement');p.close();
 });
 
 test('a user attachment appearing during native authorization is preserved and prevents Send',async()=>{
@@ -329,7 +345,7 @@ test('follow-up images must finish uploading, and cannot disappear during author
   const q=page({onAck:({d})=>d.querySelector('[aria-label="Remove photo"]').remove()});
   q.d.querySelector('form').insertAdjacentHTML('beforeend','<input type="file" multiple aria-label="Attach photos">');
   assert.equal((await q.prepare({image_count:1})).ok,true);
-  q.d.querySelector('form').insertAdjacentHTML('beforeend','<button aria-label="Remove photo">Remove</button>');
+  q.d.querySelector('form').insertAdjacentHTML('beforeend','<div data-testid="file-thumbnail"><button aria-label="Remove photo">Remove</button></div>');
   assert.equal((await q.submit()).code,'attachments_changed');assert.equal(q.clicks,0);q.close();
 });
 

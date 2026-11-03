@@ -284,6 +284,10 @@
     const allThumbnails=[...root.querySelectorAll('[data-testid="file-thumbnail"]')].filter(visible);
     const thumbnails=allThumbnails.filter(e=>!allThumbnails.some(parent=>parent!==e && parent.contains(e)));
     const removals=[...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"]')].filter(visible);
+    // A Remove button alone is not an attachment identity: preview/content
+    // can be replaced in a sibling without changing that button. Reject such
+    // layouts rather than certifying a stable file from a stable control.
+    if(removals.length && !thumbnails.length)return null;
     const matched=new Set(),items=[...thumbnails];
     for(const button of removals) {
       const thumbnail=thumbnails.find(e=>e.contains(button));
@@ -295,7 +299,7 @@
       if(thumbnail) {
         if(matched.has(thumbnail))return null;
         matched.add(thumbnail);
-      } else items.push(button);
+      } else return null;
     }
     return items;
   }

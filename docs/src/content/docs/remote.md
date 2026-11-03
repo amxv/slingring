@@ -7,7 +7,7 @@ category: Guides
 
 Remote access lets an assistant start a ChatGPT chat or follow up on an existing one through your Mac. You get a conversation link when the new turn starts, not the generated answer.
 
-> Request IDs, pending receipts, and `get_job_status` below describe unreleased changes on `main`. A v0.3.0 Mac still uses its original blocking calls and does not offer status recovery.
+> Request IDs, pending receipts, and `get_job_status` require Slingring v0.4.0 or newer on the Mac. A v0.3.0 Mac still uses blocking calls and does not offer status recovery.
 
 ## When remote access is already configured
 
