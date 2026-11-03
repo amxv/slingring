@@ -84,13 +84,15 @@
     // Recognize only known Chat editors; unrelated editable controls fail closed.
     return [...document.querySelectorAll('#prompt-textarea,[contenteditable="true"][aria-label="Ask ChatGPT"]')].some(visible);
   }
-  function waitFor(predicate, timeout = 30000, code = "ui_timeout") {
+  function waitFor(predicate, timeout = 30000, code = "ui_timeout", throttleMs = 0) {
     return new Promise((resolve, reject) => {
       let settled = false;
       let scheduled = false;
+      let observer = null;
+      let poll = null;
       const done = (value, error) => {
         if (settled) return;
-        settled = true; observer.disconnect(); clearTimeout(timer);
+        settled = true; observer?.disconnect(); clearInterval(poll); clearTimeout(timer);
         if (error) reject(error); else resolve(value);
       };
       const check = () => {
@@ -99,13 +101,47 @@
         try { const value = predicate(); if (value) done(value); }
         catch (error) { done(null, error); }
       };
-      const observer = new MutationObserver(() => {
-        if (!scheduled) { scheduled = true; queueMicrotask(check); }
-      });
       const timer = setTimeout(() => done(null, new Error(code)), timeout);
-      observer.observe(document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true});
+      if (throttleMs) {
+        // Activity detection is deliberately a sparse timer, NOT a global
+        // MutationObserver. Streaming can mutate thousands of nodes per
+        // second; observing all of those records makes headed Chrome janky.
+        poll = setInterval(check,throttleMs);
+      } else {
+        observer = new MutationObserver(() => {
+          if (!scheduled) {scheduled = true; queueMicrotask(check);}
+        });
+        observer.observe(document.documentElement, {subtree:true, childList:true, characterData:true, attributes:true});
+      }
       check();
     });
+  }
+  const LOAD_ERROR = "Could not load this ChatGPT conversation";
+  function conversationLoadFailure() {
+    if (composer() || !document.body?.textContent?.includes(LOAD_ERROR)) return null;
+    const candidates=[...document.querySelectorAll('h1,h2,h3,p,div,span,[role="alert"]')]
+      .filter(e=>e.childElementCount<=1 && normal(e.textContent)===LOAD_ERROR &&
+        !e.closest('[data-message-author-role],[data-user-message-bubble]') && visible(e));
+    if (!candidates.length) return null;
+    const scope=candidates[0].closest('[role="alert"],main,[role="main"]') || document.body;
+    const buttons=[...scope.querySelectorAll('button')].filter(e=>visible(e) && !e.disabled &&
+      e.getAttribute('aria-disabled')!=='true' &&
+      /^(?:try again)$/i.test(normal(e.textContent)||normal(e.getAttribute('aria-label'))));
+    return {button:buttons.length===1 ? buttons[0]:null};
+  }
+  async function ensureConversationLoaded(deadline=Date.now()+30000) {
+    let attempts=0;
+    while (deadline-Date.now()>1500) {
+      const state=await waitFor(()=>composer() ? 'ready' : conversationLoadFailure(),
+        Math.max(1,Math.min(15000,deadline-Date.now()-1000)), 'composer_unavailable', 50);
+      if(state==='ready')return;
+      if(!state.button || attempts>=2)throw Error('conversation_load_failed');
+      attempts++;
+      state.button.click(); // UI load retry only. Never retry a message.
+      // Give React time to start/re-render the retry before checking again.
+      await new Promise(resolve=>setTimeout(resolve,250));
+    }
+    throw Error('conversation_load_failed');
   }
   async function ensureChat(deadline=Date.now()+120000) {
     const budget=limit=>Math.max(1,Math.min(limit,deadline-Date.now()-5000));
@@ -369,7 +405,7 @@
   }
   function turnBaseline() {
     const users=userTurns();
-    return {users};
+    return {users, count:users.length};
   }
   function activityLabel(element) {
     if (!visible(element) || element.closest('.sr-only,[aria-hidden="true"]') || element.querySelector('.pulsing-dot')) return '';
@@ -394,15 +430,15 @@
         baseline.users.some((previous,index)=>users[index]!==previous))) return null;
     if (user && expectedPrompt && normal(editorText(user))!==normal(expectedPrompt)) return null;
     if (!user || !canonicalUrl()) return null;
-    // ChatGPT can retain a home view beside its live thread. Anchor observation
-    // to this task's user bubble rather than the first <main> on the page.
-    const main = user.closest('[data-thread-user-message-navigation-content]') || user.closest('main,[role="main"]');
+    // A navigation-content wrapper can surround ONLY the user bubble; the
+    // assistant response then sits in a sibling. Scope to the closest main
+    // containing this exact user, never the first/hidden pre-submit main.
+    const main = user.closest('main,[role="main"]') || user.closest('[data-thread-user-message-navigation-content]');
     if (!main) return null;
     const afterUser=e=>!e.contains(user) && !!(user.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING);
     const outsideUser=e=>!e.closest('[data-user-message-bubble],[data-message-author-role="user"],form,nav,header,[data-composer-body]');
     const meaningful=e=>visible(e) && afterUser(e) && outsideUser(e) && /[^\s.…·●•○◌]/u.test(e.textContent || '');
     const alerts = [...main.querySelectorAll('[role="alert"]')].filter(e=>visible(e) && afterUser(e));
-    if (alerts.some(e=>/something went wrong|usage limit|network error|try again/i.test(e.textContent))) throw Error("generation_error");
     const assistant = [...main.querySelectorAll('[data-message-author-role="assistant"],article[data-turn="assistant"]'),
       ...[...main.querySelectorAll('[data-conversation-role="assistant"]')].map(e=>e.parentElement).filter(Boolean)];
     for (const area of assistant) {
@@ -415,8 +451,11 @@
       if ([...area.querySelectorAll('.markdown,.prose,[data-message-content],[data-markdown-text-style="assistant-message"]')]
         .some(meaningful)) return "streaming";
     }
-    if(main.matches('[data-thread-user-message-navigation-content]')) {
-      for(const control of main.querySelectorAll('span,div')) {
+    if(main.matches('[data-thread-user-message-navigation-content]') ||
+        main.querySelector('[data-thread-user-message-navigation-content]')) {
+      // Probe sparse status nodes before rich descendants. Avoid cloning or
+      // reading complete old answers while tokens are being appended.
+      for(const control of main.querySelectorAll('span,[role="status"],[data-testid*="thinking"]')) {
         if(!afterUser(control) || !outsideUser(control) || control.childElementCount > 1 || control.querySelector('[data-user-message-bubble]'))continue;
         const label=activityLabel(control);
         if(label.length < 120 && /^(Thinking|Thought|Reasoning)(?:\b|…)/i.test(label))return 'thinking';
@@ -433,9 +472,36 @@
       if (/^(Thinking|Thought|Reasoning)(\.{0,3}|…| for .*)?$/i.test(label)) return "thinking";
       if (/^(Working|Analyzing|Searching)(\.{0,3}|…| for .*)?$/i.test(label)) return "working";
     }
+    if (alerts.some(e=>/something went wrong|usage limit|network error|try again/i.test(e.textContent)))
+      throw Error("generation_error");
     return null; // A stop control, loading dot, or empty assistant node is not evidence.
+  }
+  function messageSendError() {
+    // A red send-error toast is NOT evidence that a message failed to reach the
+    // server. Do not press its Retry action or ever auto-resubmit.
+    const phrase=/(?:message could not be sent|message couldn't be sent|message failed to send|failed to send (?:the |your )?message|couldn't send (?:the |your )?message)/i;
+    if(!phrase.test(document.body?.textContent||''))return false;
+    // A site's red banner isn't necessarily an ARIA alert. Descend only when
+    // the known short phrase is on the page, and exclude transcript bubbles.
+    const hints=[...document.querySelectorAll('[role="alert"],[role="status"],[data-testid*="error"],p,span,div')]
+      .filter(e=>visible(e) && !e.closest('[data-message-author-role],[data-user-message-bubble]') &&
+        !e.querySelector('[data-message-author-role],[data-user-message-bubble]'));
+    return hints.some(e=>e.childElementCount<=2 && phrase.test(e.textContent||''));
+  }
+  function recoveredEvidence(expectedPrompt, previousCount) {
+    // This is a READ-ONLY check after a page reload; DOM node identity cannot
+    // survive navigation. Require exactly one additional user turn, its exact
+    // message, and response-start evidence after it. Missing data stays
+    // uncertain; a red toast, vanished composer, or retry UI is never proof of
+    // non-submission.
+    if(!Number.isInteger(previousCount) || previousCount<0 || previousCount>10000)return null;
+    const input=composer();
+    if(!input || text(input))return null;
+    const users=userTurns();
+    if(users.length!==previousCount+1)return null;
+    return startEvidence(expectedPrompt,null);
   }
   globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
     currentEffort,effortState,powerState,setEffort,ensureEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
-    followupReady,followupIdle,noAttachments,turnBaseline};
+    followupReady,followupIdle,noAttachments,turnBaseline,conversationLoadFailure,ensureConversationLoaded,messageSendError,recoveredEvidence};
 })();

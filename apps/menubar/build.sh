@@ -10,7 +10,6 @@ architecture="$2"
 version="$3"
 case "$architecture" in
   arm64|aarch64) swift_arch=arm64 ;;
-  amd64|x86_64) swift_arch=x86_64 ;;
   *) echo "Unsupported macOS architecture: $architecture" >&2; exit 2 ;;
 esac
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected X.Y.Z release version" >&2; exit 2; }

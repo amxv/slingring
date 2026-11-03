@@ -86,6 +86,7 @@ struct TaskPresentation {
         case "send_ready": return "Ready to submit"
         case "submission_authorized": return "Confirming submission"
         case "activity_wait": return "Waiting for new ChatGPT activity"
+        case "submission_recovery": return "Verifying the conversation after refresh"
         case "activity_confirmed": return "Submission confirmed"
         default: return "Starting task"
         }

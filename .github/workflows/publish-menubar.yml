@@ -21,9 +21,6 @@ jobs:
           - arch: arm64
             triple: aarch64-apple-darwin
             runner: macos-15
-          - arch: amd64
-            triple: x86_64-apple-darwin
-            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -49,11 +46,9 @@ jobs:
           mkdir -p stage out
           cp "target/$TARGET/release/slingring" "stage/slingring"
           chmod 755 "stage/slingring"
-          codesign --force --sign - "stage/slingring"
+          codesign --force --sign - --identifier com.amxv.slingring.cli "stage/slingring"
           codesign --verify --strict "stage/slingring"
-          swift_arch="$ARCH"
-          if [ "$ARCH" = amd64 ]; then swift_arch=x86_64; fi
-          bash apps/menubar/build.sh "$PWD/stage/Slingring.app" "$swift_arch" "$version"
+          bash apps/menubar/build.sh "$PWD/stage/Slingring.app" arm64 "$version"
           codesign --verify --deep --strict "stage/Slingring.app"
           "stage/Slingring.app/Contents/MacOS/slingring-menubar" --check
           cp LICENSE stage/LICENSE

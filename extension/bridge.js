@@ -10,6 +10,7 @@ let targetUrl=null;
 let readyUrl=null;
 let submitted=false;
 let finished=false;
+let previousCount=null;
 const waits=new Map();
 const next=(type,timeout=180000)=>new Promise((resolve,reject)=>{
   const timer=setTimeout(()=>{waits.delete(type);reject(Error("native_timeout"));},timeout);
@@ -22,7 +23,7 @@ const EFFORTS=new Set(['Instant','Medium','High','Extra High','Pro']);
 const EFFORT_KINDS=new Set(['known','missing','ambiguous','unrecognized']);
 const EFFORT_PHASES=new Set(['prepare','before_authorization','after_authorization']);
 const stages=new Set(['chat_loading','chat_mode_verification','conversation_loading','composer_ready','effort_selection',
-  'prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait']);
+  'prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait','submission_recovery']);
 const progress=stage=>native.postMessage({type:'progress',job,stage});
 function bootstrapCommitted(id,url) {
   return new Promise((resolve,reject)=>{
@@ -77,6 +78,9 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   }
   if(message.event!=="will_submit" || message.id!==job || submitted || finished)return false;
   if(targetUrl && sender.url!==targetUrl){reply({ok:false});return false;}
+  if(!Number.isInteger(message.previous_count) || message.previous_count<0 ||
+      message.previous_count>10000){reply({ok:false});return false;}
+  previousCount=message.previous_count;
   const ack=next("continue",10000);
   native.postMessage({type:"will_submit",job});
   ack.then(()=>{submitted=true;reply({ok:true});}).catch(()=>reply({ok:false}));
@@ -125,7 +129,30 @@ async function run() {
     native.postMessage({type:"upload",job,selector:prepared.upload_selector});
     const reply=await uploaded;if(reply.ok!==true)throw Error("image_upload_failed");
   }
-  const result=await content("submit",{});
+  let result;
+  try {
+    result=await content("submit",{});
+  } catch(error) {
+    // Once the native handoff authorizes a click, any failure is uncertain.
+    // Only a fresh, READ-ONLY inspection of the exact same conversation is
+    // permitted. Never press a red Retry control or submit the prompt again.
+    if(!submitted || previousCount===null ||
+        !['message_send_error','generation_error','generation_not_started','native_timeout',
+          'content_script_failed'].includes(error.message)) throw error;
+    const tab=await chrome.tabs.get(tabId);
+    const current=canonical(tab?.url) ? tab.url : (canonical(error.url) ? error.url : null);
+    if(!current || (targetUrl && current!==targetUrl))throw error;
+    const remaining=deadline-Date.now();
+    if(remaining<3000)throw error;
+    progress('submission_recovery');
+    // Wait only for this owned tab's new content script. No navigation to
+    // homepage, no voice/effort changes, and no second send path.
+    const afterReload=readyFor(current,Math.min(deadline,Date.now()+18000));
+    await chrome.tabs.reload(tabId);
+    await afterReload;
+    result=await content('recover',{chatgpt_url:current,prompt:task.prompt,
+      previous_count:previousCount,effort:task.effort,deadline_ms:Math.min(deadline,Date.now()+13000)});
+  }
   if(!canonical(result.url) || (targetUrl && result.url!==targetUrl) ||
       !["thinking","working","streaming"].includes(result.evidence))throw Error("invalid_result");
   const acknowledged=next("ack",10000);

@@ -6,10 +6,12 @@ import {JSDOM} from 'jsdom';
 const source=readFileSync(new URL('../bridge.js',import.meta.url),'utf8');
 const target='https://chatgpt.com/c/existing-conversation';
 const bootstrap='about:blank#slingring-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,tabUrl=bootstrap,initialBlank=false}={}) {
+async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,tabUrl=bootstrap,initialBlank=false,
+  submitError=null,recoverError=null}={}) {
   const page=new JSDOM('<body></body>',{url:'chrome-extension://test-extension/bridge.html#token=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa&job=test-job',runScripts:'outside-only'});
   const w=page.window,events=[],navigations=[],contentRequests=[],removed=[],order=[];
   let nativeListener,runtimeListener,resolve,updatedListener,tabCommitted=!initialBlank;
+  let currentUrl=tabUrl;
   const finished=new Promise(done=>{resolve=done;});
   const post=value=>w.queueMicrotask(()=>nativeListener(value));
   const native={onMessage:{addListener:fn=>{nativeListener=fn;}},onDisconnect:{addListener:()=>{}},postMessage:message=>{
@@ -28,18 +30,26 @@ async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,
     get:async id=>{
       assert.equal(id,5);
       if(!tabCommitted){w.setTimeout(()=>{tabCommitted=true;updatedListener?.(id,{url:tabUrl},{id,url:tabUrl});},10);return {id,url:'about:blank'};}
-      return {id,url:tabUrl};
+      return {id,url:currentUrl};
     },
     update:async (id,data)=>{
-      assert.equal(id,5);navigations.push(data.url);order.push(`navigate:${data.url}`);
+      assert.equal(id,5);currentUrl=data.url;navigations.push(data.url);order.push(`navigate:${data.url}`);
       w.queueMicrotask(()=>runtimeListener({kind:'slingring',event:'ready'},{...sender,url:data.url},()=>{}));
+    },
+    reload:async id=>{
+      assert.equal(id,5);order.push('reload');
+      w.queueMicrotask(()=>runtimeListener({kind:'slingring',event:'ready'},{...sender,url:currentUrl},()=>{}));
     },
     sendMessage:async (id,message)=>{
       assert.equal(id,5);contentRequests.push(message);order.push(message.action);
       if(message.action==='prepare')return prepareError ? {ok:false,code:prepareError,submitted:false} :
         {ok:true,effort:task.effort??null,upload_selector:'input[type="file"][multiple]'};
-      const ack=await new Promise(done=>runtimeListener({kind:'slingring',event:'will_submit',id:'test-job'},sender,done));
+      if(message.action==='recover')return recoverError ? {ok:false,code:recoverError,submitted:true,url:currentUrl} :
+        {ok:true,url:currentUrl,evidence:'thinking',effort:task.effort??null,submitted:true};
+      const ack=await new Promise(done=>runtimeListener({kind:'slingring',event:'will_submit',id:'test-job',
+        previous_count:task.chatgpt_url===null?0:1},sender,done));
       if(!ack?.ok)return {ok:false,submitted:false,code:'submission_not_authorized'};
+      if(submitError)return {ok:false,submitted:true,code:submitError,url:currentUrl};
       return {ok:true,url:resultUrl,evidence:'thinking',effort:task.effort??null,submitted:true};
     },
     remove:async id=>{removed.push(id);},getCurrent:async()=>({id:99})
@@ -143,4 +153,20 @@ test('native tab binding is required before navigation and rejects a changed boo
 test('native tab binding waits for the nonce URL to commit before querying CDP',async()=>{
   const result=await run({initialBlank:true});
   assert.equal(result.terminal.type,'released');assert.equal(result.events.filter(e=>e.type==='bind_tab').length,1);
+});
+test('misleading send error refreshes the exact chat and only uses read-only recovery',async()=>{
+  const r=await run({submitError:'message_send_error'});
+  assert.equal(r.terminal.type,'released');
+  assert.equal(r.order.filter(e=>e==='reload').length,1);
+  assert.deepEqual(r.contentRequests.map(m=>m.action),['prepare','submit','recover']);
+  assert.equal(r.contentRequests.find(m=>m.action==='recover').previous_count,1);
+  assert.equal(r.events.filter(e=>e.type==='will_submit').length,1);
+  assert.equal(r.events.find(e=>e.type==='started').url,target);
+});
+test('refresh without new activity stays uncertain and never resubmits',async()=>{
+  const r=await run({submitError:'message_send_error',recoverError:'recovery_unverified'});
+  assert.equal(r.terminal.type,'failed');assert.equal(r.terminal.submitted,true);
+  assert.equal(r.terminal.code,'recovery_unverified');
+  assert.deepEqual(r.contentRequests.map(m=>m.action),['prepare','submit','recover']);
+  assert.equal(r.contentRequests.filter(m=>m.action==='submit').length,1);
 });

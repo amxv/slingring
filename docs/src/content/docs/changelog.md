@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.5.1 · 3 November 2026
+
+Recover an exact “Could not load this ChatGPT conversation” error with at most two clicks of the **page-load** Try again control, stopping with a clear non-submission failure if it never exposes a composer. A red **message-send** Retry is never clicked and a submitted prompt is never replayed: when a send-error is seen, refresh the already-owned exact conversation once and check its visible new turn and response-start activity read-only. If evidence remains incomplete, return **uncertain**, not “not submitted.” Protect drafts, images, voice readiness, exact targets and existing Chat/Extra High defaults.
+
+Throttle response-start DOM checks to reduce renderer jank, preserve the correct activity URL, and return once activity is verified without awaiting generation or cleanup. Disable unused experimental WebMCP, local device casting discovery and default app installation in the temporary browser (no LAN device permission is needed for Slingring). Assign the CLI a stable signing identifier. Apple Silicon macOS is now the **only** release target; Intel bundles and checks are removed. Browser permissions are still managed by macOS; these changes do not bypass Apple privacy protections or guarantee that the OS will retain an ad-hoc-signed app's consent after updates.
+
 ## 0.5.0 · 3 November 2026
 
 Follow-ups now open the exact existing conversation URL directly rather than navigating through the ChatGPT homepage or switching Chat/Work mode first. Omitted follow-up `reasoning_effort` skips all model-picker reads, changes and blocks. An optional explicit level on CLI and MCP follow-ups attempts to select the desired reasoning effort before filling; an unavailable or rehydrating picker does not prevent submission. Follow-ups retain strict voice/stop readiness, target-URL binding, user-draft protection, one-shot submission and fresh-activity confirmation. Record only allowlisted requested/observed effort metadata when an explicit level was supplied, never model output or picker text. No new-chat selection behavior changes.
