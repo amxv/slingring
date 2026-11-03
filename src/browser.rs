@@ -17,7 +17,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::net::{TcpStream, UnixListener};
+use tokio::net::{TcpStream, UnixListener, UnixStream};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 pub fn install_extension(root: &Path) -> Result<PathBuf> {
@@ -83,6 +83,10 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             &config.profile,
             "--idle-timeout",
             &idle,
+            // Keep the helper anchored to its initial blank tab. Otherwise its
+            // discovery of our extension-created tabs steals the active target
+            // and a later open could race owned controller cleanup.
+            "--pin-tab",
             "--json",
         ])
         .args(args)
@@ -334,6 +338,35 @@ fn trace(stage: &str) {
     }
 }
 
+fn handoff_started(
+    result: TaskResult,
+    mut socket: UnixStream,
+    mut cdp: Cdp,
+    controller_id: String,
+) -> TaskResult {
+    // Activity is already validated. Cleanup must not turn proven submission
+    // into uncertainty if the native channel, CDP, or outer deadline expires.
+    // This task owns only the old accepted stream/connection/controller ID. It
+    // never removes the shared socket path or closes the named browser session.
+    let _cleanup = tokio::spawn(async move {
+        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+            native::write(&mut socket, &json!({"type":"ack"})).await?;
+            native::read(&mut socket).await
+        })
+        .await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            cdp.call(
+                "Target.closeTarget",
+                json!({"targetId":controller_id}),
+                None,
+            ),
+        )
+        .await;
+    });
+    result
+}
+
 pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResult> {
     run_with_progress(config, task, task_id, Arc::new(|_| {})).await
 }
@@ -544,17 +577,9 @@ pub async fn run_with_progress(
                 };
                 task.validate_result(&result)
                     .map_err(|_| failure("invalid_start_result", true, conversation_url.clone()))?;
-                native::write(&mut socket, &json!({"type":"ack"})).await?;
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(3), native::read(&mut socket)).await;
-                let _ = cdp
-                    .call(
-                        "Target.closeTarget",
-                        json!({"targetId":controller_id}),
-                        None,
-                    )
-                    .await;
-                return Ok(result);
+                // The listener and its path guard drop synchronously here,
+                // before the serial worker can begin another job.
+                return Ok(handoff_started(result, socket, cdp, controller_id));
             }
             Some("failed") => {
                 let code = event["code"]

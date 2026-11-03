@@ -122,11 +122,22 @@ test('hydrating disabled Chat control is awaited, rather than sent through or re
 });
 test('home bootstrap never switches away from an actual Work draft or attachment',async()=>{
   for(const extra of ['<div contenteditable="true" aria-label="Work with ChatGPT"><p>Existing user draft</p></div>',
+    '<div contenteditable="true" aria-label="Work with ChatGPT"><p>  </p></div>',
+    '<div contenteditable="true" aria-label="Work with ChatGPT"><p><br></p><p><br></p></div>',
     '<div contenteditable="true" aria-label="Work with ChatGPT"><p><br></p></div><button aria-label="Remove file">Remove</button>']) {
     const p=page('<button aria-pressed="false">Chat</button><button aria-pressed="true">Work</button>'+extra,'https://chatgpt.com/');
     p.document.querySelector('button').addEventListener('click',()=>assert.fail('must not switch away from Work draft'));
     await assert.rejects(p.api.ensureChat(),/unrelated_draft_present|attachments_present/);p.close();
   }
+});
+test('a structural empty Work paragraph permits the explicit Chat bootstrap',async()=>{
+  const p=page('<button id="chat" aria-pressed="false">Chat</button><button id="work" aria-pressed="true">Work</button><div id="editor" contenteditable="true" aria-label="Work with ChatGPT"><p><br></p></div>','https://chatgpt.com/');
+  p.document.querySelector('#chat').addEventListener('click',()=>{
+    p.document.querySelector('#chat').setAttribute('aria-pressed','true');
+    p.document.querySelector('#work').setAttribute('aria-pressed','false');
+    p.document.querySelector('#editor').setAttribute('aria-label','Ask ChatGPT');
+  });
+  await p.api.ensureChat();assert.equal(p.api.chatVerified(),true);assert.equal(p.api.hasDraft(),false);p.close();
 });
 function picker(levels,start) {
   const p=page(controls+`<button id="model" aria-label="Select ChatGPT model">Thinking effort${levels[start]}</button>

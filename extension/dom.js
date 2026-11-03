@@ -121,9 +121,9 @@
       if(state.button) {
         const workEditors=[...document.querySelectorAll('[contenteditable][aria-label],textarea[aria-label]')]
           .filter(e=>visible(e) && /^work with chatgpt$/i.test(normal(e.getAttribute('aria-label'))));
-        // Work's empty editor may contain a structural newline. Any actual
-        // text or attached material is a draft; never switch away from it.
-        if(workEditors.some(e=>normal(editorText(e))))throw Error('unrelated_draft_present');
+        // editorText removes known structural empty-line placeholders. Preserve
+        // actual text including literal whitespace; never switch away from it.
+        if(workEditors.some(e=>editorText(e).length>0))throw Error('unrelated_draft_present');
         if(workEditors.some(e=>[...(e.closest('form,[data-composer-body],main') || e).querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"],[data-testid="file-thumbnail"]')].some(visible)))throw Error('attachments_present');
       }
       if (state.button?.isConnected) state.button.click();

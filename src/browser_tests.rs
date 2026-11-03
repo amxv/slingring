@@ -207,7 +207,7 @@ fn both_browser_modes_require_matching_visibility_and_an_isolated_profile() {
 async fn launcher_passes_persisted_headed_setting_without_custom_fingerprint_flags() {
     let directory = tempfile::tempdir().unwrap();
     let binary = directory.path().join("synthetic-browser");
-    std::fs::write(&binary, "#!/bin/sh\ncase \"$1\" in --headed) mode=headed;; *) mode=headless;; esac\nif [ \"${AGENT_BROWSER_HEADED+x}\" = x ]; then inherited=present; else inherited=absent; fi\nfor argument do\ncase \"$argument\" in --args|--user-agent|--executable-path) exit 9;; esac\ndone\nprintf '{\"success\":true,\"data\":{\"mode\":\"%s\",\"headed_env\":\"%s\"}}' \"$mode\" \"$inherited\"\n").unwrap();
+    std::fs::write(&binary, "#!/bin/sh\ncase \"$1\" in --headed) mode=headed;; *) mode=headless;; esac\nif [ \"${AGENT_BROWSER_HEADED+x}\" = x ]; then inherited=present; else inherited=absent; fi\npinned=false\nfor argument do\ncase \"$argument\" in --pin-tab) pinned=true;; --args|--user-agent|--executable-path) exit 9;; esac\ndone\nprintf '{\"success\":true,\"data\":{\"mode\":\"%s\",\"headed_env\":\"%s\",\"pinned\":%s}}' \"$mode\" \"$inherited\" \"$pinned\"\n").unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
     for headed in [false, true] {
         let config = Config {
@@ -218,5 +218,64 @@ async fn launcher_passes_persisted_headed_setting_without_custom_fingerprint_fla
         let result = agent(&config, &["open", "about:blank"]).await.unwrap();
         assert_eq!(result["mode"], if headed { "headed" } else { "headless" });
         assert_eq!(result["headed_env"], "absent");
+        assert_eq!(result["pinned"], true);
+    }
+}
+
+#[tokio::test]
+async fn validated_success_is_immediate_even_when_native_and_cdp_cleanup_stall() {
+    for disconnected in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "ws://{}/devtools/browser/test",
+            listener.local_addr().unwrap()
+        );
+        let (close_seen, closed) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let message = socket.next().await.unwrap().unwrap();
+            let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "Target.closeTarget");
+            assert_eq!(request["params"]["targetId"], "old-owned-controller");
+            close_seen.send(()).unwrap();
+            // Do not answer CDP. Bounded cleanup must drop this connection.
+            let _ = socket.next().await;
+        });
+        let cdp = Cdp::connect(&endpoint).await.unwrap();
+        let (socket, peer) = UnixStream::pair().unwrap();
+        let mut peer = if disconnected {
+            drop(peer);
+            None
+        } else {
+            Some(peer)
+        };
+        let expected = TaskResult {
+            job_id: "proved".into(),
+            url: CHAT.into(),
+            reasoning_effort: Some("Medium".into()),
+            evidence: "thinking".into(),
+        };
+        let before = tokio::time::Instant::now();
+        let result = handoff_started(expected.clone(), socket, cdp, "old-owned-controller".into());
+        assert_eq!(result, expected);
+        assert!(before.elapsed() < Duration::from_millis(50));
+        if let Some(peer) = peer.as_mut() {
+            let ack = tokio::time::timeout(Duration::from_millis(500), native::read(peer))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(ack["type"], "ack");
+            // Never send released. It must not delay the already-returned URL.
+        }
+        tokio::time::timeout(Duration::from_secs(2), closed)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.evidence, "thinking");
     }
 }
