@@ -8,7 +8,18 @@ Object.assign(crypto.subtle, { timingSafeEqual: (a: ArrayBuffer, b: ArrayBuffer)
 class Socket {
   frames: string[] = [];
   closed = false;
-  send(frame: string) { if (this.closed) throw Error('closed'); this.frames.push(frame); }
+  waiters: {count: number, resolve: () => void}[] = [];
+  send(frame: string) {
+    if (this.closed) throw Error('closed');
+    this.frames.push(frame);
+    const ready=this.waiters.filter(waiter=>this.frames.length>=waiter.count);
+    this.waiters=this.waiters.filter(waiter=>this.frames.length<waiter.count);
+    for(const waiter of ready) waiter.resolve();
+  }
+  sent(count=1): Promise<void> {
+    if(this.frames.length>=count) return Promise.resolve();
+    return new Promise(resolve=>this.waiters.push({count,resolve}));
+  }
   close() { this.closed = true; }
 }
 let socket: Socket;
@@ -18,7 +29,9 @@ let context: any;
 function req(body: unknown = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { images: ['unchanged'] } }, headers = {}, path = '/mcp', method = 'POST') {
   return new Request(`https://relay.example${path}`, { method, headers: { Authorization: 'Bearer client', Accept: 'application/json', 'Content-Type': 'application/json', ...headers }, ...(method === 'GET' ? {} : { body: JSON.stringify(body) }) });
 }
-async function sent() { for (let i = 0; i < 30 && socket.frames.length === 0; i++) await new Promise(resolve => setImmediate(resolve)); }
+// Wait for the actual WebSocket event. A fixed number of event-loop turns can
+// race WebCrypto on a slower Linux CI runner despite passing locally.
+async function sent(count=1) { await socket.sent(count); }
 function result(response: unknown, id = JSON.parse(socket.frames.at(-1)!).id) { relay.webSocketMessage(socket as any, JSON.stringify({ type: 'rpc_result', id, response })); }
 beforeEach(() => {
   socket = new Socket();
@@ -121,7 +134,7 @@ describe('pending lifecycle', () => {
   });
   it('caps concurrent requests at 32 and fails them on disconnect', async () => {
     const calls = Array.from({ length: 32 }, () => relay.fetch(req()));
-    for (let i = 0; i < 50 && socket.frames.length < 32; i++) await new Promise(resolve => setImmediate(resolve));
+    await sent(32);
     expect(socket.frames).toHaveLength(32);
     expect((await relay.fetch(req())).status).toBe(429);
     relay.webSocketClose(socket as any);

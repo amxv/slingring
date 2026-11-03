@@ -26,14 +26,20 @@
     if (message.action === "submit") {
       if (!task || message.id!==task.id || submitted) throw Error("invalid_submission_state");
       await dom.waitFor(()=>dom.attachmentsReady(task.image_count),45000,"images_not_ready");
-      const button=await dom.waitFor(dom.sendButton,15000,"send_button_unavailable");
+      await dom.waitFor(dom.sendButton,15000,"send_button_unavailable");
       if (!dom.chatVerified() || location.pathname!=="/") throw Error("chat_mode_unverified");
       if (dom.text(dom.composer())!==dom.normal(task.prompt)) throw Error("prompt_changed");
       if (task.requested && dom.currentEffort()!==task.requested) throw Error("effort_changed");
       const ack=await chrome.runtime.sendMessage({kind:"slingring",event:"will_submit",id:task.id});
       if (ack?.ok!==true) throw Error("submission_not_authorized");
-      // Recheck after the native acknowledgement; never click on an assumed state.
-      if (!dom.chatVerified() || button.disabled || dom.text(dom.composer())!==dom.normal(task.prompt)) throw Error("page_changed_before_send");
+      // React may replace the composer/send control while the native round trip
+      // is pending. Re-query after the acknowledgement, never click a detached
+      // element whose disabled property still happens to be false.
+      const button=dom.sendButton();
+      const input=dom.composer();
+      if (!button?.isConnected || !input?.isConnected || !dom.chatVerified() || button.disabled ||
+          location.pathname!=="/" || dom.text(input)!==dom.normal(task.prompt) ||
+          (task.requested && dom.currentEffort()!==task.requested)) throw Error("page_changed_before_send");
       submitted=true;
       button.click();
       let reported=false;
