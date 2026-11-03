@@ -72,6 +72,7 @@ jobs:
 
       - name: Build the native menu bar companion
         run: |
+          bash apps/menubar/test.sh
           cargo build --locked
           mkdir -p tmp/ci
           cp target/debug/slingring tmp/ci/slingring

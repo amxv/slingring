@@ -29,6 +29,10 @@ These commands do not open a browser. Do not include credentials or private MCP 
 | Follow-up target or voice control unavailable | Verify that the selected account can open the chat and that its composer is ready. Login changes, redirects, and unknown layouts fail closed; do not repeatedly submit. |
 | Unrelated draft present | Review the existing composer draft yourself. Slingring will not overwrite an unrelated draft. |
 | An uncertain result | Check the target conversation and the job journal before trying another request. A message may already have been sent; never blindly repeat it. |
+| Need to see the automated browser | Choose Configure → Browser Mode → Headed (Visible Browser), or run `slingring config set browser-mode headed`. The setting applies to newly submitted tasks. Restore the default with `slingring config set browser-mode headless`. |
+| Menu shows a startup phase but no new chat | A task is still preparing or waiting. Reopen the menu to refresh its phase, or use `slingring jobs --request-id ID --json`. Submission is confirmed only after fresh ChatGPT activity is detected. |
+| Last attempt says not submitted | Read the error code in the menu or journal and resolve that failure before deliberately submitting a new request. Historical attempts do not count as active tasks. |
+| Service status unavailable | Saved history may be stale while the service is unresponsive. Do not assume the queue is empty or resend a request; query the same request ID when the service answers. |
 | Menu bar version looks old | Quit the menu bar and reopen `~/.local/bin/Slingring.app`; keep the CLI beside it. |
 
 The Cloudflare test page is not the product's health check. A challenge there does not establish that ChatGPT submissions are broken. Keep compatibility experiments isolated from the working browser configuration.

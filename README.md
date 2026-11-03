@@ -39,6 +39,8 @@ slingring send-message https://chatgpt.com/c/YOUR-CHAT-ID --message-file ./follo
 
 Choose Instant, Medium, High, Extra High, or Pro when your account exposes it. Omitted or blank effort uses the configured default. Change it in Configure → Default Reasoning or with `slingring config set default-effort High`.
 
+The automated browser is headless by default. To watch a task while debugging, choose **Configure → Browser Mode → Headed (Visible Browser)**, or run `slingring config set browser-mode headed`. The choice persists and applies to newly submitted local and remote tasks. Switch back with `slingring config set browser-mode headless`.
+
 ## Use it with remote agents
 
 After the one-time [remote setup](https://slingring.ashray.xyz/docs/remote), copy your private MCP URL from Configure → Copy Remote MCP URL, or:
@@ -62,6 +64,8 @@ Remote access needs an awake, online Mac and your own Cloudflare relay. Local us
 ## Stays out of the way
 
 Up to 32 requests share one serial queue. A follow-up waiting for a busy chat uses the existing startup timeout and can delay later tasks. The queue does not prevent a person or another client from writing to the same chat. The browser closes when the queue drains. Local-only mode leaves no Slingring process between tasks. Remote mode keeps one small push connection. The optional menu bar is a CLI wrapper, not another browser.
+
+Open the menu to refresh the current startup phase, queued count, and last submission outcome. A confirmed submission is separate from a task still starting. Slingring stops tracking once new ChatGPT activity begins; it does not track whether the answer is finished.
 
 If a submission is **uncertain**, inspect ChatGPT and `slingring jobs --request-id ID --json` before trying again. Slingring never automatically retries a possibly submitted prompt.
 

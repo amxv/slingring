@@ -32,12 +32,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var serviceRunning = false
     private var serviceInstalled = false
     private var automaticUpdates = false
+    private var browserHeaded = false
     private var latestURL: URL?
     private var effortItems: [NSMenuItem] = []
+    private var browserModeItems: [NSMenuItem] = []
     private let profilesMenu = NSMenu()
     private var loadingProfiles = false
     private let stateItem = NSMenuItem(title: "Open menu to read status", action: nil, keyEquivalent: "")
     private let queueItem = NSMenuItem(title: "No active tasks", action: nil, keyEquivalent: "")
+    private let lastAttemptItem = NSMenuItem(title: "No completed submission attempts", action: nil, keyEquivalent: "")
     private lazy var remoteItem = item("Enable Remote Access", #selector(toggleRemote), "network")
     private lazy var serviceItem = item("Start Service", #selector(toggleService), "power")
     private lazy var loginItem = item("Start Service at Login", #selector(toggleLogin), "arrow.right.circle")
@@ -51,8 +54,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         status.button?.toolTip = product
         menu.delegate = self
         menu.autoenablesItems = false
-        stateItem.isEnabled = false; queueItem.isEnabled = false
-        menu.addItem(stateItem); menu.addItem(queueItem)
+        stateItem.isEnabled = false; queueItem.isEnabled = false; lastAttemptItem.isEnabled = false
+        menu.addItem(stateItem); menu.addItem(queueItem); menu.addItem(lastAttemptItem)
         menu.addItem(.separator())
         menu.addItem(serviceItem)
         menu.addItem(latestItem)
@@ -67,6 +70,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         profileChoice.submenu = profilesMenu
         profilesMenu.addItem(NSMenuItem(title: "Open to load profiles…", action: nil, keyEquivalent: ""))
         settings.addItem(profileChoice)
+        let browserMode = NSMenuItem(title: "Browser Mode", action: nil, keyEquivalent: "")
+        let browserChoices = NSMenu()
+        for (label, value) in [("Headless (Default)", "headless"), ("Headed (Visible Browser)", "headed")] {
+            let choice = NSMenuItem(title: label, action: #selector(selectBrowserMode(_:)), keyEquivalent: "")
+            choice.target = self; choice.representedObject = value
+            choice.toolTip = "Applies to newly submitted tasks. Active tasks continue with their original setting."
+            browserChoices.addItem(choice); browserModeItems.append(choice)
+        }
+        browserMode.submenu = browserChoices; settings.addItem(browserMode)
         let reasoning = NSMenuItem(title: "Default Reasoning", action: nil, keyEquivalent: "")
         let choices = NSMenu()
         for level in ["Instant", "Medium", "High", "Extra High", "Pro", "Use ChatGPT Setting"] {
@@ -167,28 +179,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             guard let self else { return }; self.refreshing = false
             guard result.code == 0, let data = result.output.data(using: .utf8),
                   let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                self.stateItem.title = "CLI unavailable"; return
+                self.stateItem.title = "CLI unavailable"
+                self.queueItem.title = "Task status unavailable"
+                self.lastAttemptItem.title = "Reopen the menu to retry status"
+                return
             }
             self.serviceRunning = value["running"] as? Bool ?? false
             self.remoteEnabled = value["remote_enabled"] as? Bool ?? false
             self.serviceInstalled = value["installed"] as? Bool ?? false
             let remote = value["remote_state"] as? String ?? "offline"
             self.stateItem.title = self.remoteEnabled ? "Remote: \(remote.capitalized)" : "Local Only"
-            let count = value["active_tasks"] as? Int ?? 0
-            self.queueItem.title = count == 0 ? "No active tasks · browser closes when idle" : "\(count) task(s) starting or queued"
+            let task = TaskPresentation(value)
+            self.queueItem.title = task.queue
+            self.lastAttemptItem.title = task.lastAttempt
             self.remoteItem.title = self.remoteEnabled ? "Disable Remote Access" : "Enable Remote Access"
             self.remoteItem.state = self.remoteEnabled ? .on : .off
             self.serviceItem.title = self.serviceRunning ? "Stop Service" : "Start Service"
             self.loginItem.state = self.serviceInstalled ? .on : .off
             let config = value["config"] as? [String: Any] ?? [:]
+            self.browserHeaded = config["browser_headed"] as? Bool ?? false
+            for choice in self.browserModeItems {
+                choice.state = ((choice.representedObject as? String) == "headed") == self.browserHeaded ? .on : .off
+            }
             let effort = config["default_effort"] as? String ?? "site"
             for choice in self.effortItems { choice.state = (choice.representedObject as? String) == effort ? .on : .off }
-            let job = value["latest_job"] as? [String: Any]
-            let result = job?["result"] as? [String: Any]
-            let address = job?["url"] as? String ?? result?["url"] as? String
-            self.latestURL = address.flatMap { value in
-                guard value.hasPrefix("https://chatgpt.com/c/") else { return nil }; return URL(string: value)
-            }
+            self.latestURL = task.latestURL
             self.latestItem.isEnabled = self.latestURL != nil
         }
         run(["auto-update", "status"]) { [weak self] result in
@@ -208,6 +223,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     @objc private func selectEffort(_ sender: NSMenuItem) {
         guard let effort = sender.representedObject as? String else { return }
         change(["config", "set", "default-effort", effort])
+    }
+    @objc private func selectBrowserMode(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? String else { return }
+        change(["config", "set", "browser-mode", mode])
     }
     @objc private func toggleRemote() { change(["remote", remoteEnabled ? "off" : "on"]) }
     @objc private func toggleService() { change(["service", serviceRunning ? "stop" : "start"]) }

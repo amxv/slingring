@@ -25,6 +25,7 @@ for key in CFBundleShortVersionString CFBundleVersion AppReleaseVersion; do
 done
 /usr/bin/swiftc -O -target "$swift_arch-apple-macos13.0" \
   "$source_dir/Sources/main.swift" \
+  "$source_dir/Sources/TaskPresentation.swift" \
   -o "$output/Contents/MacOS/slingring-menubar"
 
 # Ad-hoc signing does NOT notarize. Browser downloads can remain quarantined.

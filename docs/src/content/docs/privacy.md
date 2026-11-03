@@ -17,6 +17,8 @@ State directories use 0700 permissions and state/configuration files use 0600. T
 
 The browser runs with an isolated temporary profile copy. Native Messaging registration is scoped to that owned browser data directory. Slingring does not take control of ordinary Chrome windows or replace the normal agent-browser CLI.
 
+Headless mode is the default. Opting into headed mode makes that same isolated automation browser visible for debugging, including the conversation and prompt on screen. It retains draft checks, profile ownership checks and compatibility flags. Changing the setting does not interrupt the current task.
+
 ## Remote access
 
 Anyone with the client token or private MCP URL can start chats and send follow-ups to accessible chats when they know the conversation URL. Use separate high-entropy client and device credentials. Never publish a connection URL, commit credentials, or include them in support logs. Rotate exposed credentials in Cloudflare and reconfigure the Mac.

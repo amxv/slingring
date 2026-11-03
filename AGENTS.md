@@ -4,7 +4,7 @@ Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversation
 
 ## Invariants
 
-- Use the pinned `agent-browser-browse` compatibility baseline. Never silently fall back to upstream, attach to normal Chrome windows, change fingerprint flags, or use headed mode without approval.
+- Use the pinned `agent-browser-browse` compatibility baseline. Never silently fall back to upstream, attach to normal Chrome windows, or change fingerprint flags. Headless is the default; headed mode requires an explicit saved `browser-mode headed` choice. Preserve that choice across local and remote submissions and never change an active task's mode.
 - Chat mode must be positively verified. Never submit in Work or an ambiguous mode. Requested effort must be read back; never silently downgrade account-restricted levels.
 - Stop buttons and loading indicators are not activity. Watch the visible transcript: the current SPA leaves a hidden pre-submit `main` mounted.
 - Do not read, log, return, or store generated answer text. The DOM adapter may classify content presence to detect streaming.
@@ -20,7 +20,7 @@ Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversation
 
 `src/queue.rs`: durable metadata, recovery classification and serial ownership. `src/browser.rs`: patched-browser launch, safe stage categories, limited CDP extension installation/upload, cleanup. `src/diagnostics.rs`: bounded, payload-free private lifecycle events. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: remote-compatible new task, follow-up and status request dispatch; `src/mcp_sdk.rs`: official Rust SDK server for stdio. All tools advertise owner-requested readOnlyHint=true/openWorldHint=false; only two tools send messages; hints never bypass authorization. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
 
-The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browser PID through the already-owned CDP browser connection, then verify the headless process and isolated temporary user-data directory. Never guess another browser's profile. Do not enable CDP Runtime event streaming.
+The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browser PID through the already-owned CDP browser connection, then verify the configured headed/headless mode and isolated temporary user-data directory. Never guess another browser's profile. Do not enable CDP Runtime event streaming.
 
 ## Checks
 
@@ -28,6 +28,7 @@ The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browse
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+bash apps/menubar/test.sh
 (cd extension && bun install --frozen-lockfile && bun run check && bun run test)
 (cd relay && bun install --frozen-lockfile && bun run check && bun run test)
 just docs-test

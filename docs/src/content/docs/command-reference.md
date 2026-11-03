@@ -35,7 +35,18 @@ slingring auto-update on|off|status
 
 ## Configuration
 
-The default state directory is `~/.config/slingring`. `SLINGRING_HOME` can select another absolute directory. Supported `config set` keys include `profile`, `browser-binary`, `default-effort`, `timeout-secs`, and `heartbeat-secs`.
+The default state directory is `~/.config/slingring`. `SLINGRING_HOME` can select another absolute directory. Supported `config set` keys include `profile`, `browser-binary`, `browser-mode`, `default-effort`, `timeout-secs`, and `heartbeat-secs`.
+
+`browser-mode` accepts `headless` (the default) or `headed` (a visible window for debugging). It persists as the boolean `browser_headed` configuration field; `config set browser-headed true|false` is an equivalent spelling. Existing configuration files default to headless. Use Configure → Browser Mode in the menu bar or:
+
+```bash
+slingring config set browser-mode headed
+slingring config set browser-mode headless
+```
+
+Local CLI, local MCP and remote MCP submissions all use the saved setting when they enter the queue. Active and already queued tasks keep their original setting; the owned browser is reopened between tasks when a setting change requires it. Both modes use the isolated profile, pinned browser helper, draft protection and the same compatibility flags. Headed mode only makes the automation visible and can have different site-detection behavior; it does not guarantee that a challenge will disappear.
+
+`status` separates `active_job`, `starting_tasks` and `queued_tasks` from historical `latest_finished_job` and `latest_started_job`. A historical `started` record confirms submission and fresh activity, not a still-running task or a finished answer. If the service owns its lock but cannot answer a status request, `status_available` is false and the CLI exposes saved history without claiming that the queue is idle. The menu bar refreshes when opened; it has no background status timer.
 
 The default task-start timeout is 180 seconds, including follow-up readiness. Local queue waiting does not consume that per-task budget. Remote Cloudflare requests have a 240-second HTTP hold with a 230-second Mac-side deadline (including queue wait), and the configured 180-second browser-start budget is the tighter limit when applicable. A remote MCP client can time out independently, often before the Mac finishes. Timed-out client calls do **not** cancel an already running submission. The browser can close before journaling the terminal result, adding to caller-observed elapsed time. Status and configuration output redact credentials. Metadata discovery and profile listing do not open a browser.
 
