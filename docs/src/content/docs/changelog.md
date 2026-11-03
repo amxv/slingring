@@ -6,7 +6,7 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
-## Unreleased
+## 0.5.0 · 3 November 2026
 
 Follow-ups now open the exact existing conversation URL directly rather than navigating through the ChatGPT homepage or switching Chat/Work mode first. Omitted follow-up `reasoning_effort` skips all model-picker reads, changes and blocks. An optional explicit level on CLI and MCP follow-ups attempts to select the desired reasoning effort before filling; an unavailable or rehydrating picker does not prevent submission. Follow-ups retain strict voice/stop readiness, target-URL binding, user-draft protection, one-shot submission and fresh-activity confirmation. Record only allowlisted requested/observed effort metadata when an explicit level was supplied, never model output or picker text. No new-chat selection behavior changes.
 
