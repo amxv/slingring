@@ -13,8 +13,12 @@ github-attestations = false
 targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
 ]
 
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-15"
 x86_64-apple-darwin = "macos-15-intel"
+x86_64-unknown-linux-gnu = "ubuntu-24.04"
+x86_64-pc-windows-msvc = "windows-2025"

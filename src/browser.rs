@@ -3,6 +3,7 @@
 //! it never enables Runtime events or reads generated answers.
 use crate::{
     config::{self, Config},
+    ipc::{self, Kind},
     model::{NewTask, StartError, TaskResult, canonical_url},
     native,
 };
@@ -11,12 +12,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
-use tokio::net::{TcpStream, UnixListener};
+use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
 pub fn install_extension(root: &Path) -> Result<PathBuf> {
@@ -30,7 +30,7 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     ensure!(
         Path::new(&config.browser_binary)
             .file_name()
-            .is_none_or(|name| name != "agent-browser"),
+            .is_none_or(|name| name != "agent-browser" && name != "agent-browser.exe"),
         "upstream agent-browser is not an allowed fallback"
     );
     let name = session(&config::root()?);
@@ -57,6 +57,11 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    command.env("AGENT_BROWSER_NAMESPACE", "slingring").env(
+        "AGENT_BROWSER_CONFIG",
+        config::root()?.join("browser/config.json"),
+    );
     let output = tokio::time::timeout(Duration::from_secs(65), command.output())
         .await
         .context("browser command timed out")??;
@@ -91,8 +96,20 @@ impl Cdp {
             .filter(|pid| *pid > 0 && *pid <= u32::MAX as u64)
             .context("browser PID missing")?;
         trace(&format!("browser_pid={pid}"));
+        #[cfg(unix)]
         let output = tokio::process::Command::new("/bin/ps")
             .args(["-p", &pid.to_string(), "-o", "command="])
+            .stdin(Stdio::null())
+            .output()
+            .await?;
+        #[cfg(windows)]
+        let output = tokio::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"),
+            ])
             .stdin(Stdio::null())
             .output()
             .await?;
@@ -107,7 +124,18 @@ impl Cdp {
         );
         let directory = command
             .split_once("--user-data-dir=")
-            .map(|(_, rest)| rest.split(" --").next().unwrap_or("").trim())
+            .map(|(_, rest)| {
+                let rest = rest.trim();
+                if let Some(quoted) = rest.strip_prefix('"') {
+                    quoted.split('"').next().unwrap_or("")
+                } else {
+                    rest.split(" --")
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches('"')
+                        .trim()
+                }
+            })
             .filter(|value| !value.is_empty())
             .context("owned browser profile directory missing")?;
         let directory = PathBuf::from(directory).canonicalize()?;
@@ -230,12 +258,6 @@ impl Cdp {
         outcome
     }
 }
-struct Cleanup(PathBuf);
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
 fn failure(code: &str, submitted: bool, url: Option<String>) -> anyhow::Error {
     StartError {
         code: code.into(),
@@ -285,7 +307,7 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
         .owned_profile()
         .await
         .map_err(|_| failure("isolated_profile_unverified", false, None))?;
-    native::register(&root, &browser_data)
+    let _registration = native::register(&root, &browser_data)
         .map_err(|_| failure("native_registration_failed", false, None))?;
     let loaded = cdp
         .call("Extensions.loadUnpacked", json!({"path":extension}), None)
@@ -295,13 +317,8 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
         loaded["id"] == native::EXTENSION_ID,
         "unexpected companion extension identity"
     );
-    let socket = root.join("browser.sock");
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
-    let listener = UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
-    let _cleanup = Cleanup(socket);
+    let listener = ipc::bind(&root, Kind::Browser).await?;
+    let _cleanup = ipc::Cleanup(ipc::endpoint(&root, Kind::Browser));
     let token = uuid::Uuid::new_v4().to_string();
     let mut bridge = url::Url::parse(&format!(
         "chrome-extension://{}/bridge.html",
@@ -326,6 +343,9 @@ pub async fn run(config: &Config, task: &NewTask, task_id: &str) -> Result<TaskR
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
         .await
         .map_err(|_| failure("native_connection_failed", false, None))??;
+    ipc::authenticate(&mut socket, &root, Kind::Browser)
+        .await
+        .map_err(|_| failure("native_connection_failed", false, None))?;
     let hello = tokio::time::timeout(Duration::from_secs(5), native::read(&mut socket)).await??;
     trace("native_connected");
     ensure!(

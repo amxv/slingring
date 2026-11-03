@@ -79,6 +79,40 @@ jobs:
           bash apps/menubar/build.sh "$PWD/tmp/ci/Slingring.app" arm64 "$version"
           tmp/ci/Slingring.app/Contents/MacOS/slingring-menubar --check
 
+  rust-cross-platform:
+    name: Rust CLI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+      - name: Help, status and read-only MCP smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          if [[ "$RUNNER_OS" == Windows ]]; then exe=target/debug/slingring.exe; else exe=target/debug/slingring; fi
+          "$exe" --version
+          "$exe" status --json
+          echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$exe" mcp
+      - name: Verify Linux installer isolation
+        if: runner.os == 'Linux'
+        run: python3 scripts/test_installers.py
+
   web-components:
     runs-on: ubuntu-latest
     steps:

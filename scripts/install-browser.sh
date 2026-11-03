@@ -3,13 +3,15 @@
 set -eu
 umask 077
 version=0.41.1
-asset=agent-browser-browse-darwin-arm64.tar.gz
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) target=darwin-arm64 ;;
+  Linux:x86_64) target=linux-x86_64 ;;
+  *) echo 'Bundled browser helper supports macOS ARM64 and Linux x86_64; Windows uses install-browser.ps1.' >&2; exit 1 ;;
+esac
+asset="agent-browser-browse-$target.tar.gz"
 base_url="https://github.com/amxv/agent-browser-browse/releases/download/v$version"
 root=${1:?Slingring home required}
 case "$root" in /*) ;; *) echo 'Slingring home must be absolute' >&2; exit 1;; esac
-[ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || {
-  echo 'The bundled browser helper currently supports Apple Silicon Macs only.' >&2; exit 1;
-}
 base="$root/browser"
 destination="$base/$version"
 [ ! -L "$base" ] && [ ! -L "$destination" ] || { echo 'Refusing a symlink browser directory' >&2; exit 1; }
@@ -20,10 +22,14 @@ trap 'rm -rf "$stage"' EXIT HUP INT TERM
 valid() {
   candidate=$1
   [ -f "$candidate/agent-browser-browse-native" ] && [ ! -L "$candidate/agent-browser-browse-native" ] &&
-    [ "$(cat "$candidate/UPSTREAM_VERSION" 2>/dev/null)" = "$version" ] &&
+    [ "$(cat "$candidate/UPSTREAM_VERSION" 2>/dev/null)" = "$version" ] || return 1
+  if [ "$target" = darwin-arm64 ]; then
     codesign --verify --strict "$candidate/agent-browser-browse-native" >/dev/null 2>&1 &&
-    [ "$(lipo -archs "$candidate/agent-browser-browse-native")" = arm64 ] &&
-    [ "$("$candidate/agent-browser-browse-native" --version)" = "agent-browser $version" ]
+    [ "$(lipo -archs "$candidate/agent-browser-browse-native")" = arm64 ] || return 1
+  else
+    file -b "$candidate/agent-browser-browse-native" | grep -Eq '^ELF 64-bit LSB (pie )?executable, x86-64' || return 1
+  fi
+  [ "$("$candidate/agent-browser-browse-native" --version)" = "agent-browser $version" ]
 }
 if ! valid "$destination"; then
   echo "Installing the verified Slingring browser helper ($version)…" >&2
@@ -31,7 +37,11 @@ if ! valid "$destination"; then
   curl --proto '=https' --tlsv1.2 -fsSL --retry 2 --connect-timeout 15 --max-time 60 "$base_url/SHA256SUMS" -o "$stage/SHA256SUMS"
   expected=$(awk -v name="$asset" '$2 == name {n++; value=$1} END {if(n==1) print value}' "$stage/SHA256SUMS")
   printf '%s' "$expected" | grep -Eq '^[[:xdigit:]]{64}$' || { echo 'Missing or ambiguous browser checksum' >&2; exit 1; }
-  actual=$(shasum -a 256 "$stage/$asset" | awk '{print $1}')
+  if [ "$target" = darwin-arm64 ]; then
+    actual=$(shasum -a 256 "$stage/$asset" | awk '{print $1}')
+  else
+    actual=$(sha256sum "$stage/$asset" | awk '{print $1}')
+  fi
   [ "$actual" = "$expected" ] || { echo 'Browser checksum mismatch; nothing replaced' >&2; exit 1; }
   tar -tzf "$stage/$asset" > "$stage/members"
   while IFS= read -r name; do

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the macOS CLI and optional signed Swift app. Private releases use gh.
+# Installs the macOS CLI + signed Swift app, or the Linux x86_64 CLI.
 # Ad-hoc signing is not Developer ID notarization. Never strip quarantine.
 set -eu
 cli='slingring'
@@ -11,11 +11,12 @@ action=${1:-install}
 case "$action" in install|upgrade|--check) ;; *) echo "Usage: install.sh [upgrade|--check]" >&2; exit 2 ;; esac
 case "$(uname -s)" in
   Darwin) os=darwin; mac=1 ;;
-  *) echo 'Slingring currently supports macOS only.' >&2; exit 1 ;;
+  Linux) os=linux; mac=0 ;;
+  *) echo 'This installer supports macOS and Linux x86_64; use install.ps1 on Windows.' >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
-  arm64|aarch64) arch=arm64 ;;
-  x86_64|amd64) echo 'The included browser helper currently requires an Apple Silicon Mac.' >&2; exit 1 ;;
+  arm64|aarch64) [ "$mac" = 1 ] || { echo 'Linux ARM64 is not supported yet' >&2; exit 1; }; arch=arm64 ;;
+  x86_64|amd64) [ "$mac" = 0 ] || { echo 'The included macOS browser helper requires Apple Silicon.' >&2; exit 1; }; arch=amd64 ;;
   *) echo 'Unsupported CPU architecture' >&2; exit 1 ;;
 esac
 install_dir=${CLI_INSTALL_DIR:-"$HOME/.local/bin"}
@@ -27,7 +28,7 @@ app_dest="$install_dir/$app"
 if [ -L "$target" ] || [ -L "$app_dest" ]; then
   echo 'Refusing to replace a symlink installation' >&2; exit 1
 fi
-if [ "$action" = install ] && { [ -e "$target" ] || [ -e "$app_dest" ]; }; then
+if [ "$action" = install ] && { [ -e "$target" ] || { [ "$mac" = 1 ] && [ -e "$app_dest" ]; }; }; then
   echo "$cli is installed. Use '$cli upgrade' rather than reinstalling." >&2; exit 1
 fi
 if [ "$action" = upgrade ] && [ ! -f "$target" ]; then
@@ -78,7 +79,11 @@ download_asset() {
     }
   fi
 }
-asset="${binary}_darwin_${arch}.tar.gz"
+if [ "$mac" = 1 ]; then
+  asset="${binary}_darwin_${arch}.tar.gz"
+else
+  asset="slingring-x86_64-unknown-linux-gnu.tar.xz"
+fi
 download_asset "$asset.sha256" "$stage/sums"
 download_asset "$asset" "$stage/$asset"
 expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
@@ -107,7 +112,15 @@ if [ "$mac" = 1 ]; then
   "$stage/unpacked/$app/Contents/MacOS/$app_exec" --check
   source_cli="$stage/unpacked/$cli"
 else
-  source_cli="$stage/$asset"
+  mkdir "$stage/unpacked"
+  tar -tJf "$stage/$asset" | while IFS= read -r entry; do
+    entry=${entry#./}
+    case "$entry" in slingring|LICENSE|README.md|LICENSE-MIT|LICENSE-APACHE|'') ;; *) echo "Unexpected archive entry: $entry" >&2; exit 1;; esac
+  done
+  tar -xJf "$stage/$asset" -C "$stage/unpacked"
+  [ -z "$(find "$stage/unpacked" -type l -print -quit)" ] || { echo 'Archive symlinks are not allowed' >&2; exit 1; }
+  source_cli="$stage/unpacked/$cli"
+  [ -f "$source_cli" ] || { echo 'Linux release is missing the CLI' >&2; exit 1; }
   chmod 755 "$source_cli"
 fi
 "$source_cli" --version
@@ -115,6 +128,44 @@ fi
 # The helper is private to Slingring; no Homebrew, npm, Python, or upstream CLI.
 "$source_cli" browser install >/dev/null
 mkdir -p "$install_dir"
+
+if [ "$mac" = 0 ]; then
+  # Linux carries no menu-bar bundle. Keep a verified backup until CLI
+  # replacement passes; do not upgrade during an active browser operation.
+  staged=$(mktemp -d "$install_dir/.$cli-stage.XXXXXXXX")
+  backup=$(mktemp -d "$install_dir/.$cli-backup.XXXXXXXX")
+  trap 'rm -rf "$stage" "$staged" "$backup"' EXIT HUP INT TERM
+  cp "$source_cli" "$staged/$cli"
+  chmod 755 "$staged/$cli"
+  service_running=0
+  if [ "$action" = upgrade ]; then
+    state=$("$target" status --json)
+    if printf '%s' "$state" | grep -Eq '"active_tasks":[1-9][0-9]*'; then
+      echo 'A task is active; installation unchanged.' >&2; exit 1
+    fi
+    if printf '%s' "$state" | grep -q '"running":true'; then
+      service_running=1
+      "$target" service stop >/dev/null
+    fi
+    mv "$target" "$backup/old-cli"
+  fi
+  if ! mv "$staged/$cli" "$target" || ! "$target" --version; then
+    rm -f "$target"
+    [ ! -f "$backup/old-cli" ] || mv "$backup/old-cli" "$target"
+    echo 'CLI install failed; previous CLI restored.' >&2
+    exit 1
+  fi
+  if [ "$service_running" = 1 ]; then
+    "$target" service start >/dev/null ||
+      echo 'Installed successfully, but the service did not restart; run slingring service start.' >&2
+  fi
+  printf 'Installed %s (Linux x86_64) at %s\n' "$cli" "$target"
+  if [ "$action" = install ]; then
+    printf 'Choose your signed-in Chrome profile with: %s profile list\n' "$target"
+    printf 'Then: %s setup --profile "PROFILE NAME"\n' "$target"
+  fi
+  exit 0
+fi
 
 # Stage BOTH replacements before stopping the menu bar process. If any move
 # fails, recover the old CLI/app from the sibling backup directory.

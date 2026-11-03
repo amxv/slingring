@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -74,7 +75,7 @@ done
     def test_intel_is_rejected_without_partial_install(self):
         self.stub('uname','case "$1" in -s) echo Darwin;; -m) echo x86_64;; esac')
         result=self.run_browser();self.assertNotEqual(result.returncode,0)
-        self.assertIn('Apple Silicon',result.stderr)
+        self.assertIn('macOS ARM64',result.stderr)
         self.assertFalse((self.state/'browser').exists())
     def test_main_installer_installs_browser_before_cli_replacement(self):
         cli='''#!/bin/sh
@@ -100,5 +101,47 @@ esac
         self.assertTrue((self.home/'install/slingring').is_file())
         self.assertEqual((self.base/'events').read_text().strip(),'browser-installed')
         self.assertIn('Chrome Profile',result.stdout)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires native Linux x86_64')
+    def test_linux_browser_helper_installs_with_checksum_and_architecture(self):
+        self.stub('uname','case "$1" in -s) echo Linux;; -m) echo x86_64;; esac')
+        asset = 'agent-browser-browse-linux-x86_64.tar.gz'
+        native = self.fixtures/'native'
+        program = '#include <stdio.h>\nint main(void) { puts("agent-browser 0.41.1"); return 0; }\n'
+        subprocess.run(['cc','-x','c','-o',str(native),'-'],input=program,text=True,check=True)
+        with tarfile.open(self.fixtures/asset, 'w:gz') as tar:
+            for name,src in [('agent-browser-browse-native',native)]:
+                tar.add(src,arcname=name)
+            value=b'0.41.1\n'
+            entry=tarfile.TarInfo('UPSTREAM_VERSION');entry.size=len(value);entry.mode=0o644
+            tar.addfile(entry,io.BytesIO(value))
+        checksum=hashlib.sha256((self.fixtures/asset).read_bytes()).hexdigest()
+        (self.fixtures/'SHA256SUMS').write_text(f'{checksum}  {asset}\n')
+        result=self.run_browser()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue((self.state/'browser/agent-browser-browse').is_file())
+        self.assertIn('slingring', (self.state/'browser/agent-browser-browse').read_text())
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires native Linux')
+    def test_linux_main_installer_bootstraps_browser_before_replacing_cli(self):
+        self.stub('uname','case "$1" in -s) echo Linux;; -m) echo x86_64;; esac')
+        program = '#!/bin/sh\ncase "$1" in --version) echo "slingring 0.2.0";; browser) echo browser-installed >> "$EVENT_LOG";; *) exit 0;; esac\n'
+        asset='slingring-x86_64-unknown-linux-gnu.tar.xz'
+        path=self.fixtures/asset
+        with tarfile.open(path,'w:xz') as tar:
+            value=program.encode();info=tarfile.TarInfo('slingring');info.size=len(value);info.mode=0o755
+            tar.addfile(info,io.BytesIO(value))
+        (self.fixtures/(asset+'.sha256')).write_text(hashlib.sha256(path.read_bytes()).hexdigest()+'\n')
+        self.stub('gh', '''case "$1 $2" in
+ "auth status") exit 0;;
+ "api repos/amxv/slingring/releases/latest") echo v0.2.0; exit 0;;
+ "release download")
+ name=; output=; while [ "$#" -gt 0 ]; do case "$1" in --pattern) name=$2;shift 2;; --output) output=$2;shift 2;; *) shift;; esac;done
+ cp "$FIXTURES/$name" "$output";;
+ *) exit 1;; esac''')
+        result=subprocess.run(['/bin/sh',str(ROOT/'docs/public/install.sh')],env=self.env,capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue((self.home/'install/slingring').is_file())
+        self.assertEqual((self.base/'events').read_text().strip(),'browser-installed')
 
 if __name__=='__main__':unittest.main()

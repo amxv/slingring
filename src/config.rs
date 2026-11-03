@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -44,6 +43,11 @@ pub fn root() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SLINGRING_HOME") {
         return Ok(PathBuf::from(path));
     }
+    #[cfg(windows)]
+    return Ok(
+        PathBuf::from(std::env::var_os("APPDATA").context("APPDATA missing")?).join("slingring"),
+    );
+    #[cfg(unix)]
     Ok(PathBuf::from(std::env::var_os("HOME").context("HOME missing")?).join(".config/slingring"))
 }
 pub fn private_dir(path: &Path) -> Result<()> {
@@ -52,7 +56,55 @@ pub fn private_dir(path: &Path) -> Result<()> {
         !fs::symlink_metadata(path)?.file_type().is_symlink(),
         "state directory cannot be a symlink"
     );
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    secure_windows_acl(path)?;
+    Ok(())
+}
+#[cfg(windows)]
+fn secure_windows_acl(path: &Path) -> Result<()> {
+    use std::process::Command;
+    // A per-user ACL is required: local loopback IPC endpoint tokens live here.
+    let who = Command::new("whoami.exe")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()?;
+    ensure!(
+        who.status.success(),
+        "cannot determine user SID for private state"
+    );
+    let row = String::from_utf8(who.stdout)?;
+    let sid = row
+        .trim()
+        .rsplit(',')
+        .next()
+        .unwrap_or("")
+        .trim_matches('"');
+    ensure!(
+        sid.starts_with("S-1-5-") && sid.len() < 128,
+        "invalid local user SID"
+    );
+    let owner = format!("*{sid}:(OI)(CI)F");
+    let system = "*S-1-5-18:(OI)(CI)F";
+    let grant = Command::new("icacls.exe")
+        .arg(path)
+        .args(["/grant:r", &owner, system])
+        .output()?;
+    ensure!(
+        grant.status.success(),
+        "cannot restrict Slingring state ACL"
+    );
+    let inherit = Command::new("icacls.exe")
+        .arg(path)
+        .arg("/inheritance:r")
+        .output()?;
+    ensure!(
+        inherit.status.success(),
+        "cannot remove inherited state permissions"
+    );
     Ok(())
 }
 pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -66,14 +118,18 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let temp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options.open(&temp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         fs::rename(&temp, path)?;
+        #[cfg(unix)]
         fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
@@ -90,7 +146,11 @@ pub fn read_private(path: &Path, max: u64) -> Result<Vec<u8>> {
         "refusing nonregular state file"
     );
     ensure!(meta.len() <= max, "state file exceeds size limit");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(fs::read(path)?)
 }
 pub fn secure_url(value: &str, websocket: bool) -> Result<String> {

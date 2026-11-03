@@ -9,19 +9,21 @@ Slingring lets another agent start a conversation in your ChatGPT account and re
 
 ## 1. Install
 
-You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. While Slingring is private, you also need an authenticated GitHub CLI (`gh`) with access to the repository.
+You need **Apple Silicon macOS, Linux x86_64, or Windows x64**, Google Chrome, and a ChatGPT account signed into Chrome. The non-macOS CLI builds require the matching cross-platform browser helper release (not yet published at PR time). While Slingring is private, you also need an authenticated GitHub CLI (`gh`) with access to the repository.
 
 ```bash
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-One installer sets up the CLI, menu bar app, companion extension, and verified browser helper. There is no separate agent-browser, Node, or Homebrew installation step. Chrome itself and signing into your account remain yours to set up.
+On Windows, use PowerShell: `irm https://slingring.ashray.xyz/install.ps1 | iex`. These installers become usable once the matching release assets have been published.
 
-The app opens in your menu bar. The `slingring` command lives in `~/.local/bin`. If your shell cannot find it, use `~/.local/bin/slingring` in the commands below, or add that directory to your PATH.
+One installer sets up the CLI, companion extension and verified browser helper, plus the menu bar app on macOS. There is no separate agent-browser, Node, or Homebrew installation step. Chrome itself and signing into your account remain yours to set up.
+
+On macOS the app opens in your menu bar. On macOS/Linux the `slingring` command lives in `~/.local/bin`; on Windows it lives under `%LOCALAPPDATA%\Programs\Slingring`. Add the appropriate directory to PATH if necessary. Linux and Windows currently have no tray UI.
 
 ## 2. Choose your Chrome profile
 
-Open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched.
+On macOS, open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched.
 
 Prefer the terminal?
 

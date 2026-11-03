@@ -1,5 +1,6 @@
 use crate::{
     config::{self, Config},
+    ipc::{self, Kind},
     model::{MAX_JSON, NewTask},
     queue::{Browser, Queue},
 };
@@ -8,14 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs::OpenOptions,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
     sync::{Semaphore, watch},
     task::JoinSet,
 };
@@ -46,7 +45,7 @@ pub async fn line<R: AsyncBufRead + Unpin>(stream: &mut R, max: usize) -> Result
     }
 }
 pub async fn call(root: &Path, request: &Request) -> Result<Value> {
-    let mut stream = UnixStream::connect(root.join("slingring.sock"))
+    let mut stream = ipc::connect(root, Kind::Daemon)
         .await
         .context("Slingring service is not running")?;
     let mut bytes = serde_json::to_vec(request)?;
@@ -76,7 +75,8 @@ struct ContextState {
     config: watch::Sender<Config>,
     remote: watch::Receiver<String>,
 }
-async fn client(stream: UnixStream, ctx: Arc<ContextState>) -> Result<()> {
+async fn client(mut stream: ipc::Stream, ctx: Arc<ContextState>) -> Result<()> {
+    ipc::authenticate(&mut stream, &ctx.root, Kind::Daemon).await?;
     let mut reader = BufReader::new(stream);
     let bytes = tokio::time::timeout(Duration::from_secs(5), line(&mut reader, MAX_JSON)).await??;
     let request = serde_json::from_slice::<Request>(&bytes);
@@ -124,11 +124,15 @@ async fn client(stream: UnixStream, ctx: Arc<ContextState>) -> Result<()> {
     }
     Ok(())
 }
-struct SocketCleanup(PathBuf);
-impl Drop for SocketCleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+async fn terminate_signal() {
+    #[cfg(unix)]
+    if let Ok(mut signal) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        let _ = signal.recv().await;
     }
+    #[cfg(windows)]
+    std::future::pending::<()>().await
 }
 
 pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
@@ -140,23 +144,18 @@ pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
             "invalid daemon lock"
         );
     }
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(lock_path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(lock_path)?;
     fs2::FileExt::try_lock_exclusive(&lock)
         .context("another Slingring service already owns this state directory")?;
-    let socket = root.join("slingring.sock");
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
-    let listener = UnixListener::bind(&socket)
-        .context("could not bind private socket (state path may be too long)")?;
-    let _cleanup = SocketCleanup(socket.clone());
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    let listener = ipc::bind(&root, Kind::Daemon).await?;
+    let _cleanup = ipc::Cleanup(ipc::endpoint(&root, Kind::Daemon));
     let initial = Config::load(&root)?;
     let (stop_tx, stop_rx) = watch::channel(false);
     let (config_tx, config_rx) = watch::channel(initial);
@@ -179,7 +178,6 @@ pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
     let permits = Arc::new(Semaphore::new(64));
     let mut clients = JoinSet::new();
     let mut stopping = stop_rx;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let grace = Duration::from_secs(if ephemeral { 1 } else { 2 });
     let idle = tokio::time::sleep(grace);
     tokio::pin!(idle);
@@ -188,7 +186,7 @@ pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
         tokio::select! {
             r = &mut worker => { worker_finished = true; break r.context("queue worker stopped")?; }
             _ = tokio::signal::ctrl_c() => break Ok(()),
-            _ = terminate.recv() => break Ok(()),
+            _ = terminate_signal() => break Ok(()),
             _ = stopping.changed() => break Ok(()),
             _ = &mut idle, if clients.is_empty() && !ctx.config.borrow().remote_enabled => {
                 if ctx.queue.quiet() { break Ok(()); }
