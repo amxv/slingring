@@ -19,20 +19,42 @@ fn run_command() -> Result<String> {
     );
     Ok(format!("\"{string}\" daemon"))
 }
-pub fn installed() -> bool {
-    Command::new("reg.exe")
+fn registered_command() -> Result<Option<String>> {
+    let output = Command::new("reg.exe")
         .args(["query", RUN_KEY, "/v", LABEL])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let rows = String::from_utf8(output.stdout)?;
+    Ok(rows.lines().find_map(|line| {
+        line.split_once("REG_SZ")
+            .map(|(_, value)| value.trim().to_owned())
+    }))
+}
+pub fn installed() -> bool {
+    registered_command()
+        .ok()
+        .flatten()
+        .zip(run_command().ok())
+        .is_some_and(|(registered, expected)| registered.eq_ignore_ascii_case(&expected))
 }
 pub fn loaded() -> bool {
     installed()
 }
 pub fn install(root: &Path) -> Result<()> {
+    ensure!(
+        std::env::var_os("SLINGRING_HOME").is_none(),
+        "Windows login startup uses default APPDATA state; custom roots can run on demand only"
+    );
     config::private_dir(root)?;
     let program = run_command()?;
+    if let Some(existing) = registered_command()? {
+        ensure!(
+            existing.eq_ignore_ascii_case(&program),
+            "a different Slingring startup registration exists; refusing to overwrite it"
+        );
+    }
     let status = Command::new("reg.exe")
         .args([
             "add", RUN_KEY, "/v", LABEL, "/t", "REG_SZ", "/d", &program, "/f",
@@ -45,7 +67,11 @@ pub fn install(root: &Path) -> Result<()> {
     Ok(())
 }
 pub fn uninstall() -> Result<()> {
-    if installed() {
+    if let Some(existing) = registered_command()? {
+        ensure!(
+            existing.eq_ignore_ascii_case(&run_command()?),
+            "startup registration belongs to another executable; refusing to delete it"
+        );
         let status = Command::new("reg.exe")
             .args(["delete", RUN_KEY, "/v", LABEL, "/f"])
             .status()?;
