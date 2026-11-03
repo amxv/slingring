@@ -110,6 +110,15 @@ describe('HTTP framing', () => {
   });
 });
 describe('pending lifecycle', () => {
+  it('accepts a heartbeat fallback without disturbing pending requests', async () => {
+    const call=relay.fetch(req());await sent();
+    const frame=JSON.parse(socket.frames[0]);
+    relay.webSocketMessage(socket as any,'ping');
+    expect(socket.frames.at(-1)).toBe('pong');
+    expect(socket.closed).toBe(false);
+    relay.webSocketMessage(socket as any,JSON.stringify({type:'rpc_result',id:frame.id,response:{jsonrpc:'2.0',id:1,result:{}}}));
+    expect((await call).status).toBe(200);
+  });
   it('caps concurrent requests at 32 and fails them on disconnect', async () => {
     const calls = Array.from({ length: 32 }, () => relay.fetch(req()));
     for (let i = 0; i < 50 && socket.frames.length < 32; i++) await new Promise(resolve => setImmediate(resolve));

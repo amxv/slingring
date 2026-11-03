@@ -31,7 +31,7 @@ impl Default for Config {
             device_token: None,
             mcp_url: None,
             remote_enabled: false,
-            heartbeat_secs: 120,
+            heartbeat_secs: 60,
         }
     }
 }
