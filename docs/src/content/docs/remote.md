@@ -7,6 +7,8 @@ category: Guides
 
 Remote access lets an assistant start a ChatGPT chat or follow up on an existing one through your Mac. You get a conversation link when the new turn starts, not the generated answer.
 
+> Request IDs, pending receipts, and `get_job_status` below describe unreleased changes on `main`. A v0.3.0 Mac still uses its original blocking calls and does not offer status recovery.
+
 ## When remote access is already configured
 
 Open **Configure → Enable Remote Access**. The menu should say **Remote: Connected**.
@@ -25,11 +27,29 @@ Keep the entire URL private. Anyone who has it can submit prompts through your a
 
 Ask it to use `new_task` with your prompt and, optionally, a reasoning level. For example: “Start a ChatGPT chat to review this plan using High reasoning, then give me the link.”
 
-`new_task` accepts only `prompt` and optional `reasoning_effort`. Leave effort out, or leave it blank, to use the default configured on your Mac.
+`new_task` accepts `prompt`, optional `reasoning_effort`, and optional `request_id`. Leave effort out, or leave it blank, to use the default configured on your Mac. Choose a fresh unique `request_id` before starting any job that may outlast your MCP client's timeout.
 
-To continue that chat, ask the assistant to call `send_message` with `chatgpt_url` and `message`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. It returns the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
+To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, and optionally a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. Its confirmed result contains the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
 
-Both tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests. If a result is uncertain, inspect the conversation and `slingring jobs --json` before sending anything again. See [CLI and MCP reference](/docs/command-reference) for URL and queue limits.
+Both write tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests.
+
+### If the task is still starting
+
+The Mac waits up to five seconds after accepting an MCP request for a confirmed result or failure. If it needs longer, the call returns a receipt containing `request_id`, `job_id`, `accepted: true`, `outcome: in_progress`, the current job phase, and `recovery_tool: get_job_status`. The accepted task continues in the Mac's queue. **Acceptance does not mean a message was submitted.**
+
+Ask the assistant to query `get_job_status` with that ID until the outcome is terminal. Open the returned conversation URL after `submitted`. This keeps browser startup and busy conversations from consuming the calling client's entire timeout.
+
+### If your agent times out before getting a receipt
+
+The Mac may **keep working after the calling agent stops waiting**. A caller's timeout does not establish that the message failed or was sent. Instead of resubmitting, use the read-only `get_job_status` tool with the exact `request_id` you chose before the call:
+
+```json
+{"name":"get_job_status","arguments":{"request_id":"review-20261103-001"}}
+```
+
+The result distinguishes `in_progress`, `submitted`, `not_submitted`, `uncertain`, and `unknown` (missing/evicted record). Only `not_submitted` confirms nothing was sent; a missing record is **not** proof of failure. For a terminal failure, consult the recorded phase/error and the Mac's private `events.log`. Locally, run `slingring jobs --request-id review-20261103-001 --json`. Never repeat a message merely because a call timed out.
+
+The **local CLI** still waits for a confirmed start and has a default 180-second browser-start budget, excluding local queue waiting. MCP uses the five-second receipt window after admission. The relay retains a 240-second HTTP safety limit and the Mac a 230-second remote job deadline, including queue wait, for compatibility with earlier installed versions; the configured browser budget may be shorter. Client and network timeouts remain outside Slingring's control. Accepted MCP tasks are not canceled when a caller disconnects. Their payload stays in memory and is never replayed after a daemon crash. See [CLI and MCP reference](/docs/command-reference) for details.
 
 ## Keep your Mac available
 

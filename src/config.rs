@@ -11,6 +11,8 @@ use std::{
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub browser_binary: String,
+    /// Explicitly show the isolated automation browser for debugging.
+    pub browser_headed: bool,
     pub profile: String,
     pub default_effort: Option<String>,
     pub start_timeout_secs: u64,
@@ -28,6 +30,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             browser_binary: "agent-browser-browse".into(),
+            browser_headed: false,
             profile: "Default".into(),
             default_effort: Some("Extra High".into()),
             start_timeout_secs: 180,
@@ -167,7 +170,7 @@ impl Config {
         atomic(&root.join("config.json"), &serde_json::to_vec(self)?)
     }
     pub fn redacted(&self) -> serde_json::Value {
-        serde_json::json!({"browser_binary": self.browser_binary, "profile": self.profile,
+        serde_json::json!({"browser_binary": self.browser_binary, "browser_headed": self.browser_headed, "profile": self.profile,
             "default_effort": self.default_effort, "start_timeout_secs": self.start_timeout_secs,
             "remote_enabled": self.remote_enabled, "remote_configured": self.relay_url.is_some() && self.device_token.is_some(),
             "mcp_url_configured": self.mcp_url.is_some(), "heartbeat_secs": self.heartbeat_secs})

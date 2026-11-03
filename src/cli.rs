@@ -28,6 +28,25 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Follow up in an existing ChatGPT Chat conversation, optionally attaching local images.
+    #[command(alias = "send_message")]
+    SendMessage {
+        /// Exact https://chatgpt.com/c/ID conversation URL.
+        chatgpt_url: String,
+        message: Option<String>,
+        #[arg(long, conflicts_with_all = ["message", "stdin"])]
+        message_file: Option<String>,
+        #[arg(long, conflicts_with = "message")]
+        stdin: bool,
+        /// Attach a local image. Repeat for multiple images. CLI only.
+        #[arg(long = "image")]
+        images: Vec<std::path::PathBuf>,
+        /// Reuse this ID only to recover the SAME message and attachments.
+        #[arg(long)]
+        request_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Configure a Chrome profile and install the bundled extension assets.
     Setup {
         #[arg(long)]
@@ -45,6 +64,7 @@ pub enum Command {
         #[command(subcommand)]
         action: BrowserAction,
     },
+    /// Inspect or persist settings, including browser-mode headed|headless.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -59,6 +79,9 @@ pub enum Command {
     Jobs {
         #[arg(long)]
         json: bool,
+        /// Inspect a single recorded request without submitting anything.
+        #[arg(long)]
+        request_id: Option<String>,
     },
     Service {
         #[command(subcommand)]
@@ -111,6 +134,7 @@ pub enum ConfigAction {
         json: bool,
     },
     Set {
+        /// Setting name, such as browser-mode or default-effort.
         key: String,
         value: String,
     },

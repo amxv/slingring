@@ -1,6 +1,6 @@
 use crate::{
     config::{self, Config},
-    model::{MAX_JSON, NewTask},
+    model::{MAX_JSON, NewTask, SendMessage},
     queue::{Browser, Queue},
 };
 use anyhow::{Context, Result, ensure};
@@ -14,9 +14,12 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
+        BufReader,
+    },
     net::{UnixListener, UnixStream},
-    sync::{Semaphore, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, watch},
     task::JoinSet,
 };
 
@@ -24,6 +27,7 @@ use tokio::{
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Submit { id: String, task: NewTask },
+    SubmitFollowup { id: String, task: SendMessage },
     Mcp { body: Value, key: String },
     Status,
     Queue,
@@ -75,15 +79,54 @@ struct ContextState {
     stop: watch::Sender<bool>,
     config: watch::Sender<Config>,
     remote: watch::Receiver<String>,
+    submissions: Semaphore,
+    controls: Semaphore,
 }
-async fn client(stream: UnixStream, ctx: Arc<ContextState>) -> Result<()> {
+fn is_submission(request: &Request) -> bool {
+    match request {
+        Request::Submit { .. } | Request::SubmitFollowup { .. } => true,
+        Request::Mcp { body, .. } => {
+            crate::mcp::metadata(body).is_none() && !crate::mcp::status_request(body)
+        }
+        _ => false,
+    }
+}
+async fn client<S>(stream: S, ctx: Arc<ContextState>, reading: OwnedSemaphorePermit) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut reader = BufReader::new(stream);
     let bytes = tokio::time::timeout(Duration::from_secs(5), line(&mut reader, MAX_JSON)).await??;
     let request = serde_json::from_slice::<Request>(&bytes);
+    // Slow/partial readers are bounded independently from accepted submissions.
+    // A full write wait pool must never prevent status/reload/stop from parsing.
+    let submitting = request.as_ref().is_ok_and(is_submission);
+    let lane = if submitting {
+        ctx.submissions.try_acquire()
+    } else {
+        ctx.controls.try_acquire()
+    };
+    // A client without a reply-lane permit retains its bounded reader slot
+    // until the short error response is written or times out.
+    let _reading = if lane.is_ok() {
+        drop(reading);
+        None
+    } else {
+        Some(reading)
+    };
     let mut stop_after_write = false;
     let operation = async {
+        if lane.is_err() {
+            return Ok(json!({"error":if submitting {
+                "Local submission wait capacity exceeded; this connection was not admitted. An earlier request with the same ID may exist; query its status."
+            } else { "Local status/reply capacity exceeded; retry the read-only lookup later." }}));
+        }
         Ok(match request {
             Ok(Request::Submit { id, task }) => {
+                let config = Config::load(&ctx.root)?;
+                serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
+            }
+            Ok(Request::SubmitFollowup { id, task }) => {
                 let config = Config::load(&ctx.root)?;
                 serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
             }
@@ -93,9 +136,25 @@ async fn client(stream: UnixStream, ctx: Arc<ContextState>) -> Result<()> {
             Ok(Request::Status) => {
                 let config = Config::load(&ctx.root)?;
                 let jobs = ctx.queue.snapshot();
+                let active_job = jobs
+                    .iter()
+                    .find(|job| job["status"] == "starting")
+                    .or_else(|| jobs.iter().find(|job| job["status"] == "queued"));
+                let queued = jobs.iter().filter(|job| job["status"] == "queued").count();
+                let starting = jobs
+                    .iter()
+                    .filter(|job| job["status"] == "starting")
+                    .count();
+                let latest_finished = jobs
+                    .iter()
+                    .rev()
+                    .find(|job| !matches!(job["status"].as_str(), Some("queued" | "starting")));
+                let latest_started = jobs.iter().rev().find(|job| job["status"] == "started");
                 json!({"running":true,"pid":std::process::id(),"remote_enabled":config.remote_enabled,
                     "remote_state":ctx.remote.borrow().clone(),"active_tasks":ctx.queue.active(),
-                    "browser_busy":!ctx.queue.quiet(),"latest_job":jobs.last(),"config":config.redacted()})
+                    "browser_busy":!ctx.queue.quiet(),"latest_job":jobs.last(),"config":config.redacted(),
+                    "status_available":true,"active_job":active_job,"queued_tasks":queued,"starting_tasks":starting,
+                    "latest_finished_job":latest_finished,"latest_started_job":latest_started})
             }
             Ok(Request::Queue) => json!(ctx.queue.snapshot()),
             Ok(Request::Reload) => {
@@ -118,7 +177,7 @@ async fn client(stream: UnixStream, ctx: Arc<ContextState>) -> Result<()> {
     let value = response.unwrap_or_else(|e| json!({"error":e.to_string()}));
     let mut bytes = serde_json::to_vec(&value)?;
     bytes.push(b'\n');
-    reader.get_mut().write_all(&bytes).await?;
+    tokio::time::timeout(Duration::from_secs(5), reader.get_mut().write_all(&bytes)).await??;
     if stop_after_write {
         let _ = ctx.stop.send(true);
     }
@@ -175,6 +234,8 @@ pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
         stop: stop_tx.clone(),
         config: config_tx,
         remote: remote_rx,
+        submissions: Semaphore::new(64),
+        controls: Semaphore::new(16),
     });
     let permits = Arc::new(Semaphore::new(64));
     let mut clients = JoinSet::new();
@@ -201,7 +262,7 @@ pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
                 let (stream, _) = accepted?;
                 if let Ok(permit) = permits.clone().try_acquire_owned() {
                     let ctx = ctx.clone();
-                    clients.spawn(async move { let _permit = permit; let _ = client(stream,ctx).await; });
+                    clients.spawn(async move { let _ = client(stream,ctx,permit).await; });
                 }
             }
         }
@@ -217,4 +278,160 @@ pub async fn run(root: PathBuf, ephemeral: bool) -> Result<()> {
     }
     clients.abort_all();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        model::{Task, TaskResult},
+        queue::{Backend, BrowserFuture},
+    };
+
+    struct Blocked;
+    impl Backend for Blocked {
+        fn run<'a>(
+            &'a self,
+            _: &'a Config,
+            _: &'a Task,
+            _: &'a str,
+        ) -> BrowserFuture<'a, TaskResult> {
+            Box::pin(std::future::pending())
+        }
+        fn close<'a>(&'a self, _: &'a Config) -> BrowserFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    async fn connect(
+        ctx: Arc<ContextState>,
+        readers: Arc<Semaphore>,
+        request: Request,
+    ) -> Result<(UnixStream, tokio::task::JoinHandle<Result<()>>)> {
+        let (server, mut caller) = UnixStream::pair()?;
+        let permit = readers.acquire_owned().await?;
+        let handler = tokio::spawn(client(server, ctx, permit));
+        let mut bytes = serde_json::to_vec(&request)?;
+        bytes.push(b'\n');
+        caller.write_all(&bytes).await?;
+        Ok((caller, handler))
+    }
+    #[tokio::test]
+    async fn status_and_queue_bypass_a_saturated_local_submission_pool() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (stop, receiver) = watch::channel(false);
+        let (queue, worker) = Queue::open(dir.path().into(), Arc::new(Blocked), receiver)?;
+        let (config, _) = watch::channel(Config::default());
+        let (_, remote) = watch::channel("disabled".to_string());
+        let ctx = Arc::new(ContextState {
+            root: dir.path().into(),
+            queue,
+            stop: stop.clone(),
+            config,
+            remote,
+            submissions: Semaphore::new(1),
+            controls: Semaphore::new(1),
+        });
+        let readers = Arc::new(Semaphore::new(1));
+        let task = NewTask {
+            prompt: "PRIVATE fixture".into(),
+            reasoning_effort: None,
+            image_paths: vec![],
+        };
+        let (_write, write_handler) = connect(
+            ctx.clone(),
+            readers.clone(),
+            Request::Submit {
+                id: "busy".into(),
+                task,
+            },
+        )
+        .await?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while ctx.queue.active() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(ctx.submissions.available_permits(), 0);
+        assert_eq!(readers.available_permits(), 1);
+        let (status, status_handler) =
+            connect(ctx.clone(), readers.clone(), Request::Status).await?;
+        let bytes = tokio::time::timeout(
+            Duration::from_millis(500),
+            line(&mut BufReader::new(status), MAX_JSON),
+        )
+        .await??;
+        let status: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(status["running"], true);
+        assert_eq!(status["active_tasks"], 1);
+        assert_eq!(status["starting_tasks"], 1);
+        assert_eq!(status["active_job"]["id"], "busy");
+        assert!(status["latest_started_job"].is_null());
+        status_handler.await??;
+        let (history, history_handler) = connect(ctx.clone(), readers, Request::Queue).await?;
+        let bytes = tokio::time::timeout(
+            Duration::from_millis(500),
+            line(&mut BufReader::new(history), MAX_JSON),
+        )
+        .await??;
+        assert_eq!(serde_json::from_slice::<Value>(&bytes)?[0]["id"], "busy");
+        history_handler.await??;
+        stop.send(true)?;
+        worker.await??;
+        write_handler.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_nonreading_status_client_has_a_bounded_reply_lane_and_write_deadline() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let (stop, receiver) = watch::channel(false);
+        let (queue, worker) = Queue::open(dir.path().into(), Arc::new(Blocked), receiver)?;
+        let (config, _) = watch::channel(Config::default());
+        let (_, remote) = watch::channel("disabled".to_string());
+        let ctx = Arc::new(ContextState {
+            root: dir.path().into(),
+            queue,
+            stop: stop.clone(),
+            config,
+            remote,
+            submissions: Semaphore::new(1),
+            controls: Semaphore::new(1),
+        });
+        let readers = Arc::new(Semaphore::new(1));
+        let (server, mut caller) = tokio::io::duplex(1);
+        let permit = readers.clone().acquire_owned().await?;
+        let handler = tokio::spawn(client(server, ctx.clone(), permit));
+        caller.write_all(b"{\"type\":\"status\"}\n").await?;
+        tokio::task::yield_now().await;
+        assert_eq!(ctx.controls.available_permits(), 0);
+        assert_eq!(readers.available_permits(), 1);
+        // A second control response does not acquire unbounded waiting state.
+        let (second, second_handler) =
+            connect(ctx.clone(), readers.clone(), Request::Queue).await?;
+        let bytes = tokio::time::timeout(
+            Duration::from_millis(500),
+            line(&mut BufReader::new(second), MAX_JSON),
+        )
+        .await??;
+        assert!(
+            serde_json::from_slice::<Value>(&bytes)?["error"]
+                .as_str()
+                .unwrap()
+                .contains("capacity")
+        );
+        second_handler.await??;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(6), handler)
+                .await??
+                .is_err()
+        );
+        assert_eq!(ctx.controls.available_permits(), 1);
+        assert_eq!(readers.available_permits(), 1);
+        assert!(ctx.queue.snapshot().is_empty());
+        stop.send(true)?;
+        worker.await??;
+        Ok(())
+    }
 }

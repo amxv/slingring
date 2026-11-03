@@ -5,9 +5,55 @@
   const SELECTOR = '[contenteditable="true"][aria-label="Ask ChatGPT"],#prompt-textarea,textarea[data-testid="prompt-textarea"]';
   const visible = e => !!e && !e.closest('[inert],[aria-hidden="true"]') &&
     getComputedStyle(e).display !== "none" && getComputedStyle(e).visibility !== "hidden" && e.getClientRects().length > 0;
-  const normal = text => String(text || "").replace(/\r\n/g, "\n").trim();
+  const normal = text => String(text || "").replace(/\r\n?/g, "\n").trim();
   function composer() { return [...document.querySelectorAll(SELECTOR)].find(visible); }
-  function text(e) { return normal("value" in e ? e.value : e.innerText || e.textContent); }
+  // innerText adds CSS paragraph margins as extra newlines in Chrome. Editors
+  // can rehydrate our plain insertion into <p>/<div>/<br> without changing its
+  // actual text. Read explicit line boundaries, never collapse whitespace or
+  // use rendered line wrapping as evidence that a prompt changed.
+  function editorText(root) {
+    if (!root) return null;
+    if ('value' in root) return root.value.replace(/\r\n?/g,'\n');
+    const block=e=>e.nodeType===Node.ELEMENT_NODE && /^(P|DIV|LI|PRE|BLOCKQUOTE|H[1-6])$/.test(e.tagName);
+    function read(parent) {
+      const children=[...parent.childNodes].filter(child=>!(child===parent.lastChild && child.nodeName==='BR' && child.classList.contains('ProseMirror-trailingBreak')));
+      // A lone <br> is the conventional placeholder in an empty editor/line.
+      if(children.length===1 && children[0].nodeName==='BR')return '';
+      let value='',previousBlock=false,started=false;
+      for(const child of children) {
+        const isBlock=block(child);
+        // Boundaries depend on structure, including empty leading/trailing
+        // paragraphs. Looking only at accumulated text drops blank lines.
+        if((isBlock || previousBlock) && started)value+='\n';
+        if(child.nodeType===Node.TEXT_NODE)value+=child.nodeValue;
+        else if(child.nodeName==='BR')value+='\n';
+        else if(child.nodeType===Node.ELEMENT_NODE)value+=read(child);
+        previousBlock=isBlock;
+        started=true;
+      }
+      return value;
+    }
+    return read(root).replace(/\r\n?/g,'\n');
+  }
+  function text(e) { return normal(editorText(e)); }
+  function hasDraft() { return (editorText(composer()) || '').length>0; }
+  function promptEquals(input,prompt) { return editorText(input)===String(prompt).replace(/\r\n?/g,'\n'); }
+  function promptState(prompt) {
+    const input=composer();
+    if(!input)return 'composer_unavailable';
+    if(promptEquals(input,prompt))return 'matches';
+    return hasDraft() ? 'prompt_changed' : 'prompt_lost';
+  }
+  async function stableComposer(deadline=Date.now()+15000) {
+    for(let attempt=0;attempt<3;attempt++) {
+      const input=await waitFor(composer,Math.max(1,Math.min(10000,deadline-Date.now()-5000)),'composer_unavailable');
+      if(hasDraft())throw Error('unrelated_draft_present');
+      await new Promise(resolve=>setTimeout(resolve,150));
+      if(hasDraft())throw Error('unrelated_draft_present');
+      if(input.isConnected && input===composer())return input;
+    }
+    throw Error('composer_unstable');
+  }
   function modes() {
     const controls = [...document.querySelectorAll('button,[role="tab"],[role="radio"]')]
       .filter(e => visible(e) && e.getBoundingClientRect().top < 300);
@@ -61,17 +107,28 @@
       check();
     });
   }
-  async function ensureChat() {
+  async function ensureChat(deadline=Date.now()+120000) {
+    const budget=limit=>Math.max(1,Math.min(limit,deadline-Date.now()-5000));
     for (let attempt=0; attempt<3; attempt++) {
+      if(deadline-Date.now()<5000)throw Error('deadline_before_submission');
       const state = await waitFor(() => {
         if (chatVerified()) return {ready:true};
         const m=modes();
         return m.chat && m.work && !m.ambiguous && !m.chat.disabled && m.chat.getAttribute('aria-disabled')!=='true'
           ? {button:m.chat} : null;
-      }, 45000, "chat_mode_unverified");
+      }, budget(30000), "chat_mode_unverified");
+      if(hasDraft())throw Error('unrelated_draft_present');
+      if(state.button) {
+        const workEditors=[...document.querySelectorAll('[contenteditable][aria-label],textarea[aria-label]')]
+          .filter(e=>visible(e) && /^work with chatgpt$/i.test(normal(e.getAttribute('aria-label'))));
+        // editorText removes known structural empty-line placeholders. Preserve
+        // actual text including literal whitespace; never switch away from it.
+        if(workEditors.some(e=>editorText(e).length>0))throw Error('unrelated_draft_present');
+        if(workEditors.some(e=>[...(e.closest('form,[data-composer-body],main') || e).querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"],[data-testid="file-thumbnail"]')].some(visible)))throw Error('attachments_present');
+      }
       if (state.button?.isConnected) state.button.click();
-      await waitFor(chatVerified,15000,"chat_mode_unverified");
-      await waitFor(composer,30000,"composer_unavailable");
+      await waitFor(chatVerified,budget(15000),"chat_mode_unverified");
+      await waitFor(composer,budget(15000),"composer_unavailable");
       // Hydration can replace the first controls. This single active-job settle
       // delay mirrors Auto-Send; there is no timer or polling between jobs.
       await new Promise(resolve=>setTimeout(resolve,500));
@@ -142,9 +199,7 @@
   function fill(prompt) {
     const input = composer();
     if (!input) throw Error("composer_unavailable");
-    const existing = text(input);
-    if (existing && existing !== normal(prompt)) throw Error("unrelated_draft_present");
-    if (existing === normal(prompt)) return;
+    if (hasDraft()) throw Error("unrelated_draft_present");
     input.focus();
     if (input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement) {
       const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -181,11 +236,11 @@
     return [...document.querySelectorAll('button')].some(e=>visible(e) &&
       /^(?:end voice|exit voice|stop voice|stop recording|stop dictation|stop dictating|mute microphone|unmute microphone)(?:\b|$)/i.test(normal(e.getAttribute('aria-label'))));
   }
-  function followupIdle() {
+  function followupIdle(allowUpload=false) {
     const input=composer(),root=composerRoot();
     return !!input && !!root && !input.disabled && input.getAttribute('aria-disabled')!=='true' &&
       input.getAttribute('contenteditable')!=='false' && !stopControl() && !voiceActive() &&
-      ![...root.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible);
+      (allowUpload || ![...root.querySelectorAll('[aria-busy="true"],[role="progressbar"]')].some(visible));
   }
   function noAttachments() {
     const root=composerRoot();
@@ -195,7 +250,7 @@
     if (!followupIdle()) return false;
     // Never take over an existing draft, even when it happens to match this
     // message. A prior uncertain send may have left it in the composer.
-    if (text(composer())) throw Error('unrelated_draft_present');
+    if (hasDraft()) throw Error('unrelated_draft_present');
     if (!noAttachments()) throw Error('attachments_present');
     const voice=[...composerRoot().querySelectorAll('button')].filter(e=>visible(e) && !e.disabled &&
       e.getAttribute('aria-disabled')!=='true').filter(e=>{
@@ -220,16 +275,51 @@
       await waitFor(fileInput,10000,"image_input_unavailable");
     }
     const input = fileInput();
-    if(input.getAttribute('aria-label')==='Attach photos')return 'input[type="file"][multiple][aria-label="Attach photos"]';
-    return input.accept ? `input[type="file"][multiple][accept="${CSS.escape(input.accept)}"]` : 'input[type="file"][multiple]';
+    const marker=crypto.randomUUID();
+    input.setAttribute('data-slingring-upload',marker);
+    return `input[type="file"][data-slingring-upload="${marker}"]`;
   }
+  function attachmentItems(root=composerRoot()) {
+    if(!root)return null;
+    const allThumbnails=[...root.querySelectorAll('[data-testid="file-thumbnail"]')].filter(visible);
+    const thumbnails=allThumbnails.filter(e=>!allThumbnails.some(parent=>parent!==e && parent.contains(e)));
+    const removals=[...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"]')].filter(visible);
+    const matched=new Set(),items=[...thumbnails];
+    for(const button of removals) {
+      const thumbnail=thumbnails.find(e=>e.contains(button));
+      if(thumbnail && removals.filter(e=>thumbnail.contains(e)).length!==1)return null;
+      // Only the known thumbnail marker establishes one logical card. Generic
+      // siblings/ancestors may combine different files and cannot be paired.
+      // Mixed unpaired indicators cannot prove any exact cardinality.
+      if(!thumbnail && thumbnails.length)return null;
+      if(thumbnail) {
+        if(matched.has(thumbnail))return null;
+        matched.add(thumbnail);
+      } else items.push(button);
+    }
+    return items;
+  }
+  function attachmentCount(root=composerRoot()) { return attachmentItems(root)?.length ?? null; }
+  function watchAttachments() {
+    const items=attachmentItems();if(!items)return null;
+    const snapshot={items,changed:false,observer:null};
+    snapshot.observer=new MutationObserver(()=>{snapshot.changed=true;});
+    for(const item of items)snapshot.observer.observe(item,{subtree:true,childList:true,characterData:true,attributes:true});
+    return snapshot;
+  }
+  function attachmentsUnchanged(previous) {
+    const current=attachmentItems();
+    if(previous?.observer.takeRecords().length)previous.changed=true;
+    return previous && !previous.changed && current && current.length===previous.items.length &&
+      previous.items.every((element,index)=>element.isConnected && current[index]===element);
+  }
+  function releaseAttachments(snapshot) { snapshot?.observer.disconnect(); }
   function attachmentsReady(count) {
     if (!count) return true;
-    const input = composer(); const root = input?.closest("form") || input?.closest("main");
+    const root=composerRoot();
     if (!root) return false;
-    const previews = [...root.querySelectorAll('button[aria-label*="Remove"],button[aria-label*="remove"],[data-testid="file-thumbnail"]')].filter(visible);
     const busy = [...root.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(visible);
-    return previews.length >= count && !busy && !!sendButton();
+    return attachmentCount(root) === count && !busy && !!sendButton();
   }
   function canonicalUrl() {
     return location.origin === "https://chatgpt.com" && /^\/c\/[a-zA-Z0-9-]{1,128}$/.test(location.pathname)
@@ -264,7 +354,7 @@
     // virtualizes/replaces history ambiguously, fail closed rather than infer it.
     if (baseline && (!Array.isArray(baseline.users) || users.length!==baseline.users.length+1 ||
         baseline.users.some((previous,index)=>users[index]!==previous))) return null;
-    if (user && expectedPrompt && normal(user.textContent)!==normal(expectedPrompt)) return null;
+    if (user && expectedPrompt && normal(editorText(user))!==normal(expectedPrompt)) return null;
     if (!user || !canonicalUrl()) return null;
     // ChatGPT can retain a home view beside its live thread. Anchor observation
     // to this task's user bubble rather than the first <main> on the page.
@@ -307,7 +397,7 @@
     }
     return null; // A stop control, loading dot, or empty assistant node is not evidence.
   }
-  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,modes,chatVerified,waitFor,ensureChat,
-    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentsReady,canonicalUrl,startEvidence,
+  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
+    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
     followupReady,followupIdle,noAttachments,turnBaseline};
 })();

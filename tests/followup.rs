@@ -23,6 +23,7 @@ fn message(text: &str) -> SendMessage {
     SendMessage {
         chatgpt_url: CHAT.into(),
         message: text.into(),
+        image_paths: vec![],
     }
 }
 
@@ -40,13 +41,17 @@ fn request(arguments: Value) -> Value {
 }
 
 #[test]
-fn followup_tool_has_two_strict_fields_and_does_not_accept_creation_options() {
+fn followup_tool_keeps_strict_fields_plus_explicit_recovery_id() {
     let tool = slingring::mcp::message_tool();
     assert_eq!(tool["name"], "send_message");
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     let fields = tool["inputSchema"]["properties"].as_object().unwrap();
-    assert_eq!(fields.len(), 2);
-    assert!(fields.contains_key("chatgpt_url") && fields.contains_key("message"));
+    assert_eq!(fields.len(), 3);
+    assert!(
+        fields.contains_key("chatgpt_url")
+            && fields.contains_key("message")
+            && fields.contains_key("request_id")
+    );
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
     assert_eq!(tool["annotations"]["openWorldHint"], false);
     assert_eq!(tool["annotations"]["idempotentHint"], false);
@@ -60,7 +65,7 @@ fn followup_tool_has_two_strict_fields_and_does_not_accept_creation_options() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["new_task", "send_message"]);
+    assert_eq!(names, ["new_task", "send_message", "get_job_status"]);
 
     for field in [
         "prompt",
@@ -155,6 +160,46 @@ fn message_limits_are_bytes_and_existing_effort_is_never_replaced_by_default() -
     assert_eq!(task.reasoning_effort(), None);
     assert_eq!(task.conversation_url(), Some(CHAT));
     assert!(task.image_paths().is_empty());
+    Ok(())
+}
+
+#[test]
+fn local_followup_images_are_validated_and_bound_to_request_fingerprints() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let image = dir.path().join("sample.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\nfirst")?;
+    let mut with_image = message("Describe this attachment");
+    with_image.image_paths.push(image.clone());
+    let task = Task::from(with_image.clone()).resolve(&Config::default())?;
+    assert_eq!(task.image_paths(), &[image.canonicalize()?]);
+    assert_eq!(task.conversation_url(), Some(CHAT));
+    assert_eq!(task.reasoning_effort(), None);
+    assert_ne!(
+        task.fingerprint("Profile 6")?,
+        Task::from(message("Describe this attachment")).fingerprint("Profile 6")?
+    );
+    let original = task.fingerprint("Profile 6")?;
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\nsecond")?;
+    assert_ne!(original, task.fingerprint("Profile 6")?);
+    let mut too_many = with_image.clone();
+    too_many.image_paths = vec![image.clone(); 17];
+    assert!(too_many.resolve().is_err());
+    let mut malformed = with_image;
+    std::fs::write(&image, b"not actually an image")?;
+    malformed.image_paths = vec![image];
+    assert!(malformed.resolve().is_err());
+    Ok(())
+}
+
+#[test]
+fn text_only_followup_serialization_remains_backward_compatible() -> Result<()> {
+    let serialized = serde_json::to_value(message("same text"))?;
+    assert_eq!(
+        serialized,
+        json!({"chatgpt_url":CHAT,"message":"same text"})
+    );
+    let decoded: SendMessage = serde_json::from_value(serialized)?;
+    assert!(decoded.image_paths.is_empty());
     Ok(())
 }
 

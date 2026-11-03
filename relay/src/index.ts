@@ -7,6 +7,7 @@ export interface Env {
 }
 export const MAX_BYTES = 256 * 1024;
 export const MAX_PENDING = 32;
+export const MAX_CONTROL_PENDING = 8;
 export const WAIT_MS = 240_000;
 const encoder = new TextEncoder();
 type JsonObject = Record<string, unknown>;
@@ -92,7 +93,13 @@ export default {
     }));
   },
 };
-type Pending = { finish: (response: Response) => void; notification: boolean };
+type Pending = { finish: (response: Response) => void; notification: boolean; control: boolean; receipt: string };
+// Reserve a bounded independent lane for recovery and MCP handshake requests.
+// Tool arguments and all authorization decisions still belong to Rust.
+function controlRequest(body: JsonObject): boolean {
+  return ['initialize', 'ping', 'tools/list', 'notifications/initialized'].includes(String(body.method)) ||
+    body.method === 'tools/call' && object(body.params) && body.params.name === 'get_job_status';
+}
 export class Relay {
   private pending = new Map<string, Pending>();
   private activeSocket: WebSocket | undefined;
@@ -139,20 +146,34 @@ export class Relay {
     if (!object(body)) return reply(400, { error: 'JSON object required' });
     const socket = this.socket();
     if (!socket) return reply(503, { error: 'Device offline' });
-    if (this.pending.size >= MAX_PENDING) return reply(429, { error: 'Relay busy' });
+    const control = controlRequest(body);
+    const pending = [...this.pending.values()].filter(item => item.control === control).length;
+    if (pending >= (control ? MAX_CONTROL_PENDING : MAX_PENDING)) return reply(429, {
+      error: control ? 'Relay control capacity exceeded; try this read-only lookup later' : 'Relay submission capacity exceeded; this HTTP attempt was not forwarded. Prior outcome for the same request ID may exist; use get_job_status',
+    });
     const id = crypto.randomUUID();
     const notification = !Object.hasOwn(body, 'id');
+    // The caller must know the ID BEFORE a slow request begins to recover a
+    // result after its own timeout. Prefer its explicit request_id or header.
+    const args = object(body.params) && object(body.params.arguments) ? body.params.arguments : null;
+    const declared = typeof args?.request_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(args.request_id)
+      ? args.request_id : null;
+    const receipt = key ?? declared ?? id;
     const frame = JSON.stringify({ type: 'rpc', id, request: body, expires_at: Date.now() + WAIT_MS - 10_000,
       ...(key === null ? {} : { idempotency_key: key }) });
     if (encoder.encode(frame).length > MAX_BYTES) return reply(413, { error: 'Relay frame too large' });
     return new Promise<Response>(resolve => {
-      const timer = setTimeout(() => finish(reply(504, { error: 'Device response timeout; outcome uncertain; do not automatically retry' })), WAIT_MS);
+      const timer = setTimeout(() => finish(reply(504, { error: 'Device response timeout. The Mac may still complete this job. Do not resubmit.',
+        request_id: receipt, outcome: 'unknown', recovery_tool: 'get_job_status' })), WAIT_MS);
       const finish = (response: Response) => {
         clearTimeout(timer);
         this.pending.delete(id);
+        // Useful when an HTTP response arrives, but NOT a replacement for
+        // passing request_id before launch if the caller times out first.
+        response.headers.set('X-Slingring-Request-Id', receipt);
         resolve(response);
       };
-      this.pending.set(id, { finish, notification });
+      this.pending.set(id, { finish, notification, control, receipt });
       try { socket.send(frame); }
       catch { this.lost(socket); }
     });
@@ -180,7 +201,10 @@ export class Relay {
   private lost(socket: WebSocket): void {
     if (socket !== this.activeSocket) return;
     this.activeSocket = undefined;
-    for (const item of this.pending.values()) item.finish(reply(503, { error: 'Device disconnected; outcome uncertain; do not automatically retry' }));
+    for (const item of this.pending.values()) item.finish(reply(503, {
+      error: 'Device disconnected; outcome unknown; do not automatically retry',
+      request_id: item.receipt, outcome: 'unknown', recovery_tool: 'get_job_status',
+    }));
   }
   webSocketClose(socket: WebSocket): void { this.lost(socket); socket.close(1000, 'Disconnected'); }
   webSocketError(socket: WebSocket): void { this.lost(socket); socket.close(1011, 'Device error'); }
