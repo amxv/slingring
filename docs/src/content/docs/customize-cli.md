@@ -1,9 +1,8 @@
 ---
-title: Architecture
-description: Keep the browser transient and the idle path event-driven.
-order: 9
-category: Development
-summary: Queue, browser, native extension transport, and remote relay boundaries.
+title: Architecture and idle behavior
+description: Implementation details for maintainers and integrators.
+order: 22
+category: Reference
 ---
 
 ## Local-only idle

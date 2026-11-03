@@ -1,25 +1,30 @@
 ---
-title: Installation and updates
-description: Direct macOS distribution, with an optional native menu bar.
-order: 10
-category: Distribution
-summary: Private GitHub downloads, verified archives, and explicit update preferences.
+title: Installation reference
+description: Dependencies, private releases, checksums, and updates.
+order: 23
+category: Reference
 ---
 
-Slingring uses direct GitHub Releases, not npm. Apple Silicon and Intel macOS archives include the Rust executable; paired bundles also include the Swift menu bar app. Their checksums and ad-hoc signatures are verified by the website installer. Ad-hoc signing is not Developer ID notarization, and no macOS security settings are disabled.
+## Supported setup
 
-## Private repository access
+The complete one-command installation currently supports Apple Silicon macOS. Intel CLI archives may exist, but the published browsing fork is ARM64-only; do not assume an Intel archive provides a working browser dependency. Google Chrome must be installed and the chosen profile signed into ChatGPT.
 
-While the repository is private, authenticate `gh` with access to `amxv/slingring`. The installer and upgrade check use that existing login for private release metadata and assets. Tokens are not copied into the command line or source tree. Anonymous GitHub URLs cannot download private artifacts.
+The installer downloads the paired Rust CLI and Swift app, verifies their checksum and signature, and invokes the embedded browser installer before replacing a working installation. The helper is pinned to `agent-browser-browse` 0.41.1 and verified by release checksum, architecture, signature, and reported version. It lives under `~/.config/slingring/browser`, separate from any globally installed agent-browser.
+
+The companion extension is embedded in the Rust binary and loaded on demand. No manual unpacked-extension installation, Homebrew, npm, or separate upstream CLI is required.
+
+## Private release access
+
+While `amxv/slingring` is private, `gh` must be authenticated with repository access. The installer uses that existing login to download private assets. It does not print or copy GitHub credentials. Public anonymous GitHub download URLs cannot access a private release.
 
 ```bash
 gh auth status
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-The default destination is `~/.local/bin`. The app is included but need not run. Open `~/.local/bin/Slingring.app` explicitly, or set `CLI_LAUNCH_MENU_BAR=1` when installing. An already-running app is reopened after an upgrade.
+The CLI and `Slingring.app` are installed beside each other in `~/.local/bin`. Set `CLI_INSTALL_DIR` to another absolute directory if required. `CLI_NO_LAUNCH=1` keeps the optional menu bar closed; `CLI_LAUNCH_MENU_BAR=0` disables automatic opening unless it was already running. Ad-hoc signing is not Developer ID notarization. No security settings are disabled and quarantine is not stripped.
 
-## Manual and scheduled updates
+## Updates
 
 ```bash
 slingring upgrade --check
@@ -29,10 +34,17 @@ slingring auto-update status
 slingring auto-update off
 ```
 
-Daily update checks are off by default. Enabling them installs an independent OS scheduler, not a continuously polling process. A failed or offline check does not revoke your opt-in. Stop active task work before upgrading.
+Updates refuse to replace an installation while a task is active. They update the CLI and app together, restart a previously running service, and reopen a previously running menu bar. Automatic updates are opt-in and use a daily OS scheduler, not a polling app.
 
-## Maintainers
+## Source builds
 
-The Cargo version and changelog are the release sources of truth. Run Rust formatting, strict Clippy, unit/integration tests, extension/relay tests, Swift bundle validation, and docs checks before tagging. `dist-workspace.toml` owns the Apple Silicon and Intel release targets. Regenerate the managed workflow with `dist generate` rather than editing its generated steps.
+```bash
+gh repo clone amxv/slingring
+cd slingring
+cargo install --locked --path .
+slingring browser install
+slingring profile list
+slingring profile use "YOUR PROFILE"
+```
 
-The tag's cargo-dist workflow publishes native artifacts. Its post-announce Swift job builds and signs the paired app bundles. The private repository remains private unless explicitly changed by its owner.
+Source builds use the pinned Rust toolchain. Release workflows use cargo-dist; there is no npm package or crates.io publication. The release procedure is in `.agents/skills/release/SKILL.md`.

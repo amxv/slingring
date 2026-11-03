@@ -15,7 +15,7 @@ case "$(uname -s)" in
 esac
 case "$(uname -m)" in
   arm64|aarch64) arch=arm64 ;;
-  x86_64|amd64) arch=amd64 ;;
+  x86_64|amd64) echo 'The included browser helper currently requires an Apple Silicon Mac.' >&2; exit 1 ;;
   *) echo 'Unsupported CPU architecture' >&2; exit 1 ;;
 esac
 install_dir=${CLI_INSTALL_DIR:-"$HOME/.local/bin"}
@@ -56,26 +56,6 @@ if [ -n "$version" ]; then
 else
   base="$repo/releases/latest/download"
 fi
-# Linux uses the regular checksum-verifying cargo-dist shell installer.
-# The macOS path below installs the paired CLI + signed .app archive.
-if [ "$mac" = 0 ]; then
-  umask 077
-  stage=$(mktemp -d "${TMPDIR:-/tmp}/$cli-install.XXXXXXXX")
-  trap 'rm -rf "$stage"' EXIT HUP INT TERM
-  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    "$base/$cli-installer.sh" -o "$stage/installer.sh"
-  SLINGRING_INSTALL_DIR="$install_dir"
-  export SLINGRING_INSTALL_DIR
-  if ! command -v sha256sum >/dev/null 2>&1; then
-    command -v shasum >/dev/null 2>&1 || { echo 'sha256sum or shasum is required' >&2; exit 1; }
-    printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' > "$stage/sha256sum"
-    chmod 755 "$stage/sha256sum"
-    PATH="$stage:$PATH"
-    export PATH
-  fi
-  sh "$stage/installer.sh"
-  exit 0
-fi
 for tool in curl awk tar; do
   command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 1; }
 done
@@ -98,19 +78,10 @@ download_asset() {
     }
   fi
 }
-if [ "$mac" = 1 ]; then
-  asset="${binary}_darwin_${arch}.tar.gz"
-  download_asset "$asset.sha256" "$stage/sums"
-else
-  asset="${binary}_linux_${arch}"
-  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/SHA256SUMS" -o "$stage/sums"
-fi
+asset="${binary}_darwin_${arch}.tar.gz"
+download_asset "$asset.sha256" "$stage/sums"
 download_asset "$asset" "$stage/$asset"
-if [ "$mac" = 1 ]; then
-  expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
-else
-  expected=$(awk -v name="$asset" '$2 == name { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
-fi
+expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
 printf '%s' "$expected" | grep -Eq '^[[:xdigit:]]{64}$' || { echo 'Missing or ambiguous release checksum' >&2; exit 1; }
 if command -v shasum >/dev/null 2>&1; then
   actual=$(shasum -a 256 "$stage/$asset" | awk '{print $1}')
@@ -140,18 +111,10 @@ else
   chmod 755 "$source_cli"
 fi
 "$source_cli" --version
+# Install the verified browser dependency BEFORE touching the working CLI/app.
+# The helper is private to Slingring; no Homebrew, npm, Python, or upstream CLI.
+"$source_cli" browser install >/dev/null
 mkdir -p "$install_dir"
-
-if [ "$mac" != 1 ]; then
-  pending=$(mktemp "$install_dir/.$cli-next.XXXXXXXX")
-  trap 'rm -rf "$stage"; rm -f "$pending"' EXIT HUP INT TERM
-  cp "$source_cli" "$pending"
-  chmod 755 "$pending"
-  mv -f "$pending" "$target"
-  "$target" --version
-  printf 'Installed %s at %s\n' "$cli" "$target"
-  exit 0
-fi
 
 # Stage BOTH replacements before stopping the menu bar process. If any move
 # fails, recover the old CLI/app from the sibling backup directory.
@@ -213,11 +176,18 @@ fi
 rm -rf "$backup/old-app"
 rm -f "$backup/old-cli"
 printf 'Installed %s and %s at %s\n' "$cli" "$app" "$install_dir"
-if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$was_running" = 1 ] || [ "${CLI_LAUNCH_MENU_BAR:-0}" = 1 ]; }; then
+if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$was_running" = 1 ] || [ "${CLI_LAUNCH_MENU_BAR:-1}" = 1 ]; }; then
   /usr/bin/open -n -g "$app_dest" --args --after-upgrade ||
     echo "Installed successfully, but could not launch $app; open it manually." >&2
 fi
 if [ "$service_running" = 1 ]; then
   "$target" service start >/dev/null ||
     echo 'Updated successfully, but the service did not restart. Run slingring service start.' >&2
+fi
+
+if [ "$action" = install ]; then
+  printf '\nChoose the Chrome profile signed into ChatGPT:\n'
+  printf '  Menu bar → Configure → Chrome Profile\n'
+  printf '  Or: %s profile list\n      %s profile use "PROFILE NAME"\n' "$target" "$target"
+  printf '\nStart a chat:\n  %s new-task "Your prompt"\n' "$target"
 fi

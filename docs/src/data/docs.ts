@@ -5,7 +5,7 @@ const generatedIdentity = {
   "description": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
   "repoUrl": "https://github.com/amxv/slingring",
   "footerText": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
-  "distributionText": "GitHub Releases, install scripts, and checksums are generated without npm."
+  "distributionText": "Made for your Mac. Ready for your agents."
 } as const;
 
 export const siteConfig = {
@@ -33,7 +33,7 @@ export const siteConfig = {
   ]
 } as const;
 
-export const docCategories = ["Start", "Development", "Distribution", "Reference"] as const;
+export const docCategories = ["Start here", "Guides", "Reference"] as const;
 
 export const primaryNav = [
   { href: "/docs", label: "Docs" },

@@ -34,6 +34,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var automaticUpdates = false
     private var latestURL: URL?
     private var effortItems: [NSMenuItem] = []
+    private let profilesMenu = NSMenu()
+    private var loadingProfiles = false
     private let stateItem = NSMenuItem(title: "Open menu to read status", action: nil, keyEquivalent: "")
     private let queueItem = NSMenuItem(title: "No active tasks", action: nil, keyEquivalent: "")
     private lazy var remoteItem = item("Enable Remote Access", #selector(toggleRemote), "network")
@@ -52,6 +54,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         stateItem.isEnabled = false; queueItem.isEnabled = false
         menu.addItem(stateItem); menu.addItem(queueItem)
         menu.addItem(.separator())
+        menu.addItem(serviceItem)
+        menu.addItem(latestItem)
+        let configure = NSMenuItem(title: "Configure", action: nil, keyEquivalent: "")
+        let settings = NSMenu()
+        settings.autoenablesItems = false
+        configure.submenu = settings
+        menu.addItem(configure)
+        let profileChoice = NSMenuItem(title: "Chrome Profile", action: nil, keyEquivalent: "")
+        profilesMenu.delegate = self
+        profilesMenu.autoenablesItems = false
+        profileChoice.submenu = profilesMenu
+        profilesMenu.addItem(NSMenuItem(title: "Open to load profiles…", action: nil, keyEquivalent: ""))
+        settings.addItem(profileChoice)
         let reasoning = NSMenuItem(title: "Default Reasoning", action: nil, keyEquivalent: "")
         let choices = NSMenu()
         for level in ["Instant", "Medium", "High", "Extra High", "Pro", "Use ChatGPT Setting"] {
@@ -60,25 +75,56 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             choice.representedObject = level == "Use ChatGPT Setting" ? "site" : level
             choices.addItem(choice); effortItems.append(choice)
         }
-        reasoning.submenu = choices; menu.addItem(reasoning)
-        menu.addItem(remoteItem)
-        menu.addItem(item("Copy Remote MCP URL", #selector(copyURL), "doc.on.doc"))
-        menu.addItem(serviceItem); menu.addItem(loginItem)
-        menu.addItem(latestItem)
-        menu.addItem(.separator())
-        menu.addItem(item("Check for Updates…", #selector(checkUpdates), "arrow.down.circle"))
-        menu.addItem(updatesItem)
-        menu.addItem(item("Open Documentation", #selector(openDocs), "book"))
+        reasoning.submenu = choices; settings.addItem(reasoning)
+        settings.addItem(.separator())
+        settings.addItem(remoteItem)
+        settings.addItem(item("Copy Remote MCP URL", #selector(copyURL), "doc.on.doc"))
+        settings.addItem(loginItem)
+        settings.addItem(.separator())
+        settings.addItem(item("Check for Updates…", #selector(checkUpdates), "arrow.down.circle"))
+        settings.addItem(updatesItem)
+        settings.addItem(item("Open Documentation", #selector(openDocs), "book"))
         let version = Bundle.main.object(forInfoDictionaryKey: "AppReleaseVersion") as? String ?? "development"
         let label = NSMenuItem(title: "Slingring \(version)", action: nil, keyEquivalent: "")
-        label.isEnabled = false; menu.addItem(label)
+        label.isEnabled = false; settings.addItem(label)
         menu.addItem(.separator())
         menu.addItem(item("Quit Menu Bar", #selector(quit), "xmark.circle"))
         status.menu = menu
         // Deliberately no timers, background refresh, browser, or WebView.
     }
 
-    func menuWillOpen(_ menu: NSMenu) { refresh() }
+    func menuWillOpen(_ opened: NSMenu) {
+        if opened === profilesMenu { refreshProfiles() }
+        else if opened === menu { refresh() }
+    }
+
+    private func refreshProfiles() {
+        guard !loadingProfiles else { return }; loadingProfiles = true
+        run(["profile", "list", "--json"]) { [weak self] result in
+            guard let self else { return }; self.loadingProfiles = false
+            self.profilesMenu.removeAllItems()
+            guard result.code == 0, let data = result.output.data(using: .utf8),
+                  let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let profiles = value["profiles"] as? [[String: Any]], !profiles.isEmpty else {
+                let empty = NSMenuItem(title: "No profiles available — open Chrome first", action: nil, keyEquivalent: "")
+                empty.isEnabled = false; self.profilesMenu.addItem(empty)
+                return
+            }
+            for profile in profiles {
+                guard let directory = profile["directory"] as? String, let name = profile["name"] as? String else { continue }
+                let choice = NSMenuItem(title: "\(name) — \(directory)", action: #selector(self.selectProfile(_:)), keyEquivalent: "")
+                choice.target = self; choice.representedObject = directory
+                choice.state = profile["selected"] as? Bool == true ? .on : .off
+                choice.toolTip = "Use this Chrome profile for new ChatGPT chats. Your regular browser stays untouched."
+                self.profilesMenu.addItem(choice)
+            }
+        }
+    }
+
+    @objc private func selectProfile(_ sender: NSMenuItem) {
+        guard let profile = sender.representedObject as? String else { return }
+        change(["profile", "use", profile])
+    }
 
     private func item(_ title: String, _ action: Selector, _ symbol: String) -> NSMenuItem {
         let value = NSMenuItem(title: title, action: action, keyEquivalent: "")

@@ -69,6 +69,14 @@ fn stdio_metadata_is_browser_free_and_files_are_never_exposed() {
     let value: serde_json::Value = serde_json::from_slice(&result).unwrap();
     assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 1);
     assert_eq!(value["result"]["tools"][0]["name"], "new_task");
+    assert_eq!(
+        value["result"]["tools"][0]["annotations"]["readOnlyHint"],
+        true
+    );
+    assert_eq!(
+        value["result"]["tools"][0]["annotations"]["openWorldHint"],
+        false
+    );
     assert!(!String::from_utf8(result).unwrap().contains("image_paths"));
     assert!(!home.path().join("slingring.sock").exists());
 }

@@ -16,7 +16,7 @@ Mac-only Rust CLI/service that starts ChatGPT Chat conversations and returns the
 
 ## Source map
 
-`src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: one write tool. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
+`src/queue.rs`: durable metadata and serial ownership. `src/browser.rs`: patched-browser launch, limited CDP extension installation/upload, cleanup. `src/native.rs`: short-lived Native Messaging and owned-profile registration. `src/daemon.rs`: private Unix socket and lifecycle. `src/mcp.rs`: one chat-creation tool, with owner-requested readOnlyHint=true/openWorldHint=false metadata. Hints never bypass authorization. `src/relay.rs`: outbound WSS. `extension/dom.js`: narrow UI predicates. `relay/`: authenticated transport-only Worker/Durable Object. `apps/menubar/`: AppKit CLI wrapper.
 
 The Chrome copy uses its own `NativeMessagingHosts` directory. Derive its browser PID through the already-owned CDP browser connection, then verify the headless process and isolated temporary user-data directory. Never guess another browser's profile. Do not enable CDP Runtime event streaming.
 
@@ -43,3 +43,5 @@ The GitHub repository starts private. Direct installers and upgrade checks must 
 Docs remain Astro/ZueDocs. Vercel root is `docs`; Git automatic deployments stay disabled. The docs-only GitHub Action builds in `docs`, copies the prebuilt bundle to repository-root `.vercel/output`, then deploys from root. Validate with Astro check locally, not redundant production builds.
 
 Credentials belong in local private configuration, Cloudflare secrets, or GitHub secrets. Never print tokens, authentication files, browser cookies, or capability URLs. Keep scratch files in ignored `tmp/gg/`. Do not use a local agent delegation harness.
+
+Profile discovery and selection belong in the Rust CLI; the menu bar only invokes it. The embedded browser installer installs a version-pinned, checksummed private helper. Maintain scripts/test_installers.py coverage without touching a real user installation.

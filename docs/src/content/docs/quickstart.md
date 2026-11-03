@@ -1,59 +1,49 @@
 ---
-title: Quickstart
-description: Send your first local task and continue in ChatGPT.
+title: Get started
+description: Install Slingring, choose your account, and start your first chat.
 order: 1
-category: Start
-summary: Send your first local task and continue in ChatGPT.
+category: Start here
 ---
 
-## Install
+Slingring lets another agent start a conversation in your ChatGPT account and return the link. You continue in ChatGPT; the agent does not receive the answer.
 
-Slingring is initially private and macOS-only. Authenticate the GitHub CLI with repository access before downloading a release. The installer uses that existing login for private assets and verifies the release checksum and app signature.
+## 1. Install
+
+You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. While Slingring is private, you also need an authenticated GitHub CLI (`gh`) with access to the repository.
 
 ```bash
-gh auth status
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-The paired CLI and optional `Slingring.app` are installed under `~/.local/bin`. The menu bar does not need to run for either local or remote calls. Open it explicitly when useful:
+One installer sets up the CLI, menu bar app, companion extension, and verified browser helper. There is no separate agent-browser, Node, or Homebrew installation step. Chrome itself and signing into your account remain yours to set up.
+
+The app opens in your menu bar. The `slingring` command lives in `~/.local/bin`. If your shell cannot find it, use `~/.local/bin/slingring` in the commands below, or add that directory to your PATH.
+
+## 2. Choose your Chrome profile
+
+Open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched.
+
+Prefer the terminal?
 
 ```bash
-open "$HOME/.local/bin/Slingring.app"
+slingring profile list
+slingring profile use "Profile 6"
 ```
 
-To build from source instead:
+Replace `Profile 6` with a directory or unique name from your own list. Slingring does not choose among multiple accounts for you.
+
+Under **Configure → Default Reasoning**, choose a level your account supports. The initial default is Extra High. Choose High for an account without Extra High, or Use ChatGPT Setting to retain the site's selection.
+
+## 3. Send your first task
 
 ```bash
-gh repo clone amxv/slingring
-cd slingring
-cargo install --locked --path .
-slingring --help
+slingring new-task "Help me compare two approaches to this project" --reasoning-effort High
 ```
 
-Use the pinned Rust toolchain. Install the tested `agent-browser-browse` fork separately and prepare its authenticated Chrome `Profile 6`, isolated from everyday Chrome. A normal agent-browser installation is not a substitute for the tested fork. Browser setup and account access are prerequisites; Slingring does not log you in.
+Slingring starts a new **Chat**, waits until ChatGPT actually begins thinking or responding, and prints the conversation link. Open it to continue. The temporary browser closes when there are no more tasks to start.
 
-```bash
-slingring setup --profile 'Profile 6' --default-effort 'Extra High'
-```
+## Use it with an agent
 
-Setup resolves the browser executable and installs private extension assets. It does not launch Chrome or modify your everyday browser's extensions.
+A local agent such as Claude Code can run `slingring new-task` directly. Give it a brief, and ask it to return the link. For agents that connect over MCP, follow [Connect a remote assistant](/docs/remote).
 
-## Hand off a task
-
-```bash
-slingring new-task "Review this migration plan" --reasoning-effort High --json
-```
-
-A local call uses the running daemon or starts an ephemeral daemon. The ephemeral daemon drains its queue and closes the browser before exiting. No persistent service is required for local use.
-
-The result contains job metadata and, on success, a canonical ChatGPT `/c/...` URL. Open that URL to continue. `started` means real activity was observed after submission, not that the answer is finished. Slingring never returns generated assistant text.
-
-## Inspect without starting a service
-
-```bash
-slingring status --json
-slingring jobs --json
-slingring config show --json
-```
-
-Next: [local input and images](/docs/local-input), [remote access](/docs/remote), or [reasoning modes](/docs/reasoning).
+For images and longer briefs, see [Send prompts and images](/docs/local-input).

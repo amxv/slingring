@@ -1,6 +1,6 @@
 [package]
 name = "slingring"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.1"
 description = "Launch ChatGPT tasks from local and remote agents, then get out of the way."
@@ -9,7 +9,7 @@ repository = "https://github.com/amxv/slingring"
 homepage = "https://slingring.ashray.xyz"
 readme = "README.md"
 publish = false
-include = ["/src/**", "/extension/*.js", "/extension/*.html", "/extension/manifest.json", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
+include = ["/src/**", "/scripts/install-browser.sh", "/extension/*.js", "/extension/*.html", "/extension/manifest.json", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
 keywords = ["cli", "mcp", "chatgpt", "automation"]
 categories = ["command-line-utilities"]
 

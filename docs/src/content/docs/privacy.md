@@ -1,23 +1,28 @@
 ---
 title: Privacy and security
-description: Know what crosses each boundary.
-order: 6
+description: What is sent, what is saved, and who can start a chat.
+order: 24
 category: Reference
-summary: Know what crosses each boundary.
 ---
 
 ## Data flow
 
-Prompts and local attachments go to ChatGPT through the authenticated browser. Remote prompts also transit your relay. Generated assistant text is not extracted or returned. Chat URLs and job metadata can still reveal sensitive context; protect them.
+Slingring sends the requested prompt and any local CLI attachments to ChatGPT using your chosen Chrome login. Remote prompts also pass through your relay. It detects whether assistant activity is present but does not return, log, or save generated answer text.
 
-The browser uses the tested fork and isolated authenticated Profile 6. Keep that session private. Browser automation is observable and may fail as interfaces change. Slingring makes no promise of undetectability, account safety, or compliance with a service's terms. Review the terms and policies that apply to your account and use.
+Chat URLs, timestamps, status, and request fingerprints are stored in a bounded local journal. Prompts and image contents are not persisted in that journal. The relay forwards requests in memory; it does not keep a durable prompt queue.
 
-## Credentials and local storage
+## Local security
 
-Configuration, state, and ledger directories use private permissions (0700 directories, 0600 files). Configuration stores the relay device token locally; `config show` and status must redact it. Protect the Mac account, backups, browser profile, and relay secrets. Local file permissions do not encrypt data at rest.
+State directories use 0700 permissions and state/configuration files use 0600. These permissions do not encrypt data at rest. Protect your Mac login, backups, and Chrome profile.
 
-Use separate device and client bearer tokens. The relay authenticates both sides, bounds messages and concurrent requests, and must not log request bodies or token-bearing URLs. Rotate compromised tokens in the deployment and reconfigure the Mac. HTTPS and WSS protect transport, not compromised endpoints.
+The browser runs with an isolated temporary profile copy. Native Messaging registration is scoped to that owned browser data directory. Slingring does not take control of ordinary Chrome windows or replace the normal agent-browser CLI.
 
-## Remote boundaries
+## Remote access
 
-Remote callers can submit prompt text and effort only. They cannot select local image paths. This is a write operation that creates a chat, not a read-only search tool. Grant client credentials only to agents you trust to submit work. No automatic retry should follow an uncertain submission.
+Anyone with the client token or private MCP URL can send prompts through your account. Use separate high-entropy client and device credentials. Never publish a connection URL, commit credentials, or include them in support logs. Rotate exposed credentials in Cloudflare and reconfigure the Mac.
+
+MCP accepts text and reasoning effort only. Remote callers cannot select image paths, browser profiles, destination URLs, or shell commands. The annotation hints do not change the fact that calling `new_task` creates a chat; they are not a security boundary.
+
+## Website compatibility
+
+Browser automation can be detected and may stop working when the site changes. Challenge-test results are observations, not a guarantee of undetectability or account safety. Follow the terms and policies that apply to your account. When a login or challenge requires human attention, resolve it in your browser instead of blindly repeating submissions.

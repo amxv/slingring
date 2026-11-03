@@ -67,12 +67,16 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Test isolated installers
+        run: python3 scripts/test_installers.py
+
       - name: Build the native menu bar companion
         run: |
           cargo build --locked
           mkdir -p tmp/ci
           cp target/debug/slingring tmp/ci/slingring
-          bash apps/menubar/build.sh "$PWD/tmp/ci/Slingring.app" arm64 0.1.0
+          version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          bash apps/menubar/build.sh "$PWD/tmp/ci/Slingring.app" arm64 "$version"
           tmp/ci/Slingring.app/Contents/MacOS/slingring-menubar --check
 
   web-components:

@@ -28,7 +28,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             browser_binary: "agent-browser-browse".into(),
-            profile: "Profile 6".into(),
+            profile: "Default".into(),
             default_effort: Some("Extra High".into()),
             start_timeout_secs: 180,
             relay_url: None,

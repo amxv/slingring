@@ -35,6 +35,16 @@ pub enum Command {
         #[arg(long)]
         default_effort: Option<String>,
     },
+    /// Choose the signed-in Chrome profile used for new tasks.
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
+    /// Install or inspect Slingring's managed browser helper.
+    Browser {
+        #[command(subcommand)]
+        action: BrowserAction,
+    },
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -112,6 +122,23 @@ pub enum ServiceAction {
     Restart,
     Install,
     Uninstall,
+    Status,
+}
+#[derive(Debug, Subcommand)]
+pub enum ProfileAction {
+    /// List Chrome profiles without opening Chrome.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Select a profile by its directory or unique display name.
+    Use { profile: String },
+}
+#[derive(Debug, Subcommand)]
+pub enum BrowserAction {
+    /// Install the tested, checksummed fork. No Homebrew or Node required.
+    Install,
+    /// Print helper paths without launching Chrome.
     Status,
 }
 #[derive(Debug, Subcommand)]

@@ -1,26 +1,28 @@
 ---
-title: Reasoning modes
-description: Choose an explicit mode or set your default.
-order: 3
-category: Reference
-summary: Choose an explicit mode or set your default.
+title: Reasoning levels
+description: Choose a level for one task or set your default.
+order: 5
+category: Guides
 ---
 
-## Five choices
-
-| Value | Use |
-| --- | --- |
-| `Instant` | Request the account's Instant option |
-| `Medium` | Request Medium reasoning |
-| `High` | Request High reasoning |
-| `Extra High` | Request Extra High reasoning; initial default |
-| `Pro` | Request the account's Pro option |
-
-Availability depends on the ChatGPT account and current interface. Slingring must not silently fall back when a requested tier is unavailable. These labels are selections, not latency or quality guarantees.
+Choose a default in **Configure → Default Reasoning**, or set it from the CLI:
 
 ```bash
-slingring config set default_reasoning_effort "Extra High"
-slingring new-task "Audit this proposal" --reasoning-effort Pro
+slingring config set default-effort "Extra High"
 ```
 
-Omitting the effort, or passing a blank effort, uses the configured default. Aliases include `med`, `xhigh`, and `extra-high`. The optional menu bar exposes all five defaults.
+Override it for an individual task:
+
+```bash
+slingring new-task "Review this architecture" --reasoning-effort Pro
+```
+
+Slingring recognizes **Instant, Medium, High, Extra High, and Pro**. The selected ChatGPT account must expose the requested level. Extra High and Pro are not available on every plan. Slingring checks the page before sending and never silently switches to a lower level.
+
+Omitted or blank effort uses your Slingring default. To leave the site's current selection unchanged:
+
+```bash
+slingring config set default-effort site
+```
+
+The CLI also accepts `med`, `xhigh`, and `extra-high`. These are shortcuts for the same choices, not separate modes. A reasoning choice is not a guarantee of speed or answer quality.

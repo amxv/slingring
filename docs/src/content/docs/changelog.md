@@ -2,11 +2,13 @@
 title: Changelog
 description: Release status and user-visible changes.
 order: 99
-category: Distribution
+category: Reference
 summary: Release status and user-visible changes.
 ---
 
-## 0.1.2 · 3 November 2026
+## 0.2.0 · 3 November 2026
+
+Install the verified browser helper automatically with Slingring. Add named Chrome profile selection in the CLI and menu bar. Move settings into Configure, retaining service control, latest chat, and quit at the top level. Advertise the requested MCP hint values while retaining explicit tool behavior.
 
 Keep the browser's crash backstop longer than the configured task deadline without changing launch options as queued requests age. Retry a model-menu click that races page hydration, while retaining the one-shot submission guard and strict effort verification.
 

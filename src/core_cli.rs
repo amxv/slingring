@@ -1,5 +1,5 @@
 use crate::{
-    cli::{Command, ConfigAction, RemoteAction, ServiceAction},
+    cli::{BrowserAction, Command, ConfigAction, ProfileAction, RemoteAction, ServiceAction},
     config::{self, Config},
     daemon::{self, Request},
     model::{MAX_JSON, MAX_PROMPT, NewTask},
@@ -113,22 +113,25 @@ pub async fn run(command: Command) -> Result<()> {
             profile,
             default_effort,
         } => {
+            let existed = root.join("config.json").is_file();
             let mut config = Config::load(&root)?;
             if let Some(profile) = profile {
-                config.profile = profile;
+                let rows = crate::profiles::list(&root, &config).await?;
+                config.profile = crate::profiles::select(&rows, &profile)?.directory.clone();
+            } else if !existed {
+                let rows = crate::profiles::list(&root, &config).await?;
+                ensure!(
+                    rows.len() == 1,
+                    "Choose your signed-in Chrome profile: run slingring profile list, then slingring setup --profile NAME (or use Configure > Chrome Profile in the menu bar)"
+                );
+                config.profile = rows[0].directory.clone();
             }
             if let Some(effort) = default_effort {
                 config.default_effort = Some(crate::model::effort(&effort)?);
             }
-            if !Path::new(&config.browser_binary).is_absolute() {
-                config.browser_binary =
-                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                        .map(|directory| directory.join(&config.browser_binary))
-                        .find(|path| path.is_file())
-                        .context("agent-browser-browse is not installed in PATH")?
-                        .to_string_lossy()
-                        .into_owned();
-            }
+            config.browser_binary = crate::dependencies::resolve(&root, &config.browser_binary)?
+                .to_string_lossy()
+                .into_owned();
             config.save(&root)?;
             let extension = crate::browser::install_extension(&root)?;
             reload(&root).await?;
@@ -137,6 +140,59 @@ pub async fn run(command: Command) -> Result<()> {
                 "extension":extension,"browser_binary":config.browser_binary}),
             )
         }
+        Command::Profile { action } => {
+            let mut config = Config::load(&root)?;
+            let rows = crate::profiles::list(&root, &config).await?;
+            match action {
+                ProfileAction::List { json } => {
+                    if json {
+                        output(json!({"profiles": rows, "selected": config.profile}))
+                    } else {
+                        for profile in rows {
+                            println!(
+                                "{} {:<14} {}",
+                                if profile.selected { "*" } else { " " },
+                                profile.directory,
+                                profile.name
+                            );
+                        }
+                        Ok(())
+                    }
+                }
+                ProfileAction::Use { profile } => {
+                    let selected = crate::profiles::select(&rows, &profile)?;
+                    ensure!(
+                        status(&root).await?["active_tasks"].as_u64().unwrap_or(0) == 0,
+                        "Wait for queued tasks to finish before changing the Chrome profile"
+                    );
+                    config.profile = selected.directory.clone();
+                    config.browser_binary =
+                        crate::dependencies::resolve(&root, &config.browser_binary)?
+                            .to_string_lossy()
+                            .into_owned();
+                    config.save(&root)?;
+                    crate::browser::install_extension(&root)?;
+                    reload(&root).await?;
+                    output(json!({"saved":true,"profile":config.profile,"name":selected.name}))
+                }
+            }
+        }
+        Command::Browser { action } => match action {
+            BrowserAction::Install => {
+                let path = crate::dependencies::install(&root)?;
+                output(
+                    json!({"installed":true,"version":crate::dependencies::VERSION,"binary":path}),
+                )
+            }
+            BrowserAction::Status => {
+                let config = Config::load(&root)?;
+                let managed = crate::dependencies::managed(&root);
+                output(
+                    json!({"managed":managed,"installed":managed.is_file(),"version":crate::dependencies::VERSION,
+                    "configured":config.browser_binary}),
+                )
+            }
+        },
         Command::Config { action } => {
             let mut config = Config::load(&root)?;
             match action {

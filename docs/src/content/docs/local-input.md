@@ -1,28 +1,52 @@
 ---
-title: Local input and images
-description: Prompts, local attachments, and safe retry behavior.
+title: Send prompts and images
+description: Use a prompt, a saved brief, or local images.
 order: 2
-category: Start
-summary: Prompts, local attachments, and safe retry behavior.
+category: Guides
 ---
 
-## Prompt sources
+Use Slingring when you want a second opinion, a deeper review, or a fresh ChatGPT conversation without copying context by hand.
+
+## From your terminal or local agent
 
 ```bash
-slingring new-task "Compare these approaches"
-slingring new-task --prompt-file ./brief.txt
-cat brief.txt | slingring new-task --prompt-file -
-slingring new-task "Explain this diagram" --image ./diagram.png --image ./detail.jpg
+slingring new-task "Review this plan and point out its biggest risks"
 ```
 
-Image paths are local CLI inputs only. They must be readable on the Mac running Slingring. Remote clients cannot request file uploads or supply filesystem paths. Prompts and attached images are sent to ChatGPT.
-
-## Idempotency and uncertainty
+A local agent can run the same command. For longer prompts, ask it to write a brief to a file and send that file:
 
 ```bash
-slingring new-task --prompt-file ./brief.txt --request-id migration-review-01 --json
+slingring new-task --prompt-file ./brief.md --reasoning-effort "Extra High"
 ```
 
-Reuse an ID only for the identical request. A different payload with the same ID is rejected. Both local and remote work enter one bounded serial queue.
+Piped input works too:
 
-`failed` reports a failure; `uncertain` means submission may have occurred. Inspect the job and ChatGPT before creating another request. Do not blindly resubmit after a timeout, disconnect, or daemon crash. There is no automatic resubmission of submitted or uncertain work.
+```bash
+cat brief.md | slingring new-task --stdin
+```
+
+## Attach an image
+
+```bash
+slingring new-task "Compare these designs" \
+  --image ./first.png \
+  --image ./second.png
+```
+
+Repeat `--image` for multiple files. Images must be on the Mac running Slingring. Remote MCP callers cannot read or upload local files.
+
+## Get a result your agent can parse
+
+```bash
+slingring new-task --prompt-file ./brief.md --json
+```
+
+The JSON result includes the conversation URL, job ID, selected reasoning level, and the kind of activity observed. It does **not** include ChatGPT's answer. Open the returned link to read or continue the conversation.
+
+You can send several requests together. They queue up and start one at a time; you do not need to manage browser windows.
+
+## When a task fails
+
+Read the error before trying again. An **uncertain** result means ChatGPT may have received the prompt. Check **Open Latest Chat**, your ChatGPT history, or `slingring jobs --json` first. Do not immediately create a replacement request.
+
+The [command reference](/docs/command-reference) covers limits and safe retries.

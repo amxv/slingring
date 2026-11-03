@@ -1,9 +1,8 @@
 ---
-title: Development and checks
-description: Test the bridge without exposing prompts or assistant answers.
-order: 11
-category: Development
-summary: Rust, browser-adapter fixtures, relay tests, and native app validation.
+title: Development and validation
+description: Implementation details for maintainers and integrators.
+order: 25
+category: Reference
 ---
 
 ```bash

@@ -16,7 +16,7 @@ pub fn tool() -> Value {
             "prompt":{"type":"string","minLength":1,"maxLength":131072},
             "reasoning_effort":{"type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]}},
             "required":["prompt"],"additionalProperties":false},
-        "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
 }
 /// Outer None means this is a write request; Some(None) means a notification.
 pub fn metadata(request: &Value) -> Option<Option<Value>> {
