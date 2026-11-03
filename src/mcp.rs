@@ -7,6 +7,10 @@ use crate::{
 use serde_json::{Value, json};
 use std::path::Path;
 
+/// Keep the tool response comfortably below common caller/proxy timeouts. The
+/// browser budget remains independent and accepted jobs continue in memory.
+pub const RECEIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub const VERSIONS: &[&str] = &["2025-03-26", "2025-06-18", "2025-11-25"];
 pub fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
@@ -15,7 +19,7 @@ fn result(id: Value, result: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":result})
 }
 pub fn tool() -> Value {
-    json!({"name":"new_task","description":"Start a new ChatGPT Chat conversation and return its URL when real activity begins. Provide a fresh unique request_id BEFORE sending so you can query get_job_status if the MCP caller times out. Never automatically retry an uncertain submission. Omitted effort uses the configured default.",
+    json!({"name":"new_task","description":"Submit a new ChatGPT Chat task once. Within about five seconds of admission, return either a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue after this call returns; use get_job_status(request_id) for the outcome, never submit again to poll. Provide a fresh unique request_id BEFORE sending so a caller timeout cannot lose the recovery key. Never automatically retry uncertain submissions. Omitted effort uses the configured default.",
         "inputSchema":{"type":"object","properties":{
             "prompt":{"type":"string","minLength":1,"maxLength":131072},
             "reasoning_effort":{"type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]},
@@ -24,7 +28,7 @@ pub fn tool() -> Value {
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
 }
 pub fn message_tool() -> Value {
-    json!({"name":"send_message","description":"Send a follow-up to an existing ChatGPT Chat conversation. Supply a fresh unique request_id before submitting so get_job_status can recover the outcome after a caller timeout without resending. Preserve the chat's effort, do not interrupt a response and never automatically retry uncertain submissions.",
+    json!({"name":"send_message","description":"Submit a follow-up once to an existing ChatGPT Chat. Within about five seconds of admission, return either a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue after this call returns; use get_job_status(request_id), never resubmit to poll. Supply a fresh unique request_id before sending for timeout recovery. Preserve the chat's effort, do not interrupt a response and never automatically retry uncertain submissions.",
         "inputSchema":{"type":"object","properties":{
             "chatgpt_url":{"type":"string","minLength":23,"maxLength":150,
                 "pattern":"^https://chatgpt\\.com/c/[A-Za-z0-9-]{1,128}$"},
@@ -78,7 +82,7 @@ pub fn status_response(root: &Path, request: &Value) -> Value {
         Ok(Some(id)) => id,
         Ok(None) | Err(_) => return error(id, -32602, "invalid request_id"),
     };
-    let jobs = match queue::records(root) {
+    let jobs = match queue::recovery_records(root) {
         Ok(jobs) => jobs,
         Err(_) => return error(id, -32603, "Private task journal unavailable"),
     };
@@ -112,7 +116,7 @@ pub fn metadata(request: &Value) -> Option<Option<Value>> {
             };
             json!({"protocolVersion":version,"capabilities":{"tools":{}},
                 "serverInfo":{"name":"slingring","version":env!("CARGO_PKG_VERSION")},
-                "instructions":"Use new_task and send_message with a fresh unique request_id for each logical write. If the caller times out, use read-only get_job_status(request_id) to inspect the Mac's journal; never resubmit an uncertain operation. No generated answer is returned."})
+                "instructions":"Use new_task and send_message once with a fresh unique request_id for each logical write. The call returns a confirmed URL or an accepted in_progress receipt within about five seconds of admission; accepted jobs continue in memory after the response or disconnect. Use read-only get_job_status(request_id) to recover the outcome, including after a caller timeout. Never resubmit to poll or replay uncertain operations. No generated answer is returned."})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":tools()}),
@@ -120,6 +124,11 @@ pub fn metadata(request: &Value) -> Option<Option<Value>> {
         _ => return Some(Some(error(id, -32601, "Method not found"))),
     };
     Some(Some(result(id, r)))
+}
+/// Control requests are completed outside the submission wait pool.
+pub fn immediate_response(root: &Path, request: &Value) -> Option<Option<Value>> {
+    metadata(request)
+        .or_else(|| status_request(request).then(|| Some(status_response(root, request))))
 }
 pub fn arguments(request: &Value) -> Result<Task, &'static str> {
     let name = request["params"]["name"].as_str().unwrap_or("");
@@ -182,11 +191,8 @@ pub async fn dispatch(
     key: String,
     deadline_ms: Option<u64>,
 ) -> Option<Value> {
-    if let Some(response) = metadata(&request) {
+    if let Some(response) = immediate_response(root, &request) {
         return response;
-    }
-    if status_request(&request) {
-        return Some(status_response(root, &request));
     }
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let requested_key = match declared_request_id(&request) {
@@ -212,14 +218,9 @@ pub async fn dispatch(
     };
     if let Some(deadline) = deadline_ms {
         let seconds = deadline.saturating_sub(crate::queue::now()) / 1000;
-        if seconds == 0 {
-            return Some(error(
-                id,
-                -32000,
-                "Request expired before launch; nothing was submitted",
-            ));
-        }
-        config.start_timeout_secs = config.start_timeout_secs.min(seconds);
+        // Let admission recover an existing ID before deciding a new expired
+        // request is unsent. A past deadline cannot erase an earlier success.
+        config.start_timeout_secs = config.start_timeout_secs.min(seconds.max(1));
     }
     let task = match task.resolve(&config) {
         Ok(task) => task,
@@ -229,13 +230,8 @@ pub async fn dispatch(
         tokio::time::Instant::now()
             + std::time::Duration::from_millis(deadline.saturating_sub(crate::queue::now()))
     });
-    let outcome = match queue
-        .submit_before(key.clone(), task, config, external_deadline)
-        .await
-    {
-        Ok(r) => {
-            json!({"content":[{"type":"text","text":r.url}],"structuredContent":r,"isError":false})
-        }
+    let receiver = match queue.accept_before(key.clone(), task, config, external_deadline) {
+        Ok(receiver) => receiver,
         Err(e) => {
             if e.to_string()
                 .contains("request ID was already used with different input")
@@ -249,18 +245,60 @@ pub async fn dispatch(
                     "structuredContent":details,"isError":true}),
                 ));
             }
-            let record = queue.snapshot().into_iter().find(|j| j["id"] == key);
-            let recovered = queue::records(root).ok().and_then(|jobs| {
-                jobs.iter()
-                    .find(|job| job.id == key)
-                    .map(|job| queue::recovery_status(Some(job), &key))
-            });
-            let details = json!({"job_id":key,"error":e.to_string(),"job":record,
-                "outcome":recovered.as_ref().map(|r|r["outcome"].clone()).unwrap_or(json!("unknown")),
-                "guidance":recovered.as_ref().map(|r|r["guidance"].clone()).unwrap_or(json!("The request may not have reached the Mac. Do not assume it failed; query get_job_status using this request ID.")),
-                "diagnosis":recovered.as_ref().and_then(|r|r.get("diagnosis"))});
-            json!({"content":[{"type":"text","text":details.to_string()}],"structuredContent":details,"isError":true})
+            let mut details = queue.recovery_status(&key);
+            if details["known"] == false {
+                details["outcome"] = json!("not_submitted");
+                details["guidance"] = json!(
+                    "This attempt was rejected before queue admission. Nothing was submitted by this attempt. Diagnose the error before intentionally creating a new request."
+                );
+            }
+            details["job_id"] = json!(key);
+            details["accepted"] = json!(false);
+            details["error"] = json!(e.to_string());
+            return Some(tool_result(id, details, true));
         }
     };
-    Some(result(id, outcome))
+    match tokio::time::timeout(RECEIPT_WAIT, receiver).await {
+        Ok(Ok(Ok(r))) => {
+            let url = r.url.clone();
+            let mut details = serde_json::to_value(r).expect("serializable task result");
+            details["request_id"] = json!(key);
+            details["outcome"] = json!("submitted");
+            details["accepted"] = json!(true);
+            Some(result(
+                id,
+                json!({"content":[{"type":"text","text":url}],
+                "structuredContent":details,"isError":false}),
+            ))
+        }
+        Ok(Ok(Err(error))) => {
+            let mut details = queue.recovery_status(&key);
+            details["job_id"] = json!(key);
+            details["accepted"] = json!(true);
+            details["error"] = json!(error.to_string());
+            Some(tool_result(id, details, true))
+        }
+        outcome => {
+            let mut details = queue.recovery_status(&key);
+            details["job_id"] = json!(key);
+            details["accepted"] = json!(true);
+            details["recovery_tool"] = json!("get_job_status");
+            // A dropped worker is not an in-progress receipt. Normal deadline
+            // receipts leave the already-admitted job owned by the queue.
+            if matches!(outcome, Ok(Err(_))) {
+                details["outcome"] = json!("uncertain");
+                details["guidance"] = json!(
+                    "The queue stopped before replying. Query the same request_id; never resubmit automatically."
+                );
+            }
+            Some(tool_result(id, details, false))
+        }
+    }
+}
+fn tool_result(id: Value, details: Value, is_error: bool) -> Value {
+    result(
+        id,
+        json!({"content":[{"type":"text","text":details.to_string()}],
+        "structuredContent":details,"isError":is_error}),
+    )
 }

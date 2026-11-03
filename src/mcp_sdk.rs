@@ -30,7 +30,7 @@ impl ServerHandler for LocalServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("slingring", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Use new_task to start a ChatGPT Chat and send_message to follow up. Provide a unique request_id before calling either tool, and use the read-only get_job_status tool to recover status after a timeout without resubmitting. Never retry uncertain submissions. Files remain local CLI-only.")
+            .with_instructions("Submit once with new_task or send_message and a fresh unique request_id. Within about five seconds of admission, receive a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue in memory after the response or caller disconnect. Use read-only get_job_status to recover outcomes without resubmitting. Never replay uncertain submissions. Files remain local CLI-only.")
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -90,11 +90,12 @@ impl ServerHandler for LocalServer {
             &self.root,
             &daemon::Request::Mcp {
                 body,
-                key: request_id,
+                key: request_id.clone(),
             },
         )
         .await
-        .map_err(|_| ErrorData::internal_error("Local Slingring service unavailable", None))?;
+        .map_err(|_| ErrorData::internal_error("Local Slingring service unavailable; submission outcome is unknown. Use get_job_status with this request_id; do not resubmit.",
+            Some(json!({"request_id":request_id,"outcome":"unknown","recovery_tool":"get_job_status"}))))?;
         let response = response
             .get("response")
             .ok_or_else(|| ErrorData::internal_error("Missing local MCP response", None))?;

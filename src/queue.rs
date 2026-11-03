@@ -7,8 +7,10 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
+    fs::{File, OpenOptions},
     future::Future,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
@@ -143,6 +145,15 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         | "native_connection_failed" => {
             "Browser or native bridge setup failed before submission. Inspect events.log, verify the pinned browser helper and selected Chrome profile, then diagnose before a new request."
         }
+        "prompt_changed" => {
+            "Composer text no longer matches the prepared message. A potentially real draft was preserved. Inspect the composer before a new request; Slingring will not overwrite or automatically retry it."
+        }
+        "prompt_lost" => {
+            "The prepared message disappeared before submission, for example during page hydration. Nothing was submitted; inspect the configured profile and composer before a new request."
+        }
+        "composer_unavailable" => {
+            "The conversation did not expose a usable composer. Check that the configured account can load the target chat; no message was submitted."
+        }
         _ => {
             "Use the recorded phase and outcome; inspect the Mac journal and conversation before choosing any further action."
         }
@@ -173,11 +184,82 @@ pub fn records(root: &Path) -> Result<VecDeque<Job>> {
     ensure!(jobs.len() <= 256, "journal contains too many jobs");
     Ok(jobs)
 }
+fn owner_file(root: &Path) -> Result<File> {
+    let path = root.join("queue.lock");
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        ensure!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            "invalid queue lock"
+        );
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    fs2::FileExt::try_lock_exclusive(&file)
+        .context("another Slingring queue owns this state directory")?;
+    Ok(file)
+}
+fn lock_held(path: &Path) -> Result<bool> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        meta.is_file() && !meta.file_type().is_symlink(),
+        "invalid ownership lock"
+    );
+    let file = OpenOptions::new().read(true).open(path)?;
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+/// Read-only liveness check. The daemon lock also recognizes older installed
+/// versions and protects the brief startup interval before the queue is opened.
+pub fn owner_running(root: &Path) -> Result<bool> {
+    Ok(lock_held(&root.join("queue.lock"))? || lock_held(&root.join("daemon.lock"))?)
+}
+fn interrupt(job: &mut Job) {
+    if job.active() {
+        let pending = job.status == "queued";
+        job.status = if pending { "failed" } else { "uncertain" }.into();
+        job.finished_at = Some(now());
+        job.error = Some(
+            if pending {
+                "service interrupted before launch; nothing was submitted; not replayed"
+            } else {
+                "service interrupted during submission; inspect the chat before retrying"
+            }
+            .into(),
+        );
+    }
+}
+/// Classify orphaned records even when a crashed daemon has not been restarted.
+/// Never writes history, starts a process, or infers no submission from a phase.
+pub fn recovery_records(root: &Path) -> Result<VecDeque<Job>> {
+    let mut jobs = records(root)?;
+    // Probe after reading so a concurrently started owner cannot publish a new
+    // queued row between a negative liveness check and the journal read.
+    if !owner_running(root)? {
+        for job in &mut jobs {
+            interrupt(job);
+        }
+    }
+    Ok(jobs)
+}
 type Reply = oneshot::Sender<Result<TaskResult>>;
 struct State {
     jobs: VecDeque<Job>,
     waiters: HashMap<String, Vec<Reply>>,
     root: PathBuf,
+    retained: HashSet<String>,
+    owner: Option<File>,
 }
 impl State {
     fn save(&mut self) -> Result<()> {
@@ -195,13 +277,16 @@ impl State {
         )
     }
     fn finish(&mut self, id: &str, result: Result<TaskResult>, status: &str) -> Result<()> {
+        self.retained.remove(id);
         let safe_code = match &result {
             Ok(_) => "activity_confirmed",
             Err(error) => error
                 .downcast_ref::<StartError>()
                 .map(|e| e.code.as_str())
                 .filter(|c| {
-                    c.len() <= 100 && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                    !c.is_empty()
+                        && c.len() <= 100
+                        && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
                 })
                 .unwrap_or("operation_error"),
         }
@@ -219,10 +304,22 @@ impl State {
                 job.result = Some(r);
             }
             Err(e) => {
-                if let Some(e) = e.downcast_ref::<StartError>().filter(|e| e.url.is_some()) {
+                if let Some(e) = e
+                    .downcast_ref::<StartError>()
+                    .filter(|e| e.url.as_deref().is_some_and(crate::model::canonical_url))
+                {
                     job.url = e.url.clone();
                 }
-                job.error = Some(e.to_string());
+                // Persist curated codes and known outcome only, never arbitrary
+                // external error strings which may contain private page text.
+                job.error = Some(format!(
+                    "{safe_code}; {}",
+                    if status == "failed" {
+                        "nothing was submitted"
+                    } else {
+                        "submission may have started; inspect the task before retrying"
+                    }
+                ));
             }
         }
         let saved = self.save();
@@ -280,26 +377,17 @@ impl Queue {
         stop: watch::Receiver<bool>,
     ) -> Result<(Self, tokio::task::JoinHandle<Result<()>>)> {
         config::private_dir(&root)?;
+        let owner = owner_file(&root)?;
         let mut jobs = records(&root)?;
         for job in &mut jobs {
-            if job.active() {
-                let pending = job.status == "queued";
-                job.status = if pending { "failed" } else { "uncertain" }.into();
-                job.finished_at = Some(now());
-                job.error = Some(
-                    if pending {
-                        "service restarted before launch; not replayed"
-                    } else {
-                        "service restarted during submission; inspect the chat before retrying"
-                    }
-                    .into(),
-                );
-            }
+            interrupt(job);
         }
         let mut state = State {
             jobs,
             waiters: HashMap::new(),
             root,
+            retained: HashSet::new(),
+            owner: Some(owner),
         };
         state.save()?;
         let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
@@ -329,6 +417,10 @@ impl Queue {
             .filter(|j| j.active())
             .count()
     }
+    pub fn recovery_status(&self, id: &str) -> serde_json::Value {
+        let state = self.state.lock().expect("queue lock");
+        recovery_status(state.jobs.iter().find(|job| job.id == id), id)
+    }
     pub fn quiet(&self) -> bool {
         self.active() == 0 && !self.busy.load(Ordering::Acquire)
     }
@@ -349,8 +441,31 @@ impl Queue {
         config: Config,
         deadline: Option<Instant>,
     ) -> Result<TaskResult> {
+        self.admit(id, task.into(), config, deadline, false)?
+            .await
+            .context("service stopped; inspect queue before retrying")?
+    }
+    /// An MCP acknowledgement commits to keeping the accepted in-memory job
+    /// even if its caller disconnects. Only metadata survives a service crash.
+    pub fn accept_before(
+        &self,
+        id: String,
+        task: Task,
+        config: Config,
+        deadline: Option<Instant>,
+    ) -> Result<oneshot::Receiver<Result<TaskResult>>> {
+        self.admit(id, task, config, deadline, true)
+    }
+    fn admit(
+        &self,
+        id: String,
+        task: Task,
+        config: Config,
+        deadline: Option<Instant>,
+        retained: bool,
+    ) -> Result<oneshot::Receiver<Result<TaskResult>>> {
         ensure!(valid_job_id(&id), "invalid request ID");
-        let task = task.into().resolve(&config)?;
+        let task = task.resolve(&config)?;
         let fingerprint = task.fingerprint(&config.profile)?;
         let (tx, rx) = oneshot::channel();
         {
@@ -361,14 +476,19 @@ impl Queue {
                     "request ID was already used with different input"
                 );
                 if !job.active() {
-                    return job.outcome();
+                    let _ = tx.send(job.outcome());
+                    return Ok(rx);
                 }
-                let waiters = state.waiters.entry(id).or_default();
+                let waiters = state.waiters.entry(id.clone()).or_default();
+                waiters.retain(|waiter| !waiter.is_closed());
                 ensure!(
                     waiters.len() < 8,
                     "too many callers waiting for this request"
                 );
                 waiters.push(tx);
+                if retained {
+                    state.retained.insert(id);
+                }
             } else {
                 ensure!(
                     state.jobs.iter().filter(|j| j.active()).count() < QUEUE_CAPACITY,
@@ -392,6 +512,9 @@ impl Queue {
                     return Err(e).context("cannot persist task metadata");
                 }
                 state.waiters.insert(id.clone(), vec![tx]);
+                if retained {
+                    state.retained.insert(id.clone());
+                }
                 crate::diagnostics::event(&state.root, &id, "queued", "in_progress", "none", 0);
                 permit.send(Item {
                     id,
@@ -401,8 +524,7 @@ impl Queue {
                 });
             }
         }
-        rx.await
-            .context("service stopped; inspect queue before retrying")?
+        Ok(rx)
     }
 }
 async fn work(
@@ -419,7 +541,7 @@ async fn work(
             if *stop.borrow() { break; }
             let skipped = {
                 let mut state = queue.state.lock().expect("queue lock");
-                let abandoned = state.waiters.get(&id).is_none_or(|w| w.iter().all(oneshot::Sender::is_closed));
+                let abandoned = !state.retained.contains(&id) && state.waiters.get(&id).is_none_or(|w| w.iter().all(oneshot::Sender::is_closed));
                 if deadline.is_some_and(|deadline| Instant::now() >= deadline) || abandoned {
                     state.finish(&id, Err(anyhow::anyhow!("request expired or caller disconnected before launch; nothing was submitted")), "failed")?;
                     true
@@ -442,6 +564,22 @@ async fn work(
                 continue;
             }
             queue.busy.store(true, Ordering::Release);
+            if open_config.as_ref().is_some_and(|previous| {
+                previous.profile != config.profile || previous.browser_binary != config.browser_binary
+                    || previous.browser_headed != config.browser_headed
+            }) {
+                let previous = open_config.take().expect("open browser configuration");
+                close_bounded(backend.as_ref(), &previous).await;
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                queue.state.lock().expect("queue lock").finish(&id,
+                    Err(anyhow::anyhow!("request expired before browser launch; nothing was submitted")), "failed")?;
+                if rx.is_empty() {
+                    if let Some(config) = open_config.take() { close_bounded(backend.as_ref(), &config).await; }
+                    queue.busy.store(false, Ordering::Release);
+                }
+                continue;
+            }
             config.browser_idle_secs = Some(config.start_timeout_secs.saturating_add(60));
             let own_deadline = Instant::now() + Duration::from_secs(config.start_timeout_secs);
             let deadline = deadline.map_or(own_deadline, |external| external.min(own_deadline));
@@ -476,12 +614,15 @@ async fn work(
             let success = result.is_ok();
             let status = if success { "started" } else if result.as_ref().err()
                 .and_then(|e| e.downcast_ref::<StartError>()).is_some_and(|e| !e.may_have_submitted) { "failed" } else { "uncertain" };
+            // Persist the proven outcome and release waiters before potentially
+            // slow browser cleanup. The worker still serializes subsequent jobs.
+            let finished = queue.state.lock().expect("queue lock").finish(&id, result, status);
             if !success || rx.is_empty() || *stop.borrow() {
                 close_bounded(backend.as_ref(), &config).await;
                 open_config = None;
                 queue.busy.store(false, Ordering::Release);
             }
-            queue.state.lock().expect("queue lock").finish(&id, result, status)?;
+            finished?;
             if *stop.borrow() { break; }
         }
         Ok(())
@@ -509,6 +650,9 @@ async fn work(
             },
         );
     }
+    // Cleanup and final interruption records precede releasing ownership. Queue
+    // clones may outlive the worker, but a stopped worker no longer owns jobs.
+    state.owner.take();
     outcome
 }
 async fn close_bounded(backend: &dyn Backend, config: &Config) {

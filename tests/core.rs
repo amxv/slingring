@@ -284,6 +284,56 @@ async fn abandoned_queued_calls_never_launch() -> Result<()> {
     Ok(())
 }
 #[tokio::test]
+async fn queued_browser_mode_or_profile_changes_close_only_between_jobs() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(Mock::new(0));
+    let (stop, rx) = watch::channel(false);
+    let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), rx)?;
+    let first = queue.accept_before(
+        "mode-first".into(),
+        task("one").into(),
+        Config::default(),
+        None,
+    )?;
+    backend.started.notified().await;
+    let headed = Config {
+        browser_headed: true,
+        ..Config::default()
+    };
+    let second = queue.accept_before(
+        "mode-second".into(),
+        task("two").into(),
+        headed.clone(),
+        None,
+    )?;
+    let other_profile = Config {
+        profile: "Another Profile".into(),
+        ..headed
+    };
+    let third = queue.accept_before(
+        "mode-third".into(),
+        task("three").into(),
+        other_profile,
+        None,
+    )?;
+    assert_eq!(backend.closes.load(Ordering::SeqCst), 0);
+    backend.gate.add_permits(3);
+    first.await??;
+    second.await??;
+    third.await??;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !queue.quiet() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(backend.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.closes.load(Ordering::SeqCst), 3);
+    stop.send(true)?;
+    worker.await??;
+    Ok(())
+}
+#[tokio::test]
 async fn crash_recovery_does_not_replay_queued_or_starting_jobs() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let rows = vec![

@@ -9,7 +9,7 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 use tokio_tungstenite::{
-    connect_async_with_config,
+    WebSocketStream, connect_async_with_config,
     tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig},
 };
 
@@ -43,6 +43,18 @@ async fn connection(
     )
     .await??;
     status.send_replace("connected".into());
+    serve_socket(root, config, queue, socket).await
+}
+
+async fn serve_socket<S>(
+    root: PathBuf,
+    config: Config,
+    queue: Queue,
+    socket: WebSocketStream<S>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let (mut sink, mut stream) = socket.split();
     let mut calls = FuturesUnordered::new();
     let period = Duration::from_secs(config.heartbeat_secs);
@@ -78,8 +90,12 @@ async fn connection(
                         };
                         let deadline = value["expires_at"].as_u64().filter(|d| *d <= crate::queue::now() + 300_000)
                             .ok_or_else(|| anyhow::anyhow!("invalid request deadline"))?;
+                        if let Some(response) = crate::mcp::immediate_response(&root, &value["request"]) {
+                            sink.send(Message::Text(json!({"type":"rpc_result","id":value["id"],"response":response}).to_string().into())).await?;
+                            continue;
+                        }
                         if calls.len() >= 32 {
-                            let body = crate::mcp::error(value["request"]["id"].clone(), -32000, "Mac relay capacity exceeded; nothing was submitted");
+                            let body = crate::mcp::error(value["request"]["id"].clone(), -32000, "Mac submission wait capacity exceeded; this call was not admitted. An earlier request with the same ID may exist; use get_job_status.");
                             sink.send(Message::Text(json!({"type":"rpc_result","id":value["id"],"response":body}).to_string().into())).await?;
                             continue;
                         }
@@ -144,4 +160,90 @@ pub async fn run(
         }
     }
     status.send_replace("disabled".into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        model::{Task, TaskResult},
+        queue::{Backend, BrowserFuture},
+    };
+    use std::sync::Arc;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    struct Blocked;
+    impl Backend for Blocked {
+        fn run<'a>(
+            &'a self,
+            _: &'a Config,
+            _: &'a Task,
+            _: &'a str,
+        ) -> BrowserFuture<'a, TaskResult> {
+            Box::pin(std::future::pending())
+        }
+        fn close<'a>(&'a self, _: &'a Config) -> BrowserFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_status_bypasses_32_pending_submission_calls() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (stop, receiver) = watch::channel(false);
+        let (queue, worker) = Queue::open(dir.path().into(), Arc::new(Blocked), receiver)?;
+        let (device, relay) = tokio::io::duplex(1024 * 1024);
+        let device = WebSocketStream::from_raw_socket(device, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay, Role::Server, None).await;
+        let runner = tokio::spawn(serve_socket(
+            dir.path().into(),
+            Config::default(),
+            queue.clone(),
+            device,
+        ));
+        for index in 0..32 {
+            let key = format!("pending-{index}");
+            let request = json!({"jsonrpc":"2.0","id":index,"method":"tools/call","params":{
+                "name":"new_task","arguments":{"prompt":"PRIVATE saturation fixture", "request_id":key}}});
+            relay
+                .send(Message::Text(
+                    json!({"type":"rpc","id":key,"request":request,
+                "expires_at":crate::queue::now()+230_000})
+                    .to_string()
+                    .into(),
+                ))
+                .await?;
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while queue.active() != 32 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        let lookup = json!({"jsonrpc":"2.0","id":99,"method":"tools/call","params":{
+            "name":"get_job_status","arguments":{"request_id":"pending-0"}}});
+        relay
+            .send(Message::Text(
+                json!({"type":"rpc","id":"lookup","request":lookup,
+            "expires_at":crate::queue::now()+230_000})
+                .to_string()
+                .into(),
+            ))
+            .await?;
+        let frame = tokio::time::timeout(Duration::from_millis(500), relay.next())
+            .await?
+            .unwrap()?;
+        let frame: Value = serde_json::from_str(frame.to_text()?)?;
+        assert_eq!(frame["id"], "lookup");
+        assert_eq!(
+            frame["response"]["result"]["structuredContent"]["outcome"],
+            "in_progress"
+        );
+        assert_eq!(queue.active(), 32);
+        runner.abort();
+        let _ = runner.await;
+        stop.send(true)?;
+        worker.await??;
+        Ok(())
+    }
 }

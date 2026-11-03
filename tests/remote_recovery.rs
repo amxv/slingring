@@ -264,3 +264,286 @@ async fn expired_before_launch_is_known_safe_without_running_backend() -> Result
     worker.await??;
     Ok(())
 }
+
+#[tokio::test]
+async fn crashed_owner_is_classified_without_restarting_or_mutating_history() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(FakeBrowser::new(false));
+    let (_stop, receiver) = watch::channel(false);
+    let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+    let starting = queue.accept_before(
+        "interrupted-start".into(),
+        task("PRIVATE running").into(),
+        Config::default(),
+        None,
+    )?;
+    backend.began.notified().await;
+    let queued = queue.accept_before(
+        "interrupted-queue".into(),
+        task("PRIVATE queued").into(),
+        Config::default(),
+        None,
+    )?;
+    assert!(slingring::queue::owner_running(dir.path())?);
+    assert_eq!(
+        read_status(dir.path(), "interrupted-start")["result"]["structuredContent"]["outcome"],
+        "in_progress"
+    );
+    // Abort the owner as a crash would, without the orderly shutdown handler.
+    worker.abort();
+    let _ = worker.await;
+    drop(queue);
+    drop(starting);
+    drop(queued);
+    assert!(!slingring::queue::owner_running(dir.path())?);
+    let before = std::fs::read(dir.path().join("journal.json"))?;
+    assert_eq!(
+        read_status(dir.path(), "interrupted-start")["result"]["structuredContent"]["outcome"],
+        "uncertain"
+    );
+    assert_eq!(
+        read_status(dir.path(), "interrupted-queue")["result"]["structuredContent"]["outcome"],
+        "not_submitted"
+    );
+    assert_eq!(std::fs::read(dir.path().join("journal.json"))?, before);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    assert!(!dir.path().join("slingring.sock").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_queue_owner_and_retained_mcp_admission_survive_lost_replies() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(FakeBrowser::new(false));
+    let (stop, receiver) = watch::channel(false);
+    let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+    assert!(Queue::open(dir.path().into(), backend.clone(), stop.subscribe()).is_err());
+    let first = queue.accept_before(
+        "first-accepted".into(),
+        task("PRIVATE one").into(),
+        Config::default(),
+        None,
+    )?;
+    backend.began.notified().await;
+    let next = queue.accept_before(
+        "queued-accepted".into(),
+        task("PRIVATE two").into(),
+        Config::default(),
+        None,
+    )?;
+    drop(first);
+    drop(next);
+    backend.permits.add_permits(2);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !queue.quiet() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        read_status(dir.path(), "queued-accepted")["result"]["structuredContent"]["outcome"],
+        "submitted"
+    );
+    queue
+        .submit(
+            "queued-accepted".into(),
+            task("PRIVATE two"),
+            Config::default(),
+        )
+        .await?;
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    stop.send(true)?;
+    worker.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn slow_mcp_returns_a_bounded_receipt_then_status_reports_late_success() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(FakeBrowser::new(false));
+    let (stop, receiver) = watch::channel(false);
+    let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+    let request = json!({"jsonrpc":"2.0","id":91,"method":"tools/call","params":{
+        "name":"new_task","arguments":{"prompt":"PRIVATE slow MCP", "request_id":"bounded-receipt"}}});
+    let response = tokio::time::timeout(
+        slingring::mcp::RECEIPT_WAIT + Duration::from_secs(1),
+        slingring::mcp::dispatch(dir.path(), &queue, request, "bounded-receipt".into(), None),
+    )
+    .await?
+    .unwrap();
+    let details = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"], false);
+    assert_eq!(details["outcome"], "in_progress");
+    assert_eq!(details["accepted"], true);
+    assert_eq!(details["request_id"], "bounded-receipt");
+    assert_eq!(details["recovery_tool"], "get_job_status");
+    assert!(details.get("url").is_none());
+    backend.permits.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !queue.quiet() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(
+        read_status(dir.path(), "bounded-receipt")["result"]["structuredContent"]["outcome"],
+        "submitted"
+    );
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    stop.send(true)?;
+    worker.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn saturated_queue_keeps_status_available_and_rejects_new_admission_honestly() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(FakeBrowser::new(false));
+    let (stop, receiver) = watch::channel(false);
+    let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+    for index in 0..32 {
+        drop(queue.accept_before(
+            format!("full-{index}"),
+            task("PRIVATE fill queue").into(),
+            Config::default(),
+            None,
+        )?);
+    }
+    backend.began.notified().await;
+    assert_eq!(queue.active(), 32);
+    let lookup = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"get_job_status","arguments":{"request_id":"full-0"}}});
+    let response = tokio::time::timeout(
+        Duration::from_millis(200),
+        slingring::mcp::dispatch(dir.path(), &queue, lookup, "lookup-key".into(), None),
+    )
+    .await?
+    .unwrap();
+    assert_eq!(
+        response["result"]["structuredContent"]["outcome"],
+        "in_progress"
+    );
+    let extra = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+        "name":"new_task","arguments":{"prompt":"PRIVATE overflow","request_id":"overflow"}}});
+    let rejected = slingring::mcp::dispatch(dir.path(), &queue, extra, "overflow".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        rejected["result"]["structuredContent"]["outcome"],
+        "not_submitted"
+    );
+    assert_eq!(rejected["result"]["structuredContent"]["accepted"], false);
+    assert_eq!(queue.active(), 32);
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    stop.send(true)?;
+    worker.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_expired_duplicate_recovers_previous_success_instead_of_claiming_unsent() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let backend = Arc::new(FakeBrowser::new(false));
+    backend.permits.add_permits(1);
+    let (stop, receiver) = watch::channel(false);
+    let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+    queue
+        .submit("already-sent".into(), task("same input"), Config::default())
+        .await?;
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"new_task","arguments":{"prompt":"same input","request_id":"already-sent"}}});
+    let response =
+        slingring::mcp::dispatch(dir.path(), &queue, request, "already-sent".into(), Some(1))
+            .await
+            .unwrap();
+    assert_eq!(
+        response["result"]["structuredContent"]["outcome"],
+        "submitted"
+    );
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    stop.send(true)?;
+    worker.await??;
+    Ok(())
+}
+
+struct SlowCleanup {
+    began: tokio::sync::Notify,
+    gate: tokio::sync::Semaphore,
+    fail: bool,
+}
+impl Backend for SlowCleanup {
+    fn run<'a>(
+        &'a self,
+        _: &'a Config,
+        task: &'a Task,
+        id: &'a str,
+    ) -> BrowserFuture<'a, TaskResult> {
+        Box::pin(async move {
+            if self.fail {
+                anyhow::bail!("PRIVATE external page error must never reach journal");
+            }
+            Ok(TaskResult {
+                job_id: id.into(),
+                url: format!("https://chatgpt.com/c/{id}"),
+                reasoning_effort: task.reasoning_effort().map(str::to_string),
+                evidence: "thinking".into(),
+            })
+        })
+    }
+    fn close<'a>(&'a self, _: &'a Config) -> BrowserFuture<'a, ()> {
+        Box::pin(async move {
+            self.began.notify_one();
+            self.gate.acquire().await.unwrap().forget();
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn proven_outcomes_are_published_before_slow_cleanup_and_raw_errors_stay_private()
+-> Result<()> {
+    for fail in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let backend = Arc::new(SlowCleanup {
+            began: tokio::sync::Notify::new(),
+            gate: tokio::sync::Semaphore::new(0),
+            fail,
+        });
+        let (stop, receiver) = watch::channel(false);
+        let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            queue.submit(
+                "before-cleanup".into(),
+                task("PRIVATE fixture input"),
+                Config::default(),
+            ),
+        )
+        .await?;
+        assert_eq!(result.is_err(), fail);
+        backend.began.notified().await;
+        assert!(!queue.quiet());
+        assert_eq!(queue.active(), 0);
+        assert!(slingring::queue::owner_running(dir.path())?);
+        let status =
+            read_status(dir.path(), "before-cleanup")["result"]["structuredContent"].clone();
+        assert_eq!(
+            status["outcome"],
+            if fail { "uncertain" } else { "submitted" }
+        );
+        let journal = std::fs::read_to_string(dir.path().join("journal.json"))?;
+        assert!(!journal.contains("PRIVATE"));
+        backend.gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !queue.quiet() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        stop.send(true)?;
+        worker.await??;
+        assert!(!slingring::queue::owner_running(dir.path())?);
+    }
+    Ok(())
+}
