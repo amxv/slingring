@@ -257,6 +257,18 @@ pub async fn run(command: Command) -> Result<()> {
                         }
                         "profile" | "chrome-profile" => config.profile = value,
                         "browser-binary" => config.browser_binary = value,
+                        "browser-mode" => {
+                            config.browser_headed = match value.as_str() {
+                                "headed" => true,
+                                "headless" => false,
+                                _ => anyhow::bail!("browser-mode must be headed or headless"),
+                            };
+                        }
+                        "browser-headed" => {
+                            config.browser_headed = value
+                                .parse()
+                                .context("browser-headed must be true or false")?;
+                        }
                         "start-timeout-secs" | "timeout-secs" => {
                             config.start_timeout_secs = value.parse()?
                         }

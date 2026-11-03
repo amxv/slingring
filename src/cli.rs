@@ -64,6 +64,7 @@ pub enum Command {
         #[command(subcommand)]
         action: BrowserAction,
     },
+    /// Inspect or persist settings, including browser-mode headed|headless.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -133,6 +134,7 @@ pub enum ConfigAction {
         json: bool,
     },
     Set {
+        /// Setting name, such as browser-mode or default-effort.
         key: String,
         value: String,
     },
