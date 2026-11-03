@@ -63,6 +63,12 @@ describe('authentication and origin', () => {
   });
 });
 describe('HTTP framing', () => {
+  it('public health reports only static metadata without credentials or device status', async () => {
+    const response = await worker.fetch(new Request('https://relay.example/health'), {} as any);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ service: 'slingring-relay', ok: true });
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
   it('enforces method, content type, Accept and bounded bodies', async () => {
     expect((await relay.fetch(req({}, {}, '/mcp', 'GET'))).status).toBe(405);
     expect((await relay.fetch(req({}, { 'Content-Type': 'text/plain' }))).status).toBe(415);

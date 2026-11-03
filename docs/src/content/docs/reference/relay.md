@@ -9,7 +9,7 @@ Local CLI use does not need a relay. For remote assistants, deploy the `relay/` 
 
 ## Deploy
 
-Clone the private repository using an authorized GitHub account. Authenticate Wrangler to the Cloudflare account where you want the relay to live. Edit `relay/wrangler.jsonc` to choose your Worker name and hostname; do not reuse another person's deployment hostname.
+Clone the repository (GitHub authorization is required only while it remains private) and authenticate Wrangler to **your** Cloudflare account. The checked-in `relay/wrangler.jsonc` deliberately has no account ID, zone ID or custom domain. For a new installation, the default config deploys a Worker to your own account; choose a different Worker name in your own checkout if needed. Do not reuse another person's Worker or deployment hostname.
 
 ```bash
 cd relay
@@ -17,6 +17,19 @@ bun install --frozen-lockfile
 bunx wrangler login
 bunx wrangler deploy
 ```
+
+For an **existing Worker or a custom domain**, do **not** deploy with the unbound default config. Keep the existing Worker name and Durable Object migration unchanged; supply your own nonsecret account, zone and hostname identifiers to the guarded command below. This generates and removes a temporary ignored config without changing the checked-in template or touching the Worker secrets. `--dry-run` validates the configuration without deploying.
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=YOUR_32_CHARACTER_ACCOUNT_ID
+export RELAY_ZONE_ID=YOUR_32_CHARACTER_ZONE_ID
+export RELAY_HOSTNAME=mcp.example.com
+bun run deploy:configured --dry-run
+# After checking the intended Worker and route:
+bun run deploy:configured
+```
+
+When using this repository's GitHub Actions automatic relay deployment (`DEPLOY_RELAY=true`), set the GitHub Actions **variables** `CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID` and `RELAY_HOSTNAME` to the existing production values **before merging a relay change**. Keep `CLOUDFLARE_DEPLOY_TOKEN` as the existing GitHub Actions secret. Missing or invalid variables prevent deployment instead of silently targeting another account or removing a custom domain. No production deployment runs for pull requests. See [relay maintainer notes](https://github.com/amxv/slingring/blob/main/relay/README.md) for details.
 
 Create two distinct random secrets with at least 32 bytes of entropy and store them in your password manager. Add `DEVICE_TOKEN` and `CLIENT_TOKEN` to the Worker using Wrangler's secret prompt or stdin. Do not put secret values in command arguments or commit them.
 
@@ -26,6 +39,8 @@ bunx wrangler secret put CLIENT_TOKEN
 ```
 
 The `/device` endpoint uses the device token. MCP uses the client token. Do not use the same token for both. Browser-oriented challenges must not be applied to this authenticated machine endpoint. Keep any Cloudflare configuration exception scoped to the relay hostname, not the entire zone.
+
+GET `/health` is public and returns only static service metadata. It does **not** reveal device connection status or prove the relay is ready; `/device` and `/mcp` still require their respective credentials.
 
 ## Connect your Mac
 

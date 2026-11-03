@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the macOS CLI and optional signed Swift app. Private releases use gh.
+# Installs the macOS CLI and optional signed Swift app. Private releases use authenticated gh.
 # Ad-hoc signing is not Developer ID notarization. Never strip quarantine.
 set -eu
 cli='slingring'
@@ -73,7 +73,7 @@ download_asset() {
     fi
   else
     curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$base/$name" -o "$destination" || {
-      echo 'Private releases require an authenticated gh CLI with repository access.' >&2
+      echo 'Release download failed. Check network and release availability; private releases also require an authenticated gh CLI with repository access.' >&2
       return 1
     }
   fi

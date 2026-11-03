@@ -1,83 +1,60 @@
-# Contributor and maintainer notes
+# Contributing to Slingring
+
+Slingring is an Apache-2.0 Rust CLI with a Swift menu bar companion, a Chrome extension, an optional Cloudflare relay, and Astro documentation. The current downloadable releases target **Apple Silicon macOS**. Do not assume other platform builds are available until they are released.
 
 ## Prerequisites
 
-- Rust from `rust-toolchain.toml` (currently 1.98.0)
-- `just`
-- Bun for documentation work
-- `dist` 0.32.0 when changing or inspecting release configuration
-- GitHub repository admin access for release/npm/Vercel setup
+- The pinned Rust toolchain in `rust-toolchain.toml` (currently **1.99.1**).
+- `just` for common development commands.
+- Bun for the extension, relay and documentation workspaces (use their committed lockfiles).
+- `dist` **0.32.0** only when inspecting or regenerating release configuration.
 
-## Development
+No GitHub admin privileges, cloud credentials, or ChatGPT login are needed for local fixture tests. While the repository is private, cloning it requires GitHub access; a public clone does not.
+
+## Build and test
+
+Run from the repository root:
 
 ```bash
 just check-fast
 just check
 just build
-./target/debug/mycli --help
+./target/debug/slingring --help
+python3 scripts/test_installers.py
+bash apps/menubar/test.sh
 ```
 
-The full Rust check is deliberately conventional: format check, strict Clippy, then tests.
+Run the web-component tests using the committed Bun lockfiles:
 
-## Docs
+```bash
+(cd extension && bun install --frozen-lockfile && bun run check && bun run test)
+(cd relay && bun install --frozen-lockfile && bun run check && bun run test && bun run dry-run)
+```
 
-The documentation application is isolated in `docs/`:
+Never run a live ChatGPT submission as part of routine tests; it requires explicit authorization. Preserve user browser profiles, credentials and existing installations.
+
+## Documentation
 
 ```bash
 just docs-install
+just docs-test
 just docs-check
 just docs-dev
 ```
 
-Use `docs-check` for routine local validation; GitHub Actions builds the
-production bundle. Configure Vercel Root Directory `docs`.
+Documentation lives in `docs/`. GitHub Actions deploys docs on pushes to `main` affecting `docs/**` (or a manual workflow dispatch), not on routine Rust-only changes. Vercel's project root is `docs`, while the prebuilt deployment command runs at the repository root. The docs workflow reads `VERCEL_TOKEN` from GitHub Actions **secrets** and `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` from Actions **variables**. Vercel Git-triggered deployments are intentionally disabled in `docs/vercel.json`.
 
-The docs GitHub Action deploys production **only** for `docs/**` changes on
-`main`. Vercel remains connected to GitHub, but its Git-triggered deployments
-are disabled via `docs/vercel.json` to save the Vercel deployment quota. Set
-GitHub Actions secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID`
-from the linked docs project before the first production docs deployment.
-Code-only commits must never issue a Vercel deployment request.
-The workflow stages `docs/.vercel/output` as repository-root `.vercel/output`
-and invokes Vercel from the **repository root**, not `docs/`.
+## Self-hosting the relay
 
-## Release infrastructure
+The checked-in `relay/wrangler.jsonc` is deliberately account-neutral. New installations may use Wrangler with their own account. Existing custom-domain installations must preserve their Worker name, Cloudflare account, zone, hostname, Durable Object migration and secrets. See [relay/README.md](relay/README.md) for `bun run deploy:configured` and the required GitHub Actions variables (`CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID`, `RELAY_HOSTNAME`). The Cloudflare deployment token remains a GitHub Actions secret. A pull request never deploys the relay.
 
-`dist-workspace.toml` is maintained source. `.github/workflows/release.yml` is generated:
+## Releases
+
+Slingring distributes binaries and the optional menu bar companion through **GitHub Releases**. It is not published to npm or crates.io (`Cargo.toml` sets `publish = false`). `dist-workspace.toml` is the source of truth for cargo-dist; `.github/workflows/release.yml` is generated and must not be hand-edited. Use:
 
 ```bash
 dist plan
-dist generate
+dist generate --check
 ```
 
-Distribution is selected during bootstrap (`npm` is the default):
-
-- GitHub Releases
-- npm mode: npm binary installer package, no standalone shell/PowerShell installer
-- direct mode: website-hosted shell and PowerShell wrappers, native `upgrade`,
-  cargo-dist shell/PowerShell installers, and no npm publication
-- GitHub artifact attestations
-
-## npm publishing
-
-Only npm-mode projects have a generated npm publish job and need this GitHub Actions secret:
-
-```text
-NPM_TOKEN
-```
-
-For the first publish, the token normally needs write access to the scope because the npm package does not exist yet. Store credentials outside the repository.
-
-## crates.io
-
-The template itself sets `publish = false`. A real project can opt in during bootstrap with `--crates-io`, after checking that its crate name is available. That makes normal `cargo publish` / `cargo install <crate>` distribution possible; crates.io publisher/trusted-publishing setup remains an explicit owner action.
-
-## Release process
-
-The repository-local release skill is the canonical release procedure:
-
-```text
-.agents/skills/release/SKILL.md
-```
-
-Use it whenever cutting, shipping, or publishing a new release.
+Maintainers follow [the release skill](.agents/skills/release/SKILL.md) when explicitly authorized to prepare and publish a release. Normal contributions should not create tags, trigger production deployment, alter signing configuration or rotate credentials.
