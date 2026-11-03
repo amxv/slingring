@@ -19,6 +19,10 @@ pub struct Config {
     pub mcp_url: Option<String>,
     pub remote_enabled: bool,
     pub heartbeat_secs: u64,
+    /// Per-job browser lease, not a user setting. Queue waiting may shorten the
+    /// request deadline but must not change fork flags between queued jobs.
+    #[serde(skip)]
+    pub browser_idle_secs: Option<u64>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -32,6 +36,7 @@ impl Default for Config {
             mcp_url: None,
             remote_enabled: false,
             heartbeat_secs: 60,
+            browser_idle_secs: None,
         }
     }
 }

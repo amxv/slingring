@@ -319,6 +319,7 @@ async fn work(
                 continue;
             }
             queue.busy.store(true, Ordering::Release);
+            config.browser_idle_secs = Some(config.start_timeout_secs.saturating_add(60));
             config.start_timeout_secs = deadline.saturating_duration_since(Instant::now()).as_secs().max(1);
             open_config = Some(config.clone());
             let result = tokio::select! {

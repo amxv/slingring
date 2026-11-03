@@ -112,6 +112,26 @@ fn outbound_tls_has_an_explicit_crypto_provider() {
         .with_no_client_auth();
     assert!(!config.crypto_provider().cipher_suites.is_empty());
 }
+
+#[test]
+fn runtime_browser_lease_is_not_persisted_as_user_configuration() {
+    let c = Config {
+        browser_idle_secs: Some(3660),
+        ..Config::default()
+    };
+    assert!(
+        serde_json::to_value(&c)
+            .unwrap()
+            .get("browser_idle_secs")
+            .is_none()
+    );
+    assert!(
+        serde_json::from_value::<Config>(serde_json::to_value(c).unwrap())
+            .unwrap()
+            .browser_idle_secs
+            .is_none()
+    );
+}
 #[test]
 fn remote_schema_and_validation_do_not_accept_files_or_unknown_fields() {
     let tool = slingring::mcp::tool();

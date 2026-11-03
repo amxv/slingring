@@ -79,6 +79,12 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
         "upstream agent-browser is not an allowed fallback"
     );
     let name = session(&config::root()?);
+    let idle = format!(
+        "{}s",
+        config
+            .browser_idle_secs
+            .unwrap_or_else(|| config.start_timeout_secs.saturating_add(60))
+    );
     let mut command = tokio::process::Command::new(&config.browser_binary);
     command
         .args([
@@ -87,7 +93,7 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             "--profile",
             &config.profile,
             "--idle-timeout",
-            "3m",
+            &idle,
             "--json",
         ])
         .args(args)

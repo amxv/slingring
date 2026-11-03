@@ -101,9 +101,20 @@
     if (!requested) return currentEffort();
     if (!LEVELS.includes(requested)) throw Error("invalid_effort");
     if (!chatVerified()) throw Error("chat_mode_unverified");
-    const button = await waitFor(modelButton,15000,"effort_picker_unavailable");
-    button.click();
-    let state = await waitFor(powerState,10000,"effort_picker_unavailable");
+    let state = powerState();
+    for (let attempt=0; !state && attempt<3; attempt++) {
+      const button=await waitFor(()=>{
+        const e=modelButton();return e?.isConnected && !e.disabled && e.getAttribute('aria-disabled')!=='true' ? e : null;
+      },15000,"effort_picker_unavailable");
+      if (!chatVerified()) throw Error("chat_mode_unverified");
+      // A fresh React page can replace the first button before its handlers are
+      // hydrated. Retry only opening the menu, never submitting the prompt.
+      key(button,"Escape");
+      button.click();
+      try { state=await waitFor(powerState,8000,"effort_picker_unavailable"); }
+      catch(error) { if(attempt===2 || error.message!=="effort_picker_unavailable")throw error; }
+    }
+    if (!state) throw Error("effort_picker_unavailable");
     const choices = state.count === 5 ? LEVELS : state.count === 3 ? LEVELS.slice(0,3) : [];
     const desired = choices.indexOf(requested);
     if (desired < 0) throw Error("effort_unavailable_on_account");
