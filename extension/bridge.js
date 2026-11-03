@@ -18,6 +18,9 @@ const next=(type,timeout=180000)=>new Promise((resolve,reject)=>{
 function failWaits() { for(const wait of waits.values())wait.reject(Error("native_disconnected"));waits.clear(); }
 const safeCode=e=>/^[a-z_]+$/.test(e?.message||"")?e.message:"extension_failed";
 const canonical=url=>typeof url==="string" && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]{1,128}(?![\s\S])/.test(url);
+const EFFORTS=new Set(['Instant','Medium','High','Extra High','Pro']);
+const EFFORT_KINDS=new Set(['known','missing','ambiguous','unrecognized']);
+const EFFORT_PHASES=new Set(['prepare','before_authorization','after_authorization']);
 const stages=new Set(['chat_loading','chat_mode_verification','conversation_loading','composer_ready','effort_selection',
   'prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait']);
 const progress=stage=>native.postMessage({type:'progress',job,stage});
@@ -57,8 +60,16 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     const wait=waits.get("content_ready");if(wait){waits.delete("content_ready");wait.resolve({});}return false;
   }
   if(message.event==='progress' && message.id===job && !finished && stages.has(message.stage) &&
-      (!targetUrl || sender.url===targetUrl || sender.url==='https://chatgpt.com/')) {
+      (!targetUrl || sender.url===targetUrl)) {
     progress(message.stage);return false;
+  }
+  if(message.event==='effort_state' && message.id===job && !finished &&
+      (!targetUrl || sender.url===targetUrl) && EFFORTS.has(message.expected) &&
+      (message.observed===null || EFFORTS.has(message.observed)) &&
+      EFFORT_KINDS.has(message.kind) && EFFORT_PHASES.has(message.phase)) {
+    native.postMessage({type:'effort_state',job,phase:message.phase,
+      expected:message.expected,observed:message.observed,kind:message.kind});
+    return false;
   }
   if(message.event==="conversation" && message.id===job && submitted && canonical(message.url) &&
       (!targetUrl || message.url===targetUrl)) {
@@ -85,7 +96,7 @@ async function run() {
   if(task.tab_url!==`about:blank#slingring-${token}`)throw Error('invalid_tab_bootstrap');
   if(!Number.isInteger(task.image_count) || task.image_count<0 || task.image_count>16)throw Error('invalid_image_count');
   if(task.chatgpt_url!=null){
-    if(!canonical(task.chatgpt_url) || task.effort!=null)throw Error("invalid_followup");
+    if(!canonical(task.chatgpt_url) || (task.effort!=null && !EFFORTS.has(task.effort)))throw Error("invalid_followup");
     targetUrl=task.chatgpt_url;
   }
   const deadline=task.deadline_ms || Date.now()+120000;
@@ -98,17 +109,15 @@ async function run() {
   native.postMessage({type:'bind_tab',job});
   if((await bound).ok!==true)throw Error('tab_binding_failed');
   if((await chrome.tabs.get(tabId)).url!==task.tab_url)throw Error('tab_changed_before_navigation');
-  const contentReady=readyFor('https://chatgpt.com/',deadline);
-  progress('chat_loading');
-  await chrome.tabs.update(tabId,{url:'https://chatgpt.com/'});
+  // A follow-up already has an exact, validated destination. The old detour
+  // through home could stall in Work-mode hydration before opening the chat.
+  // The target's own exact URL and voice/stop readiness are the follow-up
+  // guards. No separate Chat/Work check or mode toggle is performed.
+  const destination=targetUrl || 'https://chatgpt.com/';
+  const contentReady=readyFor(destination,deadline);
+  progress(targetUrl ? 'conversation_loading' : 'chat_loading');
+  await chrome.tabs.update(tabId,{url:destination});
   await contentReady;
-  if(targetUrl){
-    await content('ensure_chat',{deadline_ms:deadline});
-    const targetReady=readyFor(targetUrl,deadline);
-    progress('conversation_loading');
-    await chrome.tabs.update(tabId,{url:targetUrl});
-    await targetReady;
-  }
   const prepared=await content("prepare",{prompt:task.prompt,effort:task.effort,image_count:task.image_count,
     chatgpt_url:targetUrl,timeout_ms:task.timeout_ms,deadline_ms:task.deadline_ms});
   if(task.image_count){

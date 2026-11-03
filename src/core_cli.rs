@@ -148,19 +148,21 @@ pub async fn run(command: Command) -> Result<()> {
             message,
             message_file,
             stdin,
+            reasoning_effort,
             images,
             request_id,
             json,
         } => {
             let message = read_message(message, message_file, stdin, "message")?;
+            let config = Config::load(&root)?;
             let task = SendMessage {
                 chatgpt_url,
                 message,
+                reasoning_effort,
                 image_paths: images,
             }
-            .resolve()?;
+            .resolve(&config)?;
             let id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let remote = Config::load(&root)?.remote_enabled;
             submit_local(
                 &root,
                 Request::SubmitFollowup {
@@ -169,7 +171,7 @@ pub async fn run(command: Command) -> Result<()> {
                 },
                 id,
                 json,
-                remote,
+                config.remote_enabled,
             )
             .await
         }

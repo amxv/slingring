@@ -164,6 +164,16 @@ test('all five reasoning levels are chosen and read back on the five-position Ch
   for(const effort of levels){assert.equal(await p.api.setEffort(effort),effort);assert.equal(p.api.currentEffort(),effort);}
   p.close();
 });
+test('explicit follow-up effort switches the picker without checking Chat/Work mode',async()=>{
+  const levels=['Instant','Medium','High','Extra High','Pro'];
+  const p=picker(levels,1);
+  p.document.querySelector('#chat').setAttribute('aria-pressed','false');
+  p.document.querySelector('#work').setAttribute('aria-pressed','true');
+  assert.equal(p.api.chatVerified(),false);
+  assert.equal(await p.api.ensureEffort('Extra High',Date.now()+8000,{verifyChat:false}),'Extra High');
+  assert.equal(p.api.currentEffort(),'Extra High');
+  p.close();
+});
 test('Plus cannot silently downgrade Extra High or Pro',async()=>{
   const p=picker(['Instant','Medium','High'],1);
   await assert.rejects(p.api.setEffort('Extra High'),/effort_unavailable_on_account/);p.close();

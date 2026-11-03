@@ -139,9 +139,19 @@
   function modelButton() {
     return [...document.querySelectorAll('button[aria-label="Select ChatGPT model"],button[data-testid="model-switcher-dropdown-button"]')].find(visible);
   }
+  function effortState() {
+    const buttons=[...document.querySelectorAll('button[aria-label="Select ChatGPT model"],button[data-testid="model-switcher-dropdown-button"]')].filter(visible);
+    if(!buttons.length)return {kind:'missing',value:null};
+    if(buttons.length!==1)return {kind:'ambiguous',value:null};
+    const label=normal(buttons[0].textContent);
+    const value=[...LEVELS].sort((a,b)=>b.length-a.length).find(e=>label.endsWith(e))||null;
+    return {kind:value?'known':'unrecognized',value};
+  }
   function currentEffort() {
-    const label = normal(modelButton()?.textContent);
-    return [...LEVELS].sort((a,b)=>b.length-a.length).find(e => label.endsWith(e)) || null;
+    // Preserve the existing new-chat model readback behavior. The stricter
+    // effortState() is only for optional follow-up diagnostics/selection.
+    const label=normal(modelButton()?.textContent);
+    return [...LEVELS].sort((a,b)=>b.length-a.length).find(e=>label.endsWith(e))||null;
   }
   function powerState() {
     const control = [...document.querySelectorAll('[data-reasoning-slider="true"]')].find(visible);
@@ -158,21 +168,25 @@
     element.dispatchEvent(new KeyboardEvent("keydown", {key:name,code:name,bubbles:true,cancelable:true}));
     element.dispatchEvent(new KeyboardEvent("keyup", {key:name,code:name,bubbles:true,cancelable:true}));
   }
-  async function setEffort(requested) {
+  async function setEffort(requested,{verifyChat=true,deadline=Number.POSITIVE_INFINITY}={}) {
     if (!requested) return currentEffort();
     if (!LEVELS.includes(requested)) throw Error("invalid_effort");
-    if (!chatVerified()) throw Error("chat_mode_unverified");
+    // Existing canonical /c/ threads have their own target + idle voice
+    // guard. Only new-chat creation needs the separate Chat/Work switch check.
+    const checkMode=()=>{if(verifyChat && !chatVerified())throw Error('chat_mode_unverified');};
+    const budget=limit=>Math.max(1,Math.min(limit,deadline-Date.now()-1500));
+    checkMode();
     let state = powerState();
     for (let attempt=0; !state && attempt<3; attempt++) {
       const button=await waitFor(()=>{
         const e=modelButton();return e?.isConnected && !e.disabled && e.getAttribute('aria-disabled')!=='true' ? e : null;
-      },15000,"effort_picker_unavailable");
-      if (!chatVerified()) throw Error("chat_mode_unverified");
+      },budget(15000),"effort_picker_unavailable");
+      checkMode();
       // A fresh React page can replace the first button before its handlers are
       // hydrated. Retry only opening the menu, never submitting the prompt.
       key(button,"Escape");
       button.click();
-      try { state=await waitFor(powerState,8000,"effort_picker_unavailable"); }
+      try { state=await waitFor(powerState,budget(8000),"effort_picker_unavailable"); }
       catch(error) { if(attempt===2 || error.message!=="effort_picker_unavailable")throw error; }
     }
     if (!state) throw Error("effort_picker_unavailable");
@@ -183,18 +197,38 @@
       throw Error("effort_picker_changed");
     }
     for (let n=0; state.value !== desired && n<5; n++) {
-      if (!chatVerified()) throw Error("chat_mode_unverified");
+      checkMode();
       const old = state.value;
       state.control.focus(); key(state.control,old>desired ? "ArrowLeft" : "ArrowRight");
       state = await waitFor(() => {
         const next = powerState(); return next && next.value !== old ? next : null;
-      },5000,"effort_selection_failed");
+      },budget(5000),"effort_selection_failed");
     }
     if (state.label !== requested || state.value !== desired) throw Error("effort_selection_failed");
     key(state.control,"Escape");
-    await waitFor(() => !powerState(),5000,"effort_picker_did_not_close");
-    if (currentEffort() !== requested) throw Error("effort_not_verified");
+    await waitFor(() => !powerState(),budget(5000),"effort_picker_did_not_close");
+    await waitFor(()=>currentEffort()===requested,budget(2500),"effort_not_verified");
     return requested;
+  }
+  async function ensureEffort(requested,deadline,{verifyChat=true}={}) {
+    if(!requested)return currentEffort();
+    if(!LEVELS.includes(requested))throw Error('invalid_effort');
+    let observed=effortState();
+    if(observed.value===requested) {
+      // An initial control may be replaced during hydration; its disappearance
+      // is not evidence the user changed reasoning effort.
+      await new Promise(resolve=>setTimeout(resolve,100));
+      observed=effortState();
+      if(observed.value===requested)return requested;
+    }
+    if(!observed.value) {
+      try {
+        await waitFor(()=>currentEffort()===requested,Math.max(1,Math.min(1800,deadline-Date.now()-2500)),
+          'effort_not_ready');
+        return requested;
+      } catch(error) {if(error.message!=='effort_not_ready')throw error;}
+    }
+    return setEffort(requested,{verifyChat,deadline});
   }
   function fill(prompt) {
     const input = composer();
@@ -402,6 +436,6 @@
     return null; // A stop control, loading dot, or empty assistant node is not evidence.
   }
   globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
-    currentEffort,powerState,setEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
+    currentEffort,effortState,powerState,setEffort,ensureEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
     followupReady,followupIdle,noAttachments,turnBaseline};
 })();

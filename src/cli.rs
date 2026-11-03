@@ -38,6 +38,9 @@ pub enum Command {
         message_file: Option<String>,
         #[arg(long, conflicts_with = "message")]
         stdin: bool,
+        /// Optional reasoning level. Omit to keep this chat's current setting.
+        #[arg(long)]
+        reasoning_effort: Option<String>,
         /// Attach a local image. Repeat for multiple images. CLI only.
         #[arg(long = "image")]
         images: Vec<std::path::PathBuf>,

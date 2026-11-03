@@ -29,7 +29,7 @@ Ask it to use `new_task` with your prompt and, optionally, a reasoning level. Fo
 
 `new_task` accepts `prompt`, optional `reasoning_effort`, and optional `request_id`. Leave effort out, or leave it blank, to use the default configured on your Mac. Choose a fresh unique `request_id` before starting any job that may outlast your MCP client's timeout.
 
-To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, and optionally a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up preserves the chat's reasoning effort, waits for the voice button and no stop control, and sends once when ready. Its confirmed result contains the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
+To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, optionally `reasoning_effort`, and a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up opens that URL directly, skips the model picker when effort is omitted, waits for the voice button with no stop control, and sends once when ready. Explicit effort changes are best-effort; a missing picker is not a reason to block the message. Its confirmed result contains the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
 
 Both write tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests.
 

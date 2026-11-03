@@ -11,7 +11,8 @@ test('submission re-queries a React-replaced send button after the native acknow
   const old=d.querySelector('#send');
   old.addEventListener('click',()=>assert.fail('detached stale button was clicked'));
   w.__slingringDOM={
-    ensureChat:async()=>{},setEffort:async()=> 'Medium',fill:value=>{d.querySelector('#prompt').value=value;},
+    ensureChat:async()=>{},setEffort:async()=> 'Medium',ensureEffort:async()=> 'Medium',
+    effortState:()=>({kind:'known',value:'Medium'}),fill:value=>{d.querySelector('#prompt').value=value;},
     hasDraft:()=>false,noAttachments:()=>true,followupIdle:()=>true,visible:()=>true,stableComposer:async()=>d.querySelector('#prompt'),
     promptEquals:(input,value)=>input?.value===value,promptState:value=>d.querySelector('#prompt').value===value?'matches':'prompt_changed',
     composer:()=>d.querySelector('#prompt'),text:e=>e.value.trim(),normal:value=>value.trim(),
