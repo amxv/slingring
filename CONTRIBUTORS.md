@@ -46,7 +46,7 @@ Documentation lives in `docs/`. GitHub Actions deploys docs on pushes to `main` 
 
 ## Self-hosting the relay
 
-The checked-in `relay/wrangler.jsonc` is deliberately account-neutral. New installations may use Wrangler with their own account. Existing custom-domain installations must preserve their Worker name, Cloudflare account, zone, hostname, Durable Object migration and secrets. See [relay/README.md](relay/README.md) for `bun run deploy:configured` and the required GitHub Actions variables (`CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID`, `RELAY_HOSTNAME`). The Cloudflare deployment token remains a GitHub Actions secret. A pull request never deploys the relay.
+The checked-in `relay/wrangler.jsonc` is deliberately account-neutral. New installations may use Wrangler with their own account. Existing custom-domain installations must preserve their Worker name, Cloudflare account, zone, hostname, Durable Object migration and secrets. See [relay/README.md](relay/README.md) for `bun run deploy:configured` and the required GitHub Actions **secrets** (`CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID`, `RELAY_HOSTNAME`). The existing Cloudflare deployment token also remains a GitHub Actions secret. The `DEPLOY_RELAY` enable/disable switch remains a GitHub Actions **variable**. A pull request never deploys the relay.
 
 ## Releases
 

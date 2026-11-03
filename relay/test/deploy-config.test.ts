@@ -10,6 +10,16 @@ const identifiers = {
 };
 
 describe('public Wrangler template and configured deployment', () => {
+  it('uses Actions secrets for production identifiers, not public workflow variables', () => {
+    const workflow = readFileSync(new URL('../../.github/workflows/relay.yml', import.meta.url), 'utf8');
+    for (const name of ['CLOUDFLARE_ACCOUNT_ID', 'RELAY_ZONE_ID', 'RELAY_HOSTNAME']) {
+      expect(workflow).toContain(`${name}: ` + '${{ secrets.' + name + ' }}');
+      expect(workflow).not.toContain(`${name}: ` + '${{ vars.' + name + ' }}');
+    }
+    expect(workflow).toContain("github.event_name != 'pull_request' && vars.DEPLOY_RELAY == 'true'");
+    expect(workflow).toContain('run: bun run deploy:configured');
+  });
+
   it('does not bind another operator account or hostname by default', () => {
     expect(base.account_id).toBeUndefined();
     expect(base.route).toBeUndefined();

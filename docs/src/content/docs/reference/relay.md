@@ -29,7 +29,7 @@ bun run deploy:configured --dry-run
 bun run deploy:configured
 ```
 
-When using this repository's GitHub Actions automatic relay deployment (`DEPLOY_RELAY=true`), set the GitHub Actions **variables** `CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID` and `RELAY_HOSTNAME` to the existing production values **before merging a relay change**. Keep `CLOUDFLARE_DEPLOY_TOKEN` as the existing GitHub Actions secret. Missing or invalid variables prevent deployment instead of silently targeting another account or removing a custom domain. No production deployment runs for pull requests. See [relay maintainer notes](https://github.com/amxv/slingring/blob/main/relay/README.md) for details.
+When using this repository's GitHub Actions automatic relay deployment (`DEPLOY_RELAY=true`), store the existing production values as GitHub Actions **secrets** `CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID` and `RELAY_HOSTNAME` **before merging a relay change**. Keep `CLOUDFLARE_DEPLOY_TOKEN` as the existing GitHub Actions secret; the `DEPLOY_RELAY` switch remains an Actions **variable**. Missing or invalid identifier secrets prevent deployment instead of silently targeting another account or removing a custom domain. No production deployment runs for pull requests. See [relay maintainer notes](https://github.com/amxv/slingring/blob/main/relay/README.md) for details.
 
 Create two distinct random secrets with at least 32 bytes of entropy and store them in your password manager. Add `DEVICE_TOKEN` and `CLIENT_TOKEN` to the Worker using Wrangler's secret prompt or stdin. Do not put secret values in command arguments or commit them.
 

@@ -31,7 +31,7 @@ bun run deploy:configured --dry-run
 bun run deploy:configured
 ```
 
-For this repository's optional production deploy Action (`DEPLOY_RELAY=true`), configure GitHub Actions **variables** `CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID`, and `RELAY_HOSTNAME` with the **current** production identifiers before merging changes to `relay/`. The existing `CLOUDFLARE_DEPLOY_TOKEN` remains a GitHub **secret**, unchanged. The workflow fails before deploying if any required variable is missing or invalid; do not replace the values with examples. No automatic deployment happens on pull requests. If your Worker has a different name, preserve it in your own `wrangler.jsonc` before deploying.
+For this repository's optional production deploy Action (`DEPLOY_RELAY=true`), store the **existing** production identifiers in GitHub Actions **secrets** named `CLOUDFLARE_ACCOUNT_ID`, `RELAY_ZONE_ID`, and `RELAY_HOSTNAME` before merging changes to `relay/`. The existing `CLOUDFLARE_DEPLOY_TOKEN` remains a GitHub **secret**, unchanged. `DEPLOY_RELAY` itself stays an Actions **variable**. The workflow fails before deploying if any identifier secret is missing or invalid; do not replace them with examples. No automatic deployment happens on pull requests. If your Worker has a different name, preserve it in your own `wrangler.jsonc` before deploying.
 
 Required secrets:
 

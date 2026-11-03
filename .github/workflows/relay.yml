@@ -50,10 +50,10 @@ jobs:
         working-directory: relay
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          RELAY_ZONE_ID: ${{ vars.RELAY_ZONE_ID }}
-          RELAY_HOSTNAME: ${{ vars.RELAY_HOSTNAME }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELAY_ZONE_ID: ${{ secrets.RELAY_ZONE_ID }}
+          RELAY_HOSTNAME: ${{ secrets.RELAY_HOSTNAME }}
           WRANGLER_SEND_METRICS: "false"
-        # Required nonsecret variables must identify the EXISTING account,
-        # zone and custom domain. Missing values fail before Wrangler runs.
+        # The three existing production identifiers are stored as Actions
+        # secrets. Missing values fail before Wrangler runs.
         run: bun run deploy:configured
