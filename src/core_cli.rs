@@ -54,7 +54,7 @@ async fn submit_local(
         }
         Err(error) => {
             if json {
-                let job = crate::queue::records(root)
+                let job = crate::queue::recovery_records(root)
                     .ok()
                     .and_then(|jobs| jobs.into_iter().find(|j| j.id == id));
                 output(
@@ -82,11 +82,28 @@ pub async fn status(root: &Path) -> Result<Value> {
         return Ok(status);
     }
     let config = Config::load(root)?;
-    let jobs = crate::queue::records(root)?;
+    let owner_running = crate::queue::owner_running(root)?;
+    let jobs = crate::queue::recovery_records(root)?;
+    let queued = jobs.iter().filter(|j| j.status == "queued").count();
+    let starting = jobs.iter().filter(|j| j.status == "starting").count();
+    // A new queue owner may have appeared between the lock probe and journal
+    // snapshot. An active recovered record is also evidence against idle/stopped.
+    let owner_running = owner_running || queued + starting > 0;
+    let active_job = jobs
+        .iter()
+        .find(|j| j.status == "starting")
+        .or_else(|| jobs.iter().find(|j| j.status == "queued"));
     Ok(
-        json!({"running":false,"installed":service::installed(),"remote_enabled":config.remote_enabled,
-        "remote_state":if config.remote_enabled {"offline"} else {"disabled"},"browser_busy":false,
-        "active_tasks":0,"latest_job":jobs.back().map(|j|j.public()),"config":config.redacted()}),
+        json!({"running":owner_running,"status_available":!owner_running,"status_source":"journal",
+        "installed":service::installed(),"remote_enabled":config.remote_enabled,
+        "remote_state":if !config.remote_enabled {"disabled"} else if owner_running {"unknown"} else {"offline"},
+        "browser_busy":if owner_running {Value::Null} else {json!(false)},
+        "active_tasks":queued + starting,"queued_tasks":queued,"starting_tasks":starting,
+        "active_job":active_job.map(|j|j.public()),
+        "latest_job":jobs.back().map(|j|j.public()),
+        "latest_finished_job":jobs.iter().rev().find(|j|!j.active()).map(|j|j.public()),
+        "latest_started_job":jobs.iter().rev().find(|j|j.status == "started").map(|j|j.public()),
+        "config":config.redacted()}),
     )
 }
 pub async fn run(command: Command) -> Result<()> {
@@ -288,7 +305,7 @@ pub async fn run(command: Command) -> Result<()> {
                     crate::queue::valid_job_id(&request_id),
                     "invalid request ID"
                 );
-                let records = crate::queue::records(&root)?;
+                let records = crate::queue::recovery_records(&root)?;
                 return output(crate::queue::recovery_status(
                     records.iter().find(|job| job.id == request_id),
                     &request_id,
@@ -298,7 +315,7 @@ pub async fn run(command: Command) -> Result<()> {
                 daemon::call(&root, &Request::Queue).await?
             } else {
                 json!(
-                    crate::queue::records(&root)?
+                    crate::queue::recovery_records(&root)?
                         .iter()
                         .map(|j| j.public())
                         .collect::<Vec<_>>()

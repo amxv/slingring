@@ -58,6 +58,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu.addItem(stateItem); menu.addItem(queueItem); menu.addItem(lastAttemptItem)
         menu.addItem(.separator())
         menu.addItem(serviceItem)
+        latestItem.toolTip = "Open the most recent confirmed submission. A newer task may still be starting."
         menu.addItem(latestItem)
         let configure = NSMenuItem(title: "Configure", action: nil, keyEquivalent: "")
         let settings = NSMenu()
