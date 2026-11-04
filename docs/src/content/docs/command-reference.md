@@ -1,116 +1,366 @@
 ---
 title: CLI and MCP reference
-description: Commands, arguments, limits, and retry semantics.
+description: Complete command syntax, tool arguments, responses, limits, and recovery behavior.
 order: 20
 category: Reference
 ---
 
-> Browser-mode controls, CLI `send-message`, and MCP request-ID/status recovery require Slingring v0.4.0 or newer.
+Slingring has two ways to submit messages to ChatGPT: a macOS command-line interface and three MCP tools for local or remote agents. Both use the same configured Chrome account and serial task queue.
 
-## CLI
+**A successful submission means ChatGPT has started thinking, working, or streaming a response.** Slingring returns the conversation URL, not the answer, and does not wait for generation to finish.
+
+## CLI command map
 
 ```text
 slingring setup [--profile NAME] [--default-effort LEVEL]
 slingring profile list [--json]
 slingring profile use NAME
 slingring browser install|status
-slingring new-task [PROMPT] [--stdin | --prompt-file FILE]
+
+slingring new-task [PROMPT] [--prompt-file FILE | --stdin]
   [--reasoning-effort LEVEL] [--image PATH]... [--request-id ID] [--json]
-slingring send-message CHATGPT_URL [MESSAGE] [--stdin | --message-file FILE]
+slingring send-message CHATGPT_URL [MESSAGE] [--message-file FILE | --stdin]
   [--reasoning-effort LEVEL] [--image PATH]... [--request-id ID] [--json]
+
 slingring config show [--json]
 slingring config set KEY VALUE
 slingring status [--json]
 slingring jobs [--request-id ID] [--json]
+
 slingring service start|stop|restart|install|uninstall|status
-slingring remote configure --url wss://HOST/device --token-stdin [--mcp-url URL]
+slingring remote configure --url WSS_URL --token-stdin [--mcp-url URL]
 slingring remote on|off|status|url
 slingring mcp
 slingring daemon [--ephemeral]
+
 slingring upgrade [--check]
 slingring auto-update on|off|status
 ```
 
-`new_task` aliases `new-task`; `send_message` aliases `send-message`; `queue` aliases `jobs`; `config get` aliases `config show`. `--prompt-file -` and `--message-file -` read stdin. Use each command's `--help` for full syntax.
+Run `slingring --help` or `slingring <command> --help` for the installed command's usage. Supported aliases are `new_task` for `new-task`, `send_message` for `send-message`, `queue` for `jobs`, and `config get` for `config show`.
 
-`profile use` accepts an exact Chrome profile directory or a unique display name. It refuses changes while tasks are active. `browser install` installs the pinned, verified fork privately; it does not overwrite a separately installed browser CLI. An explicit absolute `browser-binary` override remains authoritative.
+## Submit messages from the CLI
 
-## Configuration
+### Start a new conversation
 
-The default state directory is `~/.config/slingring`. `SLINGRING_HOME` can select another absolute directory. Supported `config set` keys include `profile`, `browser-binary`, `browser-mode`, `default-effort`, `timeout-secs`, and `heartbeat-secs`.
-
-`browser-mode` accepts `headless` (the default) or `headed` (a visible window for debugging). It persists as the boolean `browser_headed` configuration field; `config set browser-headed true|false` is an equivalent spelling. Existing configuration files default to headless. Use Configure → Browser Mode in the menu bar or:
+Pass a prompt as an argument, read one from a file, or pipe it through standard input.
 
 ```bash
-slingring config set browser-mode headed
-slingring config set browser-mode headless
+# Short prompt
+slingring new-task "Review this architecture and identify the main risks"
+
+# Longer brief with an explicit reasoning level
+slingring new-task --prompt-file ./architecture.md \
+  --reasoning-effort "Extra High" \
+  --request-id architecture-review-001 \
+  --json
+
+# Piped input
+cat architecture.md | slingring new-task --stdin
 ```
 
-Local CLI, local MCP and remote MCP submissions all use the saved setting when they enter the queue. Active and already queued tasks keep their original setting; the owned browser is reopened between tasks when a setting change requires it. Both modes use the isolated profile, pinned browser helper, draft protection and the same compatibility flags. Headed mode only makes the automation visible and can have different site-detection behavior; it does not guarantee that a challenge will disappear.
+Use `--prompt-file -` to read standard input as an alternative to `--stdin`. Only one prompt source can be supplied.
 
-`status` separates `active_job`, `starting_tasks` and `queued_tasks` from historical `latest_finished_job` and `latest_started_job`. A historical `started` record confirms submission and fresh activity, not a still-running task or a finished answer. If the service owns its lock but cannot answer a status request, `status_available` is false and the CLI exposes saved history without claiming that the queue is idle. The menu bar refreshes when opened; it has no background status timer.
+To attach images, repeat `--image` with a local path:
 
-The default task-start timeout is 180 seconds, including follow-up readiness. Local queue waiting does not consume that per-task budget. Local and remote MCP write calls wait up to five seconds after queue admission, then return an accepted receipt if the task is still in progress. Direct CLI write commands continue waiting for the confirmed result. Remote Cloudflare requests retain a 240-second HTTP safety limit with a 230-second Mac-side job deadline (including queue wait), and the configured browser-start budget is the tighter limit when applicable. Client and network timeouts can still happen before receipt delivery; they do **not** cancel accepted MCP jobs. Status and configuration output redact credentials. Metadata discovery and profile listing do not open a browser.
+```bash
+slingring new-task "Compare these two designs" \
+  --image ./design-a.png \
+  --image ./design-b.png
+```
+
+New conversations are created in **Chat**, not Work. When `--reasoning-effort` is omitted or blank, Slingring uses the configured default, initially `Extra High`. You can select `Instant`, `Medium`, `High`, `Extra High`, or `Pro` when available to your account.
+
+### Follow up in an existing conversation
+
+`send-message` targets an existing conversation directly. The URL must be exactly `https://chatgpt.com/c/ID`, where `ID` contains 1 to 128 ASCII letters, digits, or hyphens. Other hosts, trailing slashes, query strings, fragments, and Work, share, project, or custom GPT routes are not accepted.
+
+```bash
+CHAT_URL="https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef"
+
+# Plain-text follow-up
+slingring send-message "$CHAT_URL" "Compare the two strongest options"
+
+# File plus a local attachment
+slingring send-message "$CHAT_URL" \
+  --message-file ./follow-up.md \
+  --image ./diagram.png \
+  --request-id architecture-followup-001 \
+  --json
+
+# Piped follow-up
+cat follow-up.md | slingring send-message "$CHAT_URL" --stdin
+```
+
+`--message-file -` also reads standard input. As with new tasks, provide exactly one message source.
+
+Omitting `--reasoning-effort` on a follow-up **leaves the existing chat's reasoning setting alone**. An explicit level requests a best-effort change; if the model picker is unavailable, Slingring may still send the message without verifying that change.
+
+Before sending, Slingring waits for the conversation to become ready (voice control visible, no active stop control), protects existing drafts, and checks that the target URL has not changed. It does not interrupt a response or automatically retry an uncertain send.
+
+### Submission options
+
+| Option | Applicable commands | Behavior |
+| --- | --- | --- |
+| `--prompt-file FILE` / `--message-file FILE` | `new-task` / `send-message` | Read UTF-8 text from a file; `-` means stdin. |
+| `--stdin` | Both | Read UTF-8 text from stdin instead of a positional argument. |
+| `--reasoning-effort LEVEL` | Both | Override the new chat's default or request a best-effort follow-up change. |
+| `--image PATH` | Both | Attach one local image; repeat for multiple images. Not available through MCP. |
+| `--request-id ID` | Both | Assign a stable identifier to this logical submission for later status recovery. |
+| `--json` | Both | Print the confirmed result as JSON instead of only the conversation URL. |
+
+CLI write commands wait for a confirmed start or an error; they do not return the MCP's five-second pending receipt. By default, a successful plain-text command prints only the conversation URL.
+
+A representative `--json` result:
+
+```json
+{
+  "job_id": "architecture-review-001",
+  "url": "https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef",
+  "reasoning_effort": "Extra High",
+  "evidence": "thinking"
+}
+```
+
+`evidence` is one of `thinking`, `working`, or `streaming`. It confirms new response activity, **not** completion. For a follow-up the URL is the existing conversation's URL, and `reasoning_effort` may be `null`.
+
+## Configure and operate Slingring
+
+### Select a Chrome profile
+
+```bash
+slingring profile list
+slingring profile list --json
+
+slingring setup --profile "Profile 6" --default-effort High
+slingring profile use "Profile 6"
+```
+
+`profile use` accepts an exact Chrome profile directory or an unambiguous display name. It refuses to switch accounts while tasks are active. `setup` configures the selected account and installs the companion extension assets; if no profile is specified for a fresh setup, automatic selection requires exactly one available profile.
+
+The browser helper is a separately managed, pinned and verified installation. Inspect or reinstall it without touching a separately installed browser CLI:
+
+```bash
+slingring browser status
+slingring browser install
+```
+
+### Settings
+
+```bash
+slingring config show --json
+slingring config set default-effort "Extra High"
+slingring config set browser-mode headed
+slingring config set browser-mode headless
+slingring config set timeout-secs 180
+```
+
+| `config set` key | Values and meaning |
+| --- | --- |
+| `default-effort` | `Instant`, `Medium`, `High`, `Extra High`, `Pro`; `site` or `default` clears the override. |
+| `profile` | Selected Chrome profile directory. Prefer `profile use` for validated selection. |
+| `browser-binary` | Browser helper executable; an explicit absolute override takes precedence over the managed helper. |
+| `browser-mode` | `headless` (default) or `headed` (visible browser for debugging). |
+| `browser-headed` | Equivalent boolean setting: `true` or `false`. |
+| `timeout-secs` | Task-start budget, 1 to 3,600 seconds; default 180. `start-timeout-secs` is an alias. |
+| `heartbeat-secs` | Remote connection heartbeat, 30 to 300 seconds; default 60. |
+
+`default-reasoning-effort` and `chrome-profile` are also accepted key aliases; underscores may be used in place of hyphens.
+
+Headed and headless mode use the same isolated browser profile and submission safeguards. A mode change affects future queue admissions, not an active task's mode. A visible browser is useful for diagnosis but does not guarantee that site challenges will disappear.
+
+Slingring keeps its private state under `~/.config/slingring`. Set `SLINGRING_HOME` to an **absolute** directory to use a different state location. `config show` redacts remote credentials.
+
+### Status, jobs, and service lifecycle
+
+```bash
+slingring status --json
+slingring jobs --json
+slingring jobs --request-id architecture-review-001 --json
+
+slingring service install
+slingring service start
+slingring service status
+slingring service restart
+slingring service stop
+slingring service uninstall
+```
+
+`status` distinguishes active/queued work from historical `latest_finished_job` and `latest_started_job` records. A historical `started` status confirms that ChatGPT began responding; it does not mean Slingring is still running that task. If another process owns the queue but cannot answer, `status_available: false` warns that saved history is not a live queue snapshot.
+
+`jobs` reads the bounded, prompt-free journal. Use `--request-id` to get a single request's recovery outcome without opening a browser or submitting anything. `service install` configures the login service; `start`, `stop`, and `restart` control it. Advanced use: `slingring daemon` runs the service in the foreground, and `--ephemeral` permits idle exit.
+
+Local-only use does not need an always-running daemon. The owned browser closes when the queue drains; remote mode maintains an outbound connection while enabled.
+
+### Remote access and updates
+
+Remote MCP requires a relay in your own Cloudflare account. After following the [relay setup guide](/docs/reference/relay), the configuration and lifecycle commands are:
+
+```bash
+# DEVICE_TOKEN and PRIVATE_MCP_URL come from your private relay setup.
+printf '%s' "$DEVICE_TOKEN" | slingring remote configure \
+  --url wss://relay.example.com/device \
+  --token-stdin \
+  --mcp-url "$PRIVATE_MCP_URL"
+
+slingring remote on
+slingring remote status
+slingring remote url | pbcopy
+slingring remote off
+```
+
+`remote configure` reads the token from stdin (or accepts a JSON credential object there). `remote url` prints a **secret-bearing** MCP URL; do not publish it or include it in logs. Your Mac must be awake, online, and logged into the selected ChatGPT profile for remote requests to work. See [Connect a remote assistant](/docs/remote) for client setup.
+
+```bash
+slingring upgrade --check
+slingring upgrade
+
+slingring auto-update status
+slingring auto-update on
+slingring auto-update off
+```
+
+`upgrade --check` checks without installing. `upgrade` installs the latest available release, while `auto-update` manages the independently scheduled daily update setting.
 
 ## MCP tools
 
-`new_task` starts a conversation. It accepts `prompt`, optional `reasoning_effort`, and optional `request_id`; omitted or blank effort uses the configured default.
+Start the local **stdio** MCP server with `slingring mcp`, or connect a remote MCP client to the private URL from `slingring remote url`. The local server uses the official Rust MCP SDK and requires a standard initialization handshake. Both surfaces expose the same three text-only tools.
+
+| Tool | Required arguments | Optional arguments | Effect |
+| --- | --- | --- | --- |
+| `new_task` | `prompt` | `reasoning_effort`, `request_id` | Submit a new ChatGPT Chat conversation. |
+| `send_message` | `chatgpt_url`, `message` | `reasoning_effort`, `request_id` | Submit a follow-up to an existing conversation. |
+| `get_job_status` | `request_id` | None | Read recorded status; never send or retry. |
+
+All tools reject unrecognized arguments. MCP tools do not accept image paths, image bytes, or local file attachments. Use the CLI for image inputs.
+
+### `new_task`
 
 ```json
 {
   "name": "new_task",
   "arguments": {
-    "prompt": "Review this plan.",
+    "prompt": "Review the design and identify the three biggest risks.",
     "reasoning_effort": "High",
-    "request_id": "review-001"
+    "request_id": "design-review-001"
   }
 }
 ```
 
-`send_message` follows up on an existing conversation. It accepts two required strings, optional `reasoning_effort`, and optional `request_id`. Omit `reasoning_effort` to leave the existing chat's setting entirely untouched. Set it explicitly to attempt a different level without making model-picker availability a condition of sending:
+`prompt` must contain non-whitespace text (up to 128 KiB). `reasoning_effort` accepts `Instant`, `Medium`, `High`, `Extra High`, `Pro`, or an empty string. Omitted or empty effort uses the Mac's configured default.
+
+### `send_message`
 
 ```json
 {
   "name": "send_message",
   "arguments": {
     "chatgpt_url": "https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef",
-    "message": "Now compare the two strongest options.",
-    "request_id": "followup-002"
+    "message": "Revisit the recommendation using the revised constraints.",
+    "request_id": "design-review-followup-001"
   }
 }
 ```
 
-Use the exact `https://chatgpt.com/c/ID` URL, where `ID` is 1..128 ASCII letters, digits, or hyphens. Queries, fragments, trailing slashes, other origins, and other routes, including Work, share, project, and custom GPT routes, are unsupported. The chat must be accessible to the configured Chrome account. MCP follow-ups accept an optional effort override but no images; the local `send-message` CLI additionally accepts repeatable `--image PATH` files. Explicit effort selection is best-effort and might remain unverified if the model picker is missing or unavailable.
+`chatgpt_url` follows the exact conversation URL rule described above. `message` is nonblank and limited to 128 KiB. Omitting `reasoning_effort` leaves the chat's current setting untouched; supplying it asks for a best-effort change. This tool opens the exact conversation directly without navigating through the homepage.
 
-```bash
-slingring send-message 'https://chatgpt.com/c/YOUR-CHAT-ID' 'Review this screenshot' --image ./screenshot.png
-```
-
-The follow-up opens the exact existing conversation URL directly, without visiting the homepage or changing Chat/Work mode. It waits for a visible voice button with no stop control before filling the message. It never interrupts an existing response. It checks the target again before sending and confirms submission only after fresh thinking, working, or response activity begins for the new turn. An earlier accepted receipt does not establish success, and neither do historical answers. If readiness is not reached within the startup budget, the follow-up fails without sending; uncertain results after submission authorization still require inspection. If the site replaces or virtualizes prior turns during submission, the conservative detector may leave the result uncertain even when the message was accepted.
-
-Both write tools reject unknown properties. Their advertised hints are `readOnlyHint: true`, `openWorldHint: false`, `destructiveHint: false`, and `idempotentHint: false`. These are client-facing metadata, not authorization controls: **both tools send a message through your account, creating or modifying a conversation**. Grant access accordingly.
-
-`get_job_status(request_id)` is a third, **read-only** MCP tool. It looks up one recorded job on the Mac and never submits, retries, or launches a browser. Its sole required parameter is a 1..100-character ID containing only ASCII letters, digits, underscores or hyphens. Use the same ID on the original write tool before sending, or set the equivalent `Idempotency-Key` HTTP header when using the relay directly. If both are supplied, they must match. IDs must be unique to a logical request; Slingring rejects a different payload using the same ID.
+### `get_job_status`
 
 ```json
 {
   "name": "get_job_status",
-  "arguments": { "request_id": "review-001" }
+  "arguments": {
+    "request_id": "design-review-001"
+  }
 }
 ```
 
-The tool returns journal metadata (status, phase, elapsed milliseconds, error code, URL if known) and a recovery classification: `in_progress`, `submitted`, `not_submitted`, `uncertain`, or `unknown`. `unknown` also covers records pruned from the bounded journal and is **not** permission to retry. After a daemon crash, queued records become `not_submitted` and interrupted starting records are conservatively `uncertain`. They are never left indefinitely in progress or replayed. Querying status does not keep the browser open. The Mac stores bounded, payload-free lifecycle events in `~/.config/slingring/events.log` (plus an optional previous rotated segment), with browser launch/retry categories and elapsed times. No raw browser stdout/stderr, prompts, generated answers, tokens or URLs are written to that diagnostics log.
+This lookup reads only locally recorded metadata. It does not start a browser, resubmit the message, or extend the job's lifetime. The `request_id` is required and must be 1 to 100 characters from `A-Z`, `a-z`, `0-9`, `_`, or `-`.
 
-The remote relay supports initialization, ping, tool discovery, and tool calls with negotiated protocol versions 2025-03-26, 2025-06-18, and 2025-11-25. Streamable HTTP uses POST JSON responses; GET and DELETE are not implemented. Local `slingring mcp` uses the official `rmcp` Rust SDK for stdio transport and protocol negotiation and exposes the same three text-only tools. The local stdio SDK requires the standard MCP initialization handshake.
+## Results and safe recovery
 
-## Limits
+### Confirmed result or pending receipt
 
-Prompts and follow-up messages must be nonblank and are limited to 128 KiB each; remote JSON bodies to 256 KiB. Both tools share a queue of 32 active or queued tasks. A follow-up waiting for a busy chat can delay later tasks; the queue does not exclude a person or another client from writing to the same chat. Local images for new tasks and follow-ups are limited to 16 files, each up to 20 MiB (100 MiB combined). PNG, JPEG, WebP, and GIF extensions are accepted; the ChatGPT UI must successfully accept the attachment too.
+For MCP write calls, Slingring waits **up to five seconds after queue admission**. If new ChatGPT activity has been confirmed, the result includes a URL and structured fields such as `job_id`, `request_id`, `accepted: true`, `outcome: submitted`, `reasoning_effort`, and `evidence`.
 
-## Idempotency and uncertainty
+If the job is still starting, the call instead returns a non-error **accepted receipt**. Representative fields (abbreviated):
 
-Use `--request-id` with local CLI operations, or `request_id` in remote MCP write arguments (or `Idempotency-Key` for raw HTTP), to identify a request **before** submitting. IDs are bound to the operation and selected profile, plus the prompt/effort/image content for a new task or target URL/message/image content for a follow-up. A different payload or operation using an existing ID is rejected. The HTTP relay echoes `X-Slingring-Request-Id` if a response arrives, but that header is not available if the caller times out before receiving a response. The relay's own 504 contains the request ID, `outcome: unknown`, and the status tool name; it does not assert failure.
+```json
+{
+  "request_id": "design-review-001",
+  "job_id": "design-review-001",
+  "accepted": true,
+  "outcome": "in_progress",
+  "recovery_tool": "get_job_status",
+  "job": {
+    "status": "starting",
+    "phase": "browser_launch"
+  }
+}
+```
 
-A confirmed result contains `job_id`, `url`, `reasoning_effort`, and `evidence`. A follow-up returns the same target URL. If that result is not available within the MCP five-second wait, the tool instead returns a non-error receipt with `request_id`, `job_id`, `accepted: true`, `outcome: in_progress`, `recovery_tool: get_job_status`, and current job metadata. Acceptance confirms admission to the Mac's in-memory queue, not submission to ChatGPT. Read status using the same ID rather than creating another request. Accepted MCP jobs continue after the call returns or disconnects; unstarted direct CLI jobs whose caller goes away are skipped.
+**Accepted does not mean submitted.** The task keeps running in memory after the MCP call returns or the caller disconnects. Inspect it with `get_job_status` using the original request ID.
 
-`started` means genuine new activity was observed, not that the response is complete. No generated answer is returned. `uncertain` means submission may have happened. Never automatically repeat a message or create a replacement after an uncertain outcome.
+The status lookup returns an `outcome` and, when recorded, job metadata, a phase, elapsed time, and diagnostic guidance. These are the possible recovery outcomes:
+
+| Outcome | Meaning | What to do |
+| --- | --- | --- |
+| `in_progress` | Queued or starting. | Query the same ID later. |
+| `submitted` | New ChatGPT activity was confirmed. | Open the recorded URL. |
+| `not_submitted` | Definitively failed before sending. | Diagnose before deliberately creating a new request. |
+| `uncertain` | Submission may have occurred. | Inspect the chat and journal. Never automatically retry. |
+| `unknown` | No usable record, including a pruned one. | Treat as unverified, **not** as proof nothing was sent. |
+
+A shortened example of a successful status lookup:
+
+```json
+{
+  "request_id": "design-review-001",
+  "known": true,
+  "outcome": "submitted",
+  "job": {
+    "id": "design-review-001",
+    "status": "started",
+    "url": "https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef"
+  }
+}
+```
+
+### Request IDs and idempotency
+
+**Choose a unique `request_id` before each logical write and retain it.** Otherwise, a client timeout may leave you without a reliable lookup key. IDs are bound to the operation, selected profile, and submitted message/attachment inputs. Reusing an ID with different inputs is rejected.
+
+For raw remote HTTP clients, `Idempotency-Key` is the equivalent request header. If the header and the tool's `request_id` are both present, they must match. The relay may echo `X-Slingring-Request-Id` in a response, but a caller that disconnects before a response cannot depend on that header.
+
+If a call times out or its result is missing, **query the same ID; never send the prompt again merely to check whether it worked**:
+
+```bash
+slingring jobs --request-id design-review-001 --json
+```
+
+Queued jobs left by a crash are classified as not submitted; interrupted starts are classified conservatively as uncertain. Slingring never replays either automatically. A failed or evicted journal lookup does not authorize another submission.
+
+### Protocol and permissions
+
+The local stdio server uses the official `rmcp` SDK; the remote relay supports MCP initialization, ping, tool discovery, and tool calls. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`. Remote Streamable HTTP returns JSON to POST requests; GET and DELETE are not implemented.
+
+Tool metadata advertises `readOnlyHint: true` and `openWorldHint: false`. These are client-facing hints, **not permissions**. `new_task` and `send_message` still send messages using your ChatGPT account. Treat MCP access as permission to create and modify conversations; `get_job_status` is the only read-only tool.
+
+## Limits and operational guarantees
+
+| Resource | Limit or behavior |
+| --- | --- |
+| Prompt / follow-up text | Nonblank UTF-8, up to **128 KiB** per message. |
+| Remote JSON request | Up to **256 KiB**. |
+| Concurrent submissions | One serial queue with **32** active or queued tasks total, across CLI and MCP. |
+| CLI image attachments | Up to **16** images, **20 MiB** each, **100 MiB** combined; PNG, JPEG, WebP, and GIF. Files must have a matching supported signature. |
+| Default browser-start budget | **180 seconds**, including follow-up readiness. Local queue waiting is excluded. |
+| MCP receipt window | **5 seconds** after admission, then an accepted receipt if still in progress. |
+| Remote deadlines | **230-second** Mac-side job deadline (including queue wait) and **240-second** relay HTTP safety limit; the browser budget may be shorter. |
+| Conversation output | URL and submission evidence only, **never generated answer text**. |
+
+Jobs are serialized, but Slingring cannot lock a ChatGPT conversation against a human or another client editing it. A follow-up waiting for a busy conversation can delay later queued tasks. A client-side or network timeout does not cancel a job already accepted by MCP.
+
+For diagnosis, inspect the payload-free, private lifecycle log at `~/.config/slingring/events.log` (and its optional rotated segment), alongside `slingring status --json` and `slingring jobs --json`. The log records bounded stages and timing categories, not prompts, answers, credentials, or raw browser output.
+
+For related workflows, see [Send prompts and images](/docs/local-input), [Chrome profiles](/docs/profiles), [Remote assistants](/docs/remote), and [Troubleshooting](/docs/troubleshooting).
