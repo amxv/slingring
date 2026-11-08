@@ -8,7 +8,7 @@ Slingring starts a new **Chat** or sends a follow-up to an existing Chat, never 
 
 ## Get started
 
-You need an Apple Silicon Mac, Google Chrome, and a ChatGPT login in Chrome. While this repository is private, release downloads also require an authenticated `gh` with repository access.
+You need an Apple Silicon Mac, Google Chrome, and a ChatGPT login in Chrome. Public GitHub releases do not require a GitHub login. **Until this repository is made public**, downloading its private releases requires an authenticated `gh` with repository access; the installer detects and uses that existing authentication.
 
 ```bash
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
@@ -80,3 +80,7 @@ If a submission is **uncertain**, inspect ChatGPT and `slingring jobs --request-
 Technical details live in Reference: [commands and MCP](https://slingring.ashray.xyz/docs/command-reference), [architecture](https://slingring.ashray.xyz/docs/customize-cli), [installation and updates](https://slingring.ashray.xyz/docs/release-and-npm), [privacy](https://slingring.ashray.xyz/docs/privacy), and [development](https://slingring.ashray.xyz/docs/docs-site).
 
 The site uses Astro/ZueDocs. Apache-2.0.
+
+[Contributing](CONTRIBUTING.md) · [Security reporting](SECURITY.md)
+
+Slingring is an independent, unofficial project. It is not affiliated with or endorsed by OpenAI or Google.

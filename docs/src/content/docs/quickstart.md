@@ -9,7 +9,7 @@ Slingring lets another agent start a conversation in your ChatGPT account and re
 
 ## 1. Install
 
-You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. While Slingring is private, you also need an authenticated GitHub CLI (`gh`) with access to the repository.
+You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. Public releases can be installed without GitHub authentication. **While this repository remains private**, you also need an authenticated GitHub CLI (`gh`) with repository access to download its releases.
 
 ```bash
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh

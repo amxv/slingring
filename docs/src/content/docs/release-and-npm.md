@@ -1,6 +1,6 @@
 ---
 title: Installation reference
-description: Dependencies, private releases, checksums, and updates.
+description: Dependencies, release access, checksums, and updates.
 order: 23
 category: Reference
 ---
@@ -13,14 +13,15 @@ The installer downloads the paired Rust CLI and Swift app, verifies their checks
 
 The companion extension is embedded in the Rust binary and loaded on demand. No manual unpacked-extension installation, Homebrew, npm, or separate upstream CLI is required.
 
-## Private release access
+## Release access
 
-While `amxv/slingring` is private, `gh` must be authenticated with repository access. The installer uses that existing login to download private assets. It does not print or copy GitHub credentials. Public anonymous GitHub download URLs cannot access a private release.
+When `amxv/slingring` is public, the installer downloads release assets anonymously over HTTPS. **Until the repository becomes public**, `gh` must be authenticated with repository access to download its private release assets. The installer automatically uses an existing authenticated `gh` session when available; it never prints or copies GitHub credentials. A public website does not make private GitHub releases anonymously accessible.
 
 ```bash
-gh auth status
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
+
+For private access only, first run `gh auth status` and confirm the account can access `amxv/slingring`. This extra step is unnecessary for public releases.
 
 The CLI and `Slingring.app` are installed beside each other in `~/.local/bin`. Set `CLI_INSTALL_DIR` to another absolute directory if required. `CLI_NO_LAUNCH=1` keeps the optional menu bar closed; `CLI_LAUNCH_MENU_BAR=0` disables automatic opening unless it was already running. Ad-hoc signing is not Developer ID notarization. No security settings are disabled and quarantine is not stripped.
 
@@ -43,7 +44,7 @@ The installer migrates legacy LaunchAgent presence as the service login preferen
 ## Source builds
 
 ```bash
-gh repo clone amxv/slingring
+git clone https://github.com/amxv/slingring.git
 cd slingring
 cargo install --locked --path .
 slingring browser install
@@ -51,4 +52,4 @@ slingring profile list
 slingring profile use "YOUR PROFILE"
 ```
 
-Source builds use the pinned Rust toolchain. Release workflows use cargo-dist; there is no npm package or crates.io publication. The release procedure is in `.agents/skills/release/SKILL.md`.
+While the repository remains private, cloning also requires authorized GitHub access. Source builds use the pinned Rust toolchain. Release workflows use cargo-dist and publish directly to GitHub Releases; there is no npm package or crates.io publication. The maintainer release procedure is in `.agents/skills/release/SKILL.md`.
