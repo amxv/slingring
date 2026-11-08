@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.1 · 8 November 2026
+
+Fix an intermittent **service did not start** alert after an upgrade or macOS launchd restart. Service startup now allows for launchd's 30-second throttling window instead of falsely failing after five seconds, detects early failures of directly spawned daemons, and reports bounded, actionable launchd diagnostics. CLI service commands do not accidentally kickstart the normal user's LaunchAgent when using a separate `SLINGRING_HOME`, and a manually started service works independently of the login autostart preference.
+
+Upgrades now wait for the old daemon process to **fully exit**, not just close its socket, before replacing the signed CLI. This avoids code-signing termination races during installation. Add regression coverage for isolated service lifecycles and delayed daemon shutdown during upgrades. The existing login toggles, menu bar design, browser isolation, and task submission behavior are unchanged.
+
 ## 0.6.0 · 8 November 2026
 
 Add two independent, CLI-backed Configure controls: **Open Menu Bar at Login** and **Start Slingring Service at Login**. Both default to on for fresh installs. `slingring login menu-bar on|off|status`, `slingring login service on|off|status`, and `slingring login status` expose the same actual macOS states without opening the UI. The visible app uses macOS ServiceManagement login items, with registration/approval errors surfaced rather than silently pretending a toggle succeeded.

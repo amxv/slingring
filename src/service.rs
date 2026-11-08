@@ -4,11 +4,18 @@ use std::{
     fs,
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 
 pub const LABEL: &str = "xyz.ashray.slingring";
+// launchd can throttle a restart for up to ThrottleInterval (30 seconds),
+// particularly when an upgrade has just replaced the signed executable.
+// The old five-second startup check falsely reported failures while launchd
+// was still preparing a healthy daemon.
+const LAUNCHD_START_TIMEOUT: Duration = Duration::from_secs(40);
+const DIRECT_START_TIMEOUT: Duration = Duration::from_secs(10);
+const START_POLL: Duration = Duration::from_millis(100);
 fn domain() -> Result<String> {
     let id = Command::new("/usr/bin/id").arg("-u").output()?;
     ensure!(id.status.success(), "could not determine user ID");
@@ -118,6 +125,99 @@ pub fn loaded() -> bool {
             .is_ok_and(|s| s.success())
     })
 }
+/// A loaded system job is not necessarily ours: SLINGRING_HOME can point to a
+/// separate instance. Never kickstart the user's regular LaunchAgent while
+/// attempting to start a daemon for another state directory.
+fn manages_root(root: &Path) -> Result<bool> {
+    let p = path()?;
+    let Ok(meta) = fs::symlink_metadata(&p) else {
+        return Ok(false);
+    };
+    ensure!(
+        meta.is_file() && !meta.file_type().is_symlink(),
+        "refusing a nonregular Slingring LaunchAgent plist"
+    );
+    let result = Command::new("/usr/libexec/PlistBuddy")
+        .arg("-c")
+        .arg("Print :EnvironmentVariables:SLINGRING_HOME")
+        .arg(&p)
+        .output()
+        .context("could not inspect Slingring's LaunchAgent configuration")?;
+    ensure!(
+        result.status.success(),
+        "could not read SLINGRING_HOME from the installed LaunchAgent"
+    );
+    Ok(Path::new(String::from_utf8(result.stdout)?.trim()) == root)
+}
+
+/// Report only allowlisted launchd status, never its entire environment, which
+/// can contain private data. The error is useful if the job fails repeatedly.
+fn launchd_diagnosis() -> String {
+    let Ok(domain) = domain() else {
+        return "launchd state unavailable".into();
+    };
+    let Ok(result) = Command::new("/bin/launchctl")
+        .args(["print", &format!("{domain}/{LABEL}")])
+        .output()
+    else {
+        return "launchd state unavailable".into();
+    };
+    if !result.status.success() {
+        return "LaunchAgent not loaded".into();
+    }
+    let output = String::from_utf8_lossy(&result.stdout);
+    if output.contains("last exit reason = OS_REASON_CODESIGNING") {
+        return "macOS previously rejected the daemon's code signature".into();
+    }
+    for line in output.lines() {
+        if let Some(state) = line.trim().strip_prefix("state = ")
+            && matches!(state, "running" | "waiting" | "not running")
+        {
+            return format!("launchd state: {state}");
+        }
+    }
+    "launchd state unavailable".into()
+}
+
+async fn await_ready(
+    root: &Path,
+    mut child: Option<&mut Child>,
+    launched_by_launchd: bool,
+) -> Result<()> {
+    let timeout = if launched_by_launchd {
+        LAUNCHD_START_TIMEOUT
+    } else {
+        DIRECT_START_TIMEOUT
+    };
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if daemon::running(root).await {
+            return Ok(());
+        }
+        if let Some(process) = child.as_mut()
+            && let Some(status) = process.try_wait()?
+        {
+            bail!(
+                "Slingring daemon exited before becoming ready ({status}); run slingring daemon in the foreground to diagnose"
+            );
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(START_POLL).await;
+    }
+    if launched_by_launchd {
+        bail!(
+            "Slingring service did not become ready after {} seconds ({}); run slingring daemon in the foreground to diagnose",
+            timeout.as_secs(),
+            launchd_diagnosis()
+        );
+    }
+    bail!(
+        "Slingring service did not become ready after {} seconds; run slingring daemon in the foreground to diagnose",
+        timeout.as_secs()
+    )
+}
 pub fn install(root: &Path) -> Result<()> {
     config::private_dir(root)?;
     let log = root.join("service.log");
@@ -158,7 +258,9 @@ pub async fn start(root: &Path, ephemeral: bool) -> Result<()> {
         return Ok(());
     }
     config::private_dir(root)?;
-    if !ephemeral && loaded() {
+    let launchd = !ephemeral && manages_root(root)? && loaded() && !login_disabled()?;
+    let mut child = None;
+    if launchd {
         launchctl(&["kickstart", &format!("{}/{LABEL}", domain()?)])?;
     } else {
         let mut command = Command::new(std::env::current_exe()?);
@@ -166,21 +268,17 @@ pub async fn start(root: &Path, ephemeral: bool) -> Result<()> {
         if ephemeral {
             command.arg("--ephemeral");
         }
-        command
-            .env("SLINGRING_HOME", root)
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+        child = Some(
+            command
+                .env("SLINGRING_HOME", root)
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?,
+        );
     }
-    for _ in 0..100 {
-        if daemon::running(root).await {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    anyhow::bail!("service did not start; run slingring daemon in the foreground to diagnose")
+    await_ready(root, child.as_mut(), launchd).await
 }
 pub async fn stop(root: &Path) -> Result<()> {
     if !daemon::running(root).await {
@@ -207,5 +305,11 @@ mod tests {
         assert!(parse_disabled("\"xyz.ashray.slingring\" => disabled\n").unwrap());
         assert!(parse_disabled("\"xyz.ashray.slingring\" => ???").is_err());
         assert!(!parse_disabled("\"xyz.ashray.slingring.bak\" => disabled").unwrap());
+    }
+
+    #[test]
+    fn launchd_timeout_covers_throttle_interval() {
+        assert!(LAUNCHD_START_TIMEOUT > Duration::from_secs(30));
+        assert!(DIRECT_START_TIMEOUT < LAUNCHD_START_TIMEOUT);
     }
 }

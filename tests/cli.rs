@@ -74,6 +74,45 @@ fn login_commands_are_separate_and_status_is_read_only() {
     assert!(!home.path().join("slingring.sock").exists());
 }
 #[test]
+fn service_start_stop_restart_do_not_kickstart_other_state_directories() {
+    // This process has its own HOME and SLINGRING_HOME. On developer machines
+    // the regular Slingring LaunchAgent may already be loaded, but its plist
+    // points at a different state directory and must never be kickstarted.
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let root = home.join("state");
+    let command = |args: &[&str]| {
+        let mut cli = Command::new(env!("CARGO_BIN_EXE_slingring"));
+        cli.env("HOME", &home)
+            .env("SLINGRING_HOME", &root)
+            .args(args);
+        cli
+    };
+    let bytes = command(&["service", "start"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status["running"], true);
+    command(&["service", "start"]).assert().success();
+    command(&["service", "restart"]).assert().success();
+    command(&["service", "stop"]).assert().success();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &command(&["status", "--json"])
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+        )
+        .unwrap()["running"],
+        false
+    );
+}
+#[test]
 fn config_round_trip_and_remote_errors_do_not_launch_a_browser() {
     let home = tempfile::tempdir().unwrap();
     cli(home.path())

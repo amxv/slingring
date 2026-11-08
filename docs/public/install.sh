@@ -136,6 +136,17 @@ app_pids() {
 }
 was_running=0
 service_running=0
+service_pids() {
+  # Only this user's *installed* Slingring daemon. The socket may disappear
+  # just before the process fully exits, so wait for the executable to stop
+  # before replacing its signed bytes during an upgrade.
+  /bin/ps -axww -o uid= -o pid= -o command= 2>/dev/null |
+    /usr/bin/awk -v uid="$(id -u)" -v executable="$target" '
+      $1 == uid {
+        pid=$2; $1=""; $2=""; sub(/^[[:space:]]+/, "")
+        if ($0 == executable " daemon" || $0 == executable " daemon --ephemeral") print pid
+      }'
+}
 if [ "$action" = upgrade ]; then
   state=$("$target" status --json)
   if printf '%s' "$state" | grep -Eq '"active_tasks":[1-9][0-9]*'; then
@@ -144,6 +155,17 @@ if [ "$action" = upgrade ]; then
   if printf '%s' "$state" | grep -q '"running":true'; then
     service_running=1
     "$target" service stop >/dev/null
+  fi
+  # Also protect against a non-responsive or still-starting old process: the
+  # CLI socket alone cannot prove the signed executable has fully exited.
+  attempt=0
+  while [ -n "$(service_pids)" ] && [ "$attempt" -lt 120 ]; do
+    sleep 0.25
+    attempt=$((attempt + 1))
+  done
+  if [ -n "$(service_pids)" ]; then
+    echo 'Slingring daemon did not fully exit; installation unchanged. Try upgrading again when it has stopped.' >&2
+    exit 1
   fi
 fi
 if [ -n "$(app_pids)" ]; then

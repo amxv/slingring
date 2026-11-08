@@ -209,6 +209,8 @@ slingring login service on
 
 The menu bar command uses macOS `SMAppService` to register the installed `Slingring.app` (which must be next to the CLI). The service command uses the existing `xyz.ashray.slingring` LaunchAgent and macOS launchd's persistent enabled/disabled override. **Turning service autostart off does not stop a running daemon, remove the plist, or interrupt current tasks.** Use `slingring service stop` separately for that. Repeating on/off is safe. Status reflects macOS state rather than a saved checkbox value; a `requires_approval` menu bar state needs approval in System Settings → General → Login Items & Extensions.
 
+If launchd has just restarted or Slingring has just upgraded, `service start` may wait for macOS's 30-second restart throttle before declaring failure. The CLI reports a service startup problem only after a bounded readiness check and includes limited launchd diagnostics when available. This waiting does not submit a new ChatGPT task or restart a running service.
+
 The installer initializes both settings for fresh installs. Upgrades retain explicit on/off choices, including old installations where the user removed the service LaunchAgent before these commands existed. The private `login-preferences.json` saves opt-outs to protect them from later upgrades, while macOS remains the source of truth for actual enablement. If you previously added Slingring manually in macOS Login Items, remove the obsolete manual entry if macOS lists two entries for Slingring.
 
 Local-only use does not need an always-running daemon. The owned browser closes when the queue drains; remote mode maintains an outbound connection while enabled.

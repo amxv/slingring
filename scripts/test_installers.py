@@ -4,9 +4,11 @@ import hashlib
 import io
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -151,5 +153,87 @@ esac
         self.assertIn('slingring 0.6.0',subprocess.run([str(target),'--version'],capture_output=True,text=True).stdout)
         self.assertEqual((self.state/'login-preferences.json').read_text(),saved)
         self.assertEqual((self.base/'events').read_text().splitlines(),['browser-installed','login-setup-upgrade'])
+
+    def test_upgrade_waits_for_old_daemon_to_exit_before_replacing_its_executable(self):
+        compiler=shutil.which('cc')
+        if compiler is None: self.skipTest('Apple command-line tools are required for this macOS lifecycle test')
+        target=self.home/'install/slingring';target.parent.mkdir()
+        source=self.base/'daemon-fixture.c'
+        source.write_text(r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc < 2) return 2;
+  const char *root = getenv("FIXTURE_DAEMON_DIR");
+  if (!root) return 2;
+  char started[2048], stop[2048], finished[2048];
+  snprintf(started, sizeof started, "%s/started", root);
+  snprintf(stop, sizeof stop, "%s/stop", root);
+  snprintf(finished, sizeof finished, "%s/finished", root);
+  if (!strcmp(argv[1], "daemon")) {
+    FILE *f = fopen(started, "w"); if (!f) return 2; fclose(f);
+    while (access(stop, F_OK)) usleep(20000);
+    usleep(800000); // Simulate shutdown continuing after the socket is gone.
+    f = fopen(finished, "w"); if (!f) return 2; fclose(f);
+    return 0;
+  }
+  if (!strcmp(argv[1], "status")) {
+    puts("{\"running\":true,\"active_tasks\":0}");
+    return 0;
+  }
+  if (!strcmp(argv[1], "service") && argc > 2 && !strcmp(argv[2], "stop")) {
+    FILE *f = fopen(stop, "w"); if (!f) return 2; fclose(f);
+    return 0;
+  }
+  if (!strcmp(argv[1], "--version")) { puts("slingring 0.6.0"); return 0; }
+  return 2;
+}
+''')
+        subprocess.run([compiler,'-Wall','-Werror',str(source),'-o',str(target)],check=True,capture_output=True)
+        old_app=target.parent/'Slingring.app/Contents/MacOS'
+        old_app.mkdir(parents=True)
+        (old_app/'slingring-menubar').write_text('#!/bin/sh\nexit 0\n')
+        (old_app/'slingring-menubar').chmod(0o755)
+        next_cli='''#!/bin/sh
+set -eu
+case "$1" in
+ --version) echo 'slingring 0.6.1';;
+ browser) echo browser-installed >> "$EVENT_LOG";;
+ login) echo login-setup >> "$EVENT_LOG";;
+ *) exit 1;;
+esac
+'''
+        asset='slingring_darwin_arm64.tar.gz'
+        self.archive(self.fixtures/asset,[('slingring',next_cli,0o755),
+            ('Slingring.app/Contents/MacOS/slingring-menubar','#!/bin/sh\nexit 0\n',0o755),
+            ('LICENSE','fixture',0o644)])
+        (self.fixtures/(asset+'.sha256')).write_text(hashlib.sha256((self.fixtures/asset).read_bytes()).hexdigest()+'\n')
+        self.stub('gh','''case "$1 $2" in
+ "auth status") exit 0;;
+ "release download")
+ name=; output=; while [ "$#" -gt 0 ]; do case "$1" in --pattern) name=$2;shift 2;; --output) output=$2;shift 2;; *) shift;; esac;done
+ cp "$FIXTURES/$name" "$output";;
+ *) exit 1;; esac''')
+        env={**self.env,'CLI_VERSION':'0.6.1','FIXTURE_DAEMON_DIR':str(self.base)}
+        daemon=subprocess.Popen([str(target),'daemon'],env=env)
+        try:
+            for _ in range(100):
+                if (self.base/'started').exists(): break
+                time.sleep(0.01)
+            self.assertTrue((self.base/'started').exists())
+            begin=time.monotonic()
+            result=subprocess.run(['/bin/sh',str(ROOT/'docs/public/install.sh'),'upgrade'],
+                env=env,capture_output=True,text=True,timeout=20)
+            elapsed=time.monotonic()-begin
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue((self.base/'finished').exists(),'installer replaced signed CLI before old daemon fully exited')
+            self.assertGreater(elapsed,0.7)
+            self.assertEqual((self.base/'events').read_text().splitlines(),['browser-installed','login-setup'])
+        finally:
+            if daemon.poll() is None: daemon.kill()
+            daemon.wait(timeout=5)
 
 if __name__=='__main__':unittest.main()
