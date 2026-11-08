@@ -80,3 +80,7 @@ If a submission is **uncertain**, inspect ChatGPT and `slingring jobs --request-
 Technical details live in Reference: [commands and MCP](https://slingring.ashray.xyz/docs/command-reference), [architecture](https://slingring.ashray.xyz/docs/customize-cli), [installation and updates](https://slingring.ashray.xyz/docs/release-and-npm), [privacy](https://slingring.ashray.xyz/docs/privacy), and [development](https://slingring.ashray.xyz/docs/docs-site).
 
 The site uses Astro/ZueDocs. Apache-2.0.
+
+[Contributing](CONTRIBUTING.md) · [Security reporting](SECURITY.md)
+
+Slingring is an independent, unofficial project. It is not affiliated with or endorsed by OpenAI or Google.

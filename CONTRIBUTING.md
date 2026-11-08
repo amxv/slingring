@@ -33,6 +33,8 @@ Run the web-component tests using the committed Bun lockfiles:
 
 Never run a live ChatGPT submission as part of routine tests; it requires explicit authorization. Preserve user browser profiles, credentials and existing installations.
 
+Before publishing changes, run `gitleaks git --log-opts='--all' .` if Gitleaks is available. The narrow exception in `.gitleaks.toml` permits only the Chrome extension's public identification key, not deployment or user credentials.
+
 ## Documentation
 
 ```bash

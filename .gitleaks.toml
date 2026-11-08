@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+# Chrome requires the extension's public RSA key in the manifest to keep a
+# stable extension ID. This is not a credential. Keep the exception scoped to
+# this exact field, file and Gitleaks rule; scan every other value normally.
+[[allowlists]]
+description = "Public Chrome extension ID key in manifest.json"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^extension/manifest\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"key":\s*"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A[A-Za-z0-9+/=]+",?\s*$''']
