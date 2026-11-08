@@ -82,6 +82,7 @@ set -eu
 case "$1" in
  --version) echo 'slingring 0.2.0';;
  browser) echo browser-installed >> "$EVENT_LOG";;
+ login) echo "login-$2-${3:-}" >> "$EVENT_LOG";;
  *) exit 1;;
 esac
 '''
@@ -98,7 +99,57 @@ esac
         result=subprocess.run(['/bin/sh',str(ROOT/'docs/public/install.sh')],env=self.env,capture_output=True,text=True,timeout=20)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue((self.home/'install/slingring').is_file())
-        self.assertEqual((self.base/'events').read_text().strip(),'browser-installed')
+        self.assertEqual((self.base/'events').read_text().splitlines(),['browser-installed','login-setup-'])
         self.assertIn('Chrome Profile',result.stdout)
+
+    def test_upgrade_calls_migration_without_resetting_saved_opt_outs(self):
+        old_cli='''#!/bin/sh
+set -eu
+case "$1" in
+ status) echo '{"running":false,"active_tasks":0}';;
+ --version) echo 'slingring 0.5.1';;
+ *) exit 1;;
+esac
+'''
+        new_cli='''#!/bin/sh
+set -eu
+case "$1" in
+ --version) echo 'slingring 0.6.0';;
+ browser) echo browser-installed >> "$EVENT_LOG";;
+ login)
+   [ "$2" = setup ] && [ "${3:-}" = --upgrade ] || exit 1
+   echo "login-setup-upgrade" >> "$EVENT_LOG"
+   # A real CLI performs the migration. This fixture asserts the installer
+   # cannot remove or overwrite existing preference data during replacement.
+   [ -f "$SLINGRING_HOME/login-preferences.json" ] || exit 1;;
+ *) exit 1;;
+esac
+'''
+        target=self.home/'install/slingring';target.parent.mkdir()
+        target.write_text(old_cli);target.chmod(0o755)
+        app=target.parent/'Slingring.app/Contents/MacOS'
+        app.mkdir(parents=True)
+        (app/'slingring-menubar').write_text('#!/bin/sh\nexit 0\n')
+        (app/'slingring-menubar').chmod(0o755)
+        self.state.mkdir()
+        saved='{"menu_bar":false,"service":false}'
+        (self.state/'login-preferences.json').write_text(saved)
+        asset='slingring_darwin_arm64.tar.gz'
+        self.archive(self.fixtures/asset,[('slingring',new_cli,0o755),
+            ('Slingring.app/Contents/MacOS/slingring-menubar','#!/bin/sh\nexit 0\n',0o755),
+            ('LICENSE','fixture',0o644)])
+        (self.fixtures/(asset+'.sha256')).write_text(hashlib.sha256((self.fixtures/asset).read_bytes()).hexdigest()+'\n')
+        self.stub('gh','''case "$1 $2" in
+ "auth status") exit 0;;
+ "release download")
+ name=; output=; while [ "$#" -gt 0 ]; do case "$1" in --pattern) name=$2;shift 2;; --output) output=$2;shift 2;; *) shift;; esac;done
+ cp "$FIXTURES/$name" "$output";;
+ *) exit 1;; esac''')
+        env={**self.env,'CLI_VERSION':'0.6.0'}
+        result=subprocess.run(['/bin/sh',str(ROOT/'docs/public/install.sh'),'upgrade'],env=env,capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('slingring 0.6.0',subprocess.run([str(target),'--version'],capture_output=True,text=True).stdout)
+        self.assertEqual((self.state/'login-preferences.json').read_text(),saved)
+        self.assertEqual((self.base/'events').read_text().splitlines(),['browser-installed','login-setup-upgrade'])
 
 if __name__=='__main__':unittest.main()

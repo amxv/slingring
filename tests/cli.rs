@@ -44,6 +44,36 @@ fn status_does_not_start_a_service_or_browser() {
     assert!(!home.path().join("slingring.sock").exists());
 }
 #[test]
+fn login_commands_are_separate_and_status_is_read_only() {
+    let home = tempfile::tempdir().unwrap();
+    cli(home.path())
+        .args(["login", "menu-bar", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("on"))
+        .stdout(predicate::str::contains("off"))
+        .stdout(predicate::str::contains("status"));
+    cli(home.path())
+        .args(["login", "service", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("on"))
+        .stdout(predicate::str::contains("off"))
+        .stdout(predicate::str::contains("status"));
+    let result = cli(home.path())
+        .args(["login", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status: serde_json::Value = serde_json::from_slice(&result).unwrap();
+    assert!(status["menu_bar"].is_object());
+    assert!(status["service"].is_object());
+    assert!(!home.path().join("login-preferences.json").exists());
+    assert!(!home.path().join("slingring.sock").exists());
+}
+#[test]
 fn config_round_trip_and_remote_errors_do_not_launch_a_browser() {
     let home = tempfile::tempdir().unwrap();
     cli(home.path())

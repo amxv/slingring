@@ -19,6 +19,8 @@ One installer sets up the CLI, menu bar app, companion extension, and verified b
 
 The app opens in your menu bar. The `slingring` command lives in `~/.local/bin`. If your shell cannot find it, use `~/.local/bin/slingring` in the commands below, or add that directory to your PATH.
 
+Both **Configure → Open Menu Bar at Login** and **Configure → Start Slingring Service at Login** are enabled on first install. They are independent: you can hide the UI at future logins without disabling the service, or turn off service autostart without stopping a daemon that's already running. The same controls are available through `slingring login menu-bar on|off|status` and `slingring login service on|off|status`.
+
 ## 2. Choose your Chrome profile
 
 Open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched.

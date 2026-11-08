@@ -2,6 +2,7 @@ use crate::{
     cli::{BrowserAction, Command, ConfigAction, ProfileAction, RemoteAction, ServiceAction},
     config::{self, Config},
     daemon::{self, Request},
+    login,
     model::{MAX_PROMPT, NewTask, SendMessage},
     service,
 };
@@ -346,6 +347,7 @@ pub async fn run(command: Command) -> Result<()> {
             }
             output(status(&root).await?)
         }
+        Command::Login { action } => output(login::run(&root, action)?),
         Command::Remote { action } => remote(&root, action).await,
         Command::Mcp => crate::mcp_sdk::stdio_server(&root).await,
         _ => anyhow::bail!("unsupported command"),

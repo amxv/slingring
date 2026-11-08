@@ -1,5 +1,5 @@
 use crate::{config, daemon};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::{
     fs,
     os::unix::process::CommandExt,
@@ -59,6 +59,51 @@ fn launchctl(args: &[&str]) -> Result<()> {
         String::from_utf8_lossy(&result.stderr).trim()
     );
     Ok(())
+}
+/// launchctl's disabled override is independent of whether a job is running.
+/// A disabled job can continue running until logout, which is what the login
+/// preference needs (unlike bootout, which would terminate active work).
+fn parse_disabled(output: &str) -> Result<bool> {
+    for line in output.lines() {
+        if let Some((label, value)) = line.trim().split_once(" => ")
+            && label.trim_matches('"') == LABEL
+        {
+            return match value.trim() {
+                "disabled" => Ok(true),
+                "enabled" => Ok(false),
+                other => bail!("unexpected launchctl override for {LABEL}: {other}"),
+            };
+        }
+    }
+    // A missing override means launchd's default (enabled).
+    Ok(false)
+}
+pub fn login_disabled() -> Result<bool> {
+    let result = Command::new("/bin/launchctl")
+        .args(["print-disabled", &domain()?])
+        .output()
+        .context("could not inspect launchd login overrides")?;
+    ensure!(
+        result.status.success(),
+        "could not inspect launchd login overrides: {}",
+        String::from_utf8_lossy(&result.stderr).trim()
+    );
+    parse_disabled(&String::from_utf8(result.stdout)?)
+}
+pub fn login_enable(root: &Path) -> Result<()> {
+    // Re-enable first: launchctl refuses to bootstrap disabled services.
+    launchctl(&["enable", &format!("{}/{LABEL}", domain()?)])?;
+    if !installed() {
+        install(root)?;
+    }
+    // An existing plist is enabled for *future logins*. Do not bootstrap it
+    // here: another daemon may already own the socket, and the requested
+    // preference must not start a second service or disturb running work.
+    Ok(())
+}
+pub fn login_disable() -> Result<()> {
+    // Do not bootout/uninstall: both actions can kill an active daemon/task.
+    launchctl(&["disable", &format!("{}/{LABEL}", domain()?)])
 }
 pub fn installed() -> bool {
     path().is_ok_and(|p| p.exists())
@@ -149,4 +194,18 @@ pub async fn stop(root: &Path) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     anyhow::bail!("service is still shutting down; do not kill unrelated browser processes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launchctl_overrides_are_interpreted_without_guessing() {
+        assert!(!parse_disabled("disabled services = {\n}\n").unwrap());
+        assert!(!parse_disabled("\"xyz.ashray.slingring\" => enabled\n").unwrap());
+        assert!(parse_disabled("\"xyz.ashray.slingring\" => disabled\n").unwrap());
+        assert!(parse_disabled("\"xyz.ashray.slingring\" => ???").is_err());
+        assert!(!parse_disabled("\"xyz.ashray.slingring.bak\" => disabled").unwrap());
+    }
 }

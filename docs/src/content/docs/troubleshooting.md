@@ -11,6 +11,7 @@ category: Reference
 slingring status --json
 slingring jobs --json
 slingring config show --json
+slingring login status
 ```
 
 These commands do not open a browser. Do not include credentials or private MCP URLs in a bug report.
@@ -35,5 +36,7 @@ These commands do not open a browser. Do not include credentials or private MCP 
 | Last attempt says not submitted | Read the error code in the menu or journal and resolve that failure before deliberately submitting a new request. Historical attempts do not count as active tasks. |
 | Service status unavailable | Saved history may be stale while the service is unresponsive. Do not assume the queue is empty or resend a request; query the same request ID when the service answers. |
 | Menu bar version looks old | Quit the menu bar and reopen `~/.local/bin/Slingring.app`; keep the CLI beside it. |
+| Menu bar does not return after reboot | Run `slingring login menu-bar status` and `slingring login menu-bar on`. If macOS reports `requires_approval`, approve Slingring in System Settings → General → Login Items & Extensions. |
+| Service starts even after disabling autostart | `slingring login service off` affects **future logins**, not an already-running daemon. Use `slingring service stop` to stop it now. `slingring login service status` shows the persistent startup override. |
 
 The Cloudflare test page is not the product's health check. A challenge there does not establish that ChatGPT submissions are broken. Keep compatibility experiments isolated from the working browser configuration.

@@ -176,6 +176,19 @@ fi
 rm -rf "$backup/old-app"
 rm -f "$backup/old-cli"
 printf 'Installed %s and %s at %s\n' "$cli" "$app" "$install_dir"
+# New installs default both login settings to on. For upgrades, the CLI
+# migrates legacy service-uninstall choices and leaves managed opt-outs alone.
+# Registration failures (including macOS approval requirements) are reported
+# without rolling back an otherwise verified CLI/app replacement.
+if [ "$action" = upgrade ]; then
+  if ! "$target" login setup --upgrade; then
+    echo 'Login settings were not fully configured. Inspect with: slingring login status' >&2
+  fi
+else
+  if ! "$target" login setup; then
+    echo 'Login settings were not fully configured. Inspect with: slingring login status' >&2
+  fi
+fi
 if [ "${CLI_NO_LAUNCH:-0}" != 1 ] && { [ "$was_running" = 1 ] || [ "${CLI_LAUNCH_MENU_BAR:-1}" = 1 ]; }; then
   /usr/bin/open -n -g "$app_dest" --args --after-upgrade ||
     echo "Installed successfully, but could not launch $app; open it manually." >&2

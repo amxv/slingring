@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else { fatalError(message) }
@@ -32,6 +33,25 @@ let uncertain = TaskPresentation(["latest_finished_job": ["status": "uncertain"]
 check(uncertain.lastAttempt.contains("inspect ChatGPT before retrying"), "Uncertainty requires explicit inspection")
 let unavailable = TaskPresentation(["status_available": false, "active_tasks": 0])
 check(unavailable.queue.contains("unavailable"), "An unresponsive service is not an empty queue")
+
+check(LoginRegistrationState(.enabled).enabled, "The macOS login item is checked when registered")
+check(LoginRegistrationState(.notRegistered).name == "not_registered", "Unregistered login item is off")
+check(!LoginRegistrationState(.requiresApproval).enabled, "System Settings denial is not shown as enabled")
+check(LoginRegistrationState(.notFound).name == "not_found", "Missing login items are distinguishable")
+
+let login = LoginPresentation("""
+{"menu_bar":{"enabled":true,"state":"enabled"},"service":{"enabled":false,"state":"disabled"}}
+""")!
+check(login.menuBar.enabled == true, "CLI menu bar registration drives the checked checkbox")
+check(login.service.enabled == false, "Service login item can be off independently")
+let approval = LoginPresentation("""
+{"menu_bar":{"enabled":false,"state":"requires_approval"},"service":{"enabled":null,"state":"error","error":"No GUI domain"}}
+""")!
+check(approval.menuBar.enabled == false, "macOS approval is not confused with registration")
+check(approval.menuBar.tooltip?.contains("System Settings") == true, "Explain OS approval requirements")
+check(approval.service.enabled == nil, "Unknown states are not silently shown as off")
+check(approval.service.tooltip == "No GUI domain", "Show the CLI's actionable error")
+check(LoginPresentation("not json") == nil, "Malformed output is not a false off state")
 
 for invalid in ["https://chatgpt.com.evil/c/id", "https://chatgpt.com/c/id?x=1", "https://chatgpt.com/c/id#x", "https://chatgpt.com/c/id/", "https://chatgpt.com/c/%69d"] {
     let presentation = TaskPresentation(["latest_started_job": ["status": "started", "url": invalid]])

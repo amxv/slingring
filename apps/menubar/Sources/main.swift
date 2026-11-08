@@ -30,7 +30,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var refreshing = false
     private var remoteEnabled = false
     private var serviceRunning = false
-    private var serviceInstalled = false
+    private var serviceLoginEnabled = false
+    private var menuBarLoginEnabled = false
     private var automaticUpdates = false
     private var browserHeaded = false
     private var latestURL: URL?
@@ -43,7 +44,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private let lastAttemptItem = NSMenuItem(title: "No completed submission attempts", action: nil, keyEquivalent: "")
     private lazy var remoteItem = item("Enable Remote Access", #selector(toggleRemote), "network")
     private lazy var serviceItem = item("Start Service", #selector(toggleService), "power")
-    private lazy var loginItem = item("Start Service at Login", #selector(toggleLogin), "arrow.right.circle")
+    private lazy var menuBarLoginItem = item("Open Menu Bar at Login", #selector(toggleMenuBarLogin), "menubar.rectangle")
+    private lazy var serviceLoginItem = item("Start Slingring Service at Login", #selector(toggleServiceLogin), "arrow.right.circle")
     private lazy var updatesItem = item("Automatic Updates (Daily)", #selector(toggleUpdates), "arrow.clockwise")
     private lazy var latestItem = item("Open Latest Chat", #selector(openLatest), "bubble.left")
 
@@ -92,7 +94,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         settings.addItem(.separator())
         settings.addItem(remoteItem)
         settings.addItem(item("Copy Remote MCP URL", #selector(copyURL), "doc.on.doc"))
-        settings.addItem(loginItem)
+        settings.addItem(menuBarLoginItem)
+        settings.addItem(serviceLoginItem)
+        menuBarLoginItem.isEnabled = false
+        serviceLoginItem.isEnabled = false
         settings.addItem(.separator())
         settings.addItem(item("Check for Updates…", #selector(checkUpdates), "arrow.down.circle"))
         settings.addItem(updatesItem)
@@ -187,7 +192,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             }
             self.serviceRunning = value["running"] as? Bool ?? false
             self.remoteEnabled = value["remote_enabled"] as? Bool ?? false
-            self.serviceInstalled = value["installed"] as? Bool ?? false
             let remote = value["remote_state"] as? String ?? "offline"
             self.stateItem.title = self.remoteEnabled ? "Remote: \(remote.capitalized)" : "Local Only"
             let task = TaskPresentation(value)
@@ -196,7 +200,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             self.remoteItem.title = self.remoteEnabled ? "Disable Remote Access" : "Enable Remote Access"
             self.remoteItem.state = self.remoteEnabled ? .on : .off
             self.serviceItem.title = self.serviceRunning ? "Stop Service" : "Start Service"
-            self.loginItem.state = self.serviceInstalled ? .on : .off
             let config = value["config"] as? [String: Any] ?? [:]
             self.browserHeaded = config["browser_headed"] as? Bool ?? false
             for choice in self.browserModeItems {
@@ -212,6 +215,33 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             self.automaticUpdates = result.output.contains("on (every 24 hours)")
             self.updatesItem.state = self.automaticUpdates ? .on : .off
         }
+        refreshLoginItems()
+    }
+
+    private func refreshLoginItems() {
+        run(["login", "status"]) { [weak self] result in
+            guard let self else { return }
+            guard result.code == 0, let value = LoginPresentation(result.output) else {
+                self.setLoginState(self.menuBarLoginItem, status: .init(nil))
+                self.setLoginState(self.serviceLoginItem, status: .init(nil))
+                return
+            }
+            self.menuBarLoginEnabled = self.setLoginState(self.menuBarLoginItem, status: value.menuBar)
+            self.serviceLoginEnabled = self.setLoginState(self.serviceLoginItem, status: value.service)
+        }
+    }
+
+    @discardableResult private func setLoginState(_ item: NSMenuItem, status: LoginPresentation.Entry) -> Bool {
+        guard let enabled = status.enabled else {
+            item.state = .mixed
+            item.isEnabled = false
+            item.toolTip = status.tooltip
+            return false
+        }
+        item.isEnabled = true
+        item.state = enabled ? .on : .off
+        item.toolTip = status.tooltip
+        return enabled
     }
 
     private func change(_ arguments: [String]) {
@@ -231,7 +261,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
     @objc private func toggleRemote() { change(["remote", remoteEnabled ? "off" : "on"]) }
     @objc private func toggleService() { change(["service", serviceRunning ? "stop" : "start"]) }
-    @objc private func toggleLogin() { change(["service", serviceInstalled ? "uninstall" : "install"]) }
+    private func changeLogin(_ kind: String, enabled: Bool, item: NSMenuItem) {
+        item.isEnabled = false
+        run(["login", kind, enabled ? "off" : "on"]) { [weak self] result in
+            guard let self else { return }
+            if result.code != 0 { self.alert("Login item change failed", result.output) }
+            self.refreshLoginItems()
+        }
+    }
+    @objc private func toggleMenuBarLogin() { changeLogin("menu-bar", enabled: menuBarLoginEnabled, item: menuBarLoginItem) }
+    @objc private func toggleServiceLogin() { changeLogin("service", enabled: serviceLoginEnabled, item: serviceLoginItem) }
     @objc private func toggleUpdates() { change(["auto-update", automaticUpdates ? "off" : "on"]) }
     @objc private func copyURL() {
         run(["remote", "url"]) { [weak self] result in
@@ -261,6 +300,9 @@ if CommandLine.arguments.contains("--version") {
 if CommandLine.arguments.contains("--check") {
     guard FileManager.default.isExecutableFile(atPath: cliURL().path) else { fputs("Companion CLI missing\n", stderr); exit(1) }
     print("Slingring menu bar and CLI are ready"); exit(0)
+}
+for argument in ["--login-item-on", "--login-item-off", "--login-item-status"] {
+    if CommandLine.arguments.contains(argument) { exit(runLoginItemCommand(argument)) }
 }
 guard let singleton = SingleInstanceLock() else { exit(0) }
 let app = NSApplication.shared

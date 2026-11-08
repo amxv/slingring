@@ -90,6 +90,11 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Manage the menu bar and service login settings independently.
+    Login {
+        #[command(subcommand)]
+        action: LoginAction,
+    },
     /// Run the event-driven local service in the foreground.
     Daemon {
         #[arg(long)]
@@ -149,6 +154,33 @@ pub enum ServiceAction {
     Restart,
     Install,
     Uninstall,
+    Status,
+}
+#[derive(Debug, Subcommand)]
+pub enum LoginAction {
+    /// Register the installed Slingring.app with macOS Login Items.
+    MenuBar {
+        #[command(subcommand)]
+        action: LoginToggleAction,
+    },
+    /// Control future launchd service startup without stopping the running daemon.
+    Service {
+        #[command(subcommand)]
+        action: LoginToggleAction,
+    },
+    /// Inspect both settings and their actual macOS registration status.
+    Status,
+    /// Initialize fresh installs or migrate legacy installations; used by the installer.
+    #[command(hide = true)]
+    Setup {
+        #[arg(long)]
+        upgrade: bool,
+    },
+}
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub enum LoginToggleAction {
+    On,
+    Off,
     Status,
 }
 #[derive(Debug, Subcommand)]

@@ -28,6 +28,9 @@ slingring status [--json]
 slingring jobs [--request-id ID] [--json]
 
 slingring service start|stop|restart|install|uninstall|status
+slingring login menu-bar on|off|status
+slingring login service on|off|status
+slingring login status
 slingring remote configure --url WSS_URL --token-stdin [--mcp-url URL]
 slingring remote on|off|status|url
 slingring mcp
@@ -188,7 +191,25 @@ slingring service uninstall
 
 `status` distinguishes active/queued work from historical `latest_finished_job` and `latest_started_job` records. A historical `started` status confirms that ChatGPT began responding; it does not mean Slingring is still running that task. If another process owns the queue but cannot answer, `status_available: false` warns that saved history is not a live queue snapshot.
 
-`jobs` reads the bounded, prompt-free journal. Use `--request-id` to get a single request's recovery outcome without opening a browser or submitting anything. `service install` configures the login service; `start`, `stop`, and `restart` control it. Advanced use: `slingring daemon` runs the service in the foreground, and `--ephemeral` permits idle exit.
+`jobs` reads the bounded, prompt-free journal. Use `--request-id` to get a single request's recovery outcome without opening a browser or submitting anything. `service install`/`uninstall` are low-level LaunchAgent lifecycle commands; `start`, `stop`, and `restart` control the daemon. Advanced use: `slingring daemon` runs the service in the foreground, and `--ephemeral` permits idle exit.
+
+### Startup at login
+
+On a fresh installation, **Open Menu Bar at Login** and **Start Slingring Service at Login** are both enabled. Configure shows two independent checkboxes, each backed by the following CLI operations:
+
+```bash
+slingring login status                 # JSON with the actual macOS states of both options
+slingring login menu-bar status       # only the visible Slingring.app
+slingring login service status        # only the background launchd service
+slingring login menu-bar off          # do not open the menu bar after login
+slingring login service off           # do not start the service at the next login
+slingring login menu-bar on
+slingring login service on
+```
+
+The menu bar command uses macOS `SMAppService` to register the installed `Slingring.app` (which must be next to the CLI). The service command uses the existing `xyz.ashray.slingring` LaunchAgent and macOS launchd's persistent enabled/disabled override. **Turning service autostart off does not stop a running daemon, remove the plist, or interrupt current tasks.** Use `slingring service stop` separately for that. Repeating on/off is safe. Status reflects macOS state rather than a saved checkbox value; a `requires_approval` menu bar state needs approval in System Settings → General → Login Items & Extensions.
+
+The installer initializes both settings for fresh installs. Upgrades retain explicit on/off choices, including old installations where the user removed the service LaunchAgent before these commands existed. The private `login-preferences.json` saves opt-outs to protect them from later upgrades, while macOS remains the source of truth for actual enablement. If you previously added Slingring manually in macOS Login Items, remove the obsolete manual entry if macOS lists two entries for Slingring.
 
 Local-only use does not need an always-running daemon. The owned browser closes when the queue drains; remote mode maintains an outbound connection while enabled.
 

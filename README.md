@@ -16,6 +16,8 @@ curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 
 The installer includes the CLI, menu bar app, companion extension, and verified browser helper. **No separate agent-browser, Node, or Homebrew installation.**
 
+The menu bar and background service now start automatically at login by default, independently. Configure has **Open Menu Bar at Login** and **Start Slingring Service at Login**, or use `slingring login menu-bar on|off|status`, `slingring login service on|off|status`, and `slingring login status`. Disabling service autostart does not stop the current service. Upgrades preserve your opt-outs.
+
 Choose your signed-in account in **Slingring → Configure → Chrome Profile**, or use:
 
 ```bash

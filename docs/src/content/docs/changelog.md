@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.0 · 8 November 2026
+
+Add two independent, CLI-backed Configure controls: **Open Menu Bar at Login** and **Start Slingring Service at Login**. Both default to on for fresh installs. `slingring login menu-bar on|off|status`, `slingring login service on|off|status`, and `slingring login status` expose the same actual macOS states without opening the UI. The visible app uses macOS ServiceManagement login items, with registration/approval errors surfaced rather than silently pretending a toggle succeeded.
+
+Disabling service autostart uses launchd's persistent override rather than unloading the running daemon, so current tasks are not interrupted. Installation and upgrades migrate older service registrations conservatively, preserve explicit opt-outs, and never silently reset startup choices during automatic updates. Add offline installer, Rust CLI, Swift menu-state, and isolated macOS startup registration coverage.
+
 ## 0.5.1 · 3 November 2026
 
 Recover an exact “Could not load this ChatGPT conversation” error with at most two clicks of the **page-load** Try again control, stopping with a clear non-submission failure if it never exposes a composer. A red **message-send** Retry is never clicked and a submitted prompt is never replayed: when a send-error is seen, refresh the already-owned exact conversation once and check its visible new turn and response-start activity read-only. If evidence remains incomplete, return **uncertain**, not “not submitted.” Protect drafts, images, voice readiness, exact targets and existing Chat/Extra High defaults.
