@@ -5,7 +5,7 @@ order: 4
 category: Guides
 ---
 
-Remote access lets an assistant start a ChatGPT chat or follow up on an existing one through your Mac. You get a conversation link when the new turn starts, not the generated answer.
+Remote access lets an always-on assistant or other remote agent delegate a task to ChatGPT through your Mac, then steer that conversation with follow-ups. The MCP tools return a link when the new turn starts, not the generated answer.
 
 ## When remote access is already configured
 

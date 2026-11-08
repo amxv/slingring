@@ -1,142 +1,227 @@
 ---
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
 import { primaryNav, siteConfig } from "../data/docs";
-const install = "curl -fsSL https://slingring.ashray.xyz/install.sh | sh";
+import "../styles/landing.css";
+
+const installCommand = "curl -fsSL https://slingring.ashray.xyz/install.sh | sh";
 ---
-<BaseLayout title="Slingring — Your agents. Your ChatGPT." description="Let any agent start a conversation in your ChatGPT account. Send a prompt, get a link, and pick up where it left off." siteConfig={siteConfig} primaryNav={primaryNav}>
-  <div class="sr-home">
-    <section class="sr-hero" aria-labelledby="hero-title">
-      <div class="sr-hero-copy">
-        <div class="sr-mark" aria-hidden="true"><span></span><span></span></div>
-        <h1 id="hero-title">Your agents.<br /><em>Your ChatGPT.</em></h1>
-        <p class="sr-intro">A small bridge between the tools you work in<br class="sr-wide" /> and the conversations you want to have.</p>
-        <p class="sr-explain">Let any agent start a chat in your ChatGPT account.<br class="sr-wide" /> Send a prompt. Get a link. Take it from there.</p>
-        <div class="sr-actions">
-          <a class="sr-primary" href="/docs/quickstart">Get started <span aria-hidden="true">↗</span></a>
-          <a class="sr-text-link" href="#how-it-works">See how it works <span aria-hidden="true">↓</span></a>
+
+<BaseLayout
+  title="Slingring | Delegate ChatGPT tasks from any agent"
+  description="Let local and remote agents delegate tasks to your ChatGPT account. Start a chat, get its link, and steer it with follow-ups. CLI and MCP, powered by a headless browser on your Mac."
+  siteConfig={siteConfig}
+  primaryNav={primaryNav}
+>
+  <main class="sl">
+    <div class="sl-topline" aria-label="Project overview">
+      <span><span class="sl-topline__dot" aria-hidden="true"></span> OPEN SOURCE / BUILT FOR DELEGATION</span>
+      <span>macOS <span aria-hidden="true">·</span> CLI <span aria-hidden="true">·</span> MCP</span>
+    </div>
+
+    <section class="sl-hero" aria-labelledby="hero-title">
+      <div class="sl-hero__copy">
+        <p class="sl-eyebrow"><span class="sl-eyebrow__number">01</span> A SMALL TOOL FOR A BIGGER TEAM</p>
+        <h1 id="hero-title">Let any agent<br />delegate to <em>ChatGPT.</em></h1>
+        <p class="sl-hero__lead">
+          Give local and remote agents a simple way to start tasks in your ChatGPT account
+          and steer them with follow-ups. Slingring handles the browser. Your agent gets the link.
+        </p>
+        <div class="sl-hero__actions">
+          <a class="sl-button sl-button--primary" href="#install">Install Slingring <span aria-hidden="true">↗</span></a>
+          <a class="sl-link" href="/docs/quickstart">Read the docs <span aria-hidden="true">↗</span></a>
         </div>
-        <p class="sr-platform">Made for Mac <span aria-hidden="true">·</span> Local agents + remote MCP</p>
+        <div class="sl-hero__notes" aria-label="Key capabilities">
+          <span><span class="sl-hero__note-mark" aria-hidden="true"></span> Local CLI</span>
+          <span><span class="sl-hero__note-mark" aria-hidden="true"></span> Remote MCP</span>
+          <span><span class="sl-hero__note-mark" aria-hidden="true"></span> Headless by default</span>
+        </div>
       </div>
-      <div class="sr-demo" aria-label="Example: an agent sends a brief and receives a ChatGPT conversation link">
-        <div class="sr-demo-top"><span class="sr-mini-ring" aria-hidden="true"></span><span>One simple handoff</span><span class="sr-example">EXAMPLE</span></div>
-        <div class="sr-demo-body">
-          <div class="sr-origin"><span class="sr-mono">YOUR AGENT</span><span class="sr-badge">Anywhere you work</span></div>
-          <div class="sr-request">“Give this plan a second look.<br />What are we missing?”</div>
-          <div class="sr-passage" aria-hidden="true"><span class="sr-line"></span><span class="sr-passage-ring"></span><span class="sr-line"></span></div>
-          <div class="sr-destination"><span class="sr-mono">YOUR CHATGPT</span><span class="sr-check"><span aria-hidden="true">✓</span> Conversation started</span></div>
-          <div class="sr-chat">
-            <div class="sr-chat-heading"><span class="sr-chat-dot" aria-hidden="true"></span>A fresh perspective on your plan</div>
-            <div class="sr-chat-status"><span class="sr-spinner" aria-hidden="true"></span>Thinking</div>
-            <div class="sr-returned"><span>chatgpt.com/c/your-new-chat</span><span aria-hidden="true">↗</span></div>
+
+      <div class="sl-hero__visual">
+        <div class="sl-orbits" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="sl-trace" role="group" aria-label="Illustrative delegation flow, from agent request to ChatGPT conversation link">
+          <div class="sl-trace__top">
+            <span class="sl-logo" aria-hidden="true"><i></i><i></i></span>
+            <span>SLINGRING <span class="sl-trace__top-light">/ TASK ROUTE</span></span>
+            <span class="sl-trace__example">EXAMPLE</span>
+          </div>
+          <div class="sl-trace__body">
+            <div class="sl-trace__step">
+              <div class="sl-trace__rail"><span class="sl-trace__node">01</span></div>
+              <div class="sl-trace__content">
+                <div class="sl-trace__label"><span>YOUR AGENT</span><span class="sl-trace__chip">CLI OR MCP</span></div>
+                <p class="sl-trace__prompt">“Draft a deployment plan, with a rollback checklist.”</p>
+              </div>
+            </div>
+            <div class="sl-trace__step">
+              <div class="sl-trace__rail"><span class="sl-trace__node">02</span></div>
+              <div class="sl-trace__content">
+                <div class="sl-trace__label"><span>SLINGRING ON YOUR MAC</span></div>
+                <div class="sl-trace__browser"><span class="sl-trace__pulse" aria-hidden="true"></span> ChatGPT started thinking <span class="sl-trace__browser-tag">HEADLESS</span></div>
+              </div>
+            </div>
+            <div class="sl-trace__step sl-trace__step--last">
+              <div class="sl-trace__rail"><span class="sl-trace__node sl-trace__node--done">✓</span></div>
+              <div class="sl-trace__content">
+                <div class="sl-trace__label"><span>BACK TO YOUR AGENT</span><span class="sl-trace__success">LINK READY</span></div>
+                <div class="sl-trace__url">chatgpt.com/c/your-chat-id <span aria-hidden="true">↗</span></div>
+                <p class="sl-trace__followup">Have the link? Send another message to steer the task.</p>
+              </div>
+            </div>
+          </div>
+          <div class="sl-trace__bottom"><span>ONE CONVERSATION. AS MANY FOLLOW-UPS AS YOU NEED.</span><span aria-hidden="true">◌</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="sl-manifesto" aria-label="What Slingring does">
+      <span>START A CHATGPT TASK</span><span aria-hidden="true" class="sl-manifesto__star">✳</span>
+      <span>GET THE CONVERSATION LINK</span><span aria-hidden="true" class="sl-manifesto__star">✳</span>
+      <span>STEER IT WITH FOLLOW-UPS</span>
+    </div>
+
+    <section class="sl-route sl-section" id="how-it-works" aria-labelledby="route-title">
+      <div class="sl-section__intro">
+        <div>
+          <p class="sl-eyebrow"><span class="sl-eyebrow__number">02</span> HOW IT WORKS</p>
+          <h2 id="route-title">Two ways in.<br /><em>One place to delegate.</em></h2>
+        </div>
+        <p>Local agents use the CLI. Remote agents use MCP through your private relay. Both reach the same Slingring queue and browser on your Mac.</p>
+      </div>
+
+      <div class="sl-route__diagram" aria-label="Local CLI and remote MCP requests reach Slingring on the Mac, which starts ChatGPT tasks">
+        <div class="sl-route__sources">
+          <div class="sl-route__source">
+            <span class="sl-micro">LOCAL / 01</span>
+            <strong>CLI <span aria-hidden="true">↗</span></strong>
+            <p>Coding agents, terminal tools</p>
+          </div>
+          <div class="sl-route__source">
+            <span class="sl-micro">REMOTE / 02</span>
+            <strong>MCP <span aria-hidden="true">↗</span></strong>
+            <p>Always-on assistants, cloud agents</p>
+            <span class="sl-route__via">VIA YOUR PRIVATE RELAY</span>
           </div>
         </div>
-        <div class="sr-demo-footer">You keep the conversation.<span>Slingring gets out of the way.</span></div>
-      </div>
-    </section>
-
-    <section class="sr-purpose" id="how-it-works" aria-labelledby="purpose-title">
-      <div class="sr-section-heading"><p class="sr-kicker">LESS COPYING. MORE CONTINUITY.</p><h2 id="purpose-title">A second opinion.<br /><em>Without the detour.</em></h2><p>Your agent already has the context. Let it hand over a clear brief, instead of carrying that context between windows yourself.</p></div>
-      <div class="sr-steps">
-        <article><span class="sr-step-number">01</span><div><h3>Send the brief</h3><p>Pass a prompt, a saved plan, or local images. Choose how deeply ChatGPT should think.</p></div></article>
-        <article><span class="sr-step-number">02</span><div><h3>Start a real conversation</h3><p>Slingring uses your chosen account and confirms ChatGPT has begun. Always Chat. Never Work.</p></div></article>
-        <article><span class="sr-step-number">03</span><div><h3>Pick up the thread</h3><p>Your agent gets a link, not a scraped answer. Open it whenever you are ready to continue.</p></div></article>
-      </div>
-    </section>
-
-    <section class="sr-use" aria-labelledby="use-title">
-      <div class="sr-use-heading"><p class="sr-kicker">ONE BRIDGE. TWO WAYS IN.</p><h2 id="use-title">Wherever your<br /><em>agent happens to be.</em></h2></div>
-      <div class="sr-example-workspace">
-        <div class="sr-tabs" role="tablist" aria-label="Choose an integration example">
-          <button id="local-tab" role="tab" aria-selected="true" aria-controls="local-example" data-mode="local">On your Mac</button>
-          <button id="remote-tab" role="tab" aria-selected="false" aria-controls="remote-example" tabindex="-1" data-mode="remote">In another assistant</button>
+        <div class="sl-route__arrow" aria-hidden="true"><span></span></div>
+        <div class="sl-route__center">
+          <span class="sl-route__center-icon" aria-hidden="true"><i></i><i></i></span>
+          <span class="sl-micro">RUNNING ON YOUR MAC</span>
+          <h3>Slingring</h3>
+          <p>One task queue.<br />An isolated, headless browser.</p>
         </div>
-        <div class="sr-example-panel" id="local-example" role="tabpanel" aria-labelledby="local-tab">
-          <p>Let Claude Code or another local agent send a brief directly.</p>
-          <pre><code><span class="sr-dollar">$</span> slingring new-task \
-    --prompt-file brief.md \
-    --reasoning-effort High</code></pre>
-          <a class="sr-text-link" href="/docs/local-input">Use the CLI <span aria-hidden="true">↗</span></a>
-        </div>
-        <div class="sr-example-panel" id="remote-example" role="tabpanel" aria-labelledby="remote-tab" hidden>
-          <p>Connect an MCP-capable assistant to your Mac through your private relay.</p>
-          <pre><code>new_task(
-  prompt: "Review this plan…",
-  reasoning_effort: "High"
-)</code></pre>
-          <a class="sr-text-link" href="/docs/remote">Connect an assistant <span aria-hidden="true">↗</span></a>
+        <div class="sl-route__arrow" aria-hidden="true"><span></span></div>
+        <div class="sl-route__destination">
+          <span class="sl-micro">YOUR ACCOUNT</span>
+          <div class="sl-route__chat-mark" aria-hidden="true">✳</div>
+          <h3>ChatGPT</h3>
+          <p>Chat starts.<br />Link goes back.</p>
         </div>
       </div>
+      <p class="sl-route__note">No OpenAI API key needed. Local CLI calls work without a relay; remote MCP requires one-time setup in your own Cloudflare account.</p>
     </section>
 
-    <section class="sr-quiet" aria-labelledby="quiet-title">
-      <span class="sr-quiet-glyph" aria-hidden="true">◌</span><div><h2 id="quiet-title">A little less running.<br /><em>A little more room.</em></h2><p>The browser opens for the task and closes when the queue is clear. No extra workspace to keep alive. Just a small menu bar app when you need it.</p></div>
-      <div class="sr-quiet-notes"><span>Your Chrome profile</span><span>Your reasoning preference</span><span>Your conversation to keep</span></div>
-    </section>
-
-    <section class="sr-start" aria-labelledby="start-title">
-      <div><h2 id="start-title">Make the handoff.</h2><p>One installer. Choose your account. Send your first task.</p></div>
-      <div class="sr-install-wrap">
-        <div class="sr-install"><code>{install}</code><button type="button" class="sr-copy" data-copy={install} aria-label="Copy install command">Copy <span aria-hidden="true">⧉</span></button></div>
-        <p class="sr-install-note">Apple Silicon Mac + Google Chrome. Private release access required.<br />Browser helper and companion extension included.</p>
-        <span class="sr-copy-result" role="status" aria-live="polite"></span>
+    <section class="sl-interface sl-section" aria-labelledby="interface-title">
+      <div class="sl-interface__copy">
+        <p class="sl-eyebrow"><span class="sl-eyebrow__number">03</span> THE INTERFACE</p>
+        <h2 id="interface-title">Just enough<br /><em>to delegate.</em></h2>
+        <p>One command or one tool call to start a task. Another to follow up. Keep the ChatGPT URL and your agents can return to the same conversation.</p>
+        <div class="sl-interface__links"><a class="sl-link" href="/docs/command-reference">CLI & MCP reference <span aria-hidden="true">↗</span></a></div>
       </div>
-      <a class="sr-text-link sr-install-guide" href="/docs/quickstart">Read the setup guide <span aria-hidden="true">↗</span></a>
+
+      <div class="sl-terminal">
+        <div class="sl-terminal__header">
+          <div class="sl-terminal__tabs" role="tablist" aria-label="Choose an interface">
+            <button type="button" id="sl-cli-tab" role="tab" aria-selected="true" aria-controls="sl-cli-panel" data-surface="cli">CLI <span>LOCAL</span></button>
+            <button type="button" id="sl-mcp-tab" role="tab" aria-selected="false" aria-controls="sl-mcp-panel" tabindex="-1" data-surface="mcp">MCP <span>REMOTE</span></button>
+          </div>
+          <span class="sl-terminal__file">TASK / FOLLOW-UP</span>
+        </div>
+        <div class="sl-terminal__panel" id="sl-cli-panel" role="tabpanel" aria-labelledby="sl-cli-tab">
+          <p>Run from Claude Code or any agent on your Mac.</p>
+          <pre><code><span class="sl-code-comment"># Delegate a task</span>
+<span class="sl-code-prompt">$</span> slingring new-task --prompt-file task.md --json
+
+<span class="sl-code-comment"># Steer it later with the returned link</span>
+<span class="sl-code-prompt">$</span> slingring send-message \
+    https://chatgpt.com/c/YOUR-CHAT-ID \
+    "Add a rollback checklist"</code></pre>
+          <a href="/docs/local-input">Local CLI guide <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="sl-terminal__panel" id="sl-mcp-panel" role="tabpanel" aria-labelledby="sl-mcp-tab" hidden>
+          <p>Connect a remote agent to your private MCP URL.</p>
+          <pre><code><span class="sl-code-comment">// Delegate a task</span>
+new_task(&#123;
+  prompt: "Draft a deployment plan"
+&#125;)
+
+<span class="sl-code-comment">// Steer it later with the returned link</span>
+send_message(&#123;
+  chatgpt_url: "https://chatgpt.com/c/...",
+  message: "Add a rollback checklist"
+&#125;)</code></pre>
+          <a href="/docs/remote">Remote MCP guide <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="sl-terminal__footer"><span class="sl-terminal__status-dot" aria-hidden="true"></span> CLI SUPPORTS PROMPT FILES & IMAGES <span class="sl-terminal__footer-right">MCP IS TEXT-ONLY</span></div>
+      </div>
     </section>
-  </div>
+
+    <section class="sl-philosophy" aria-labelledby="philosophy-title">
+      <span class="sl-philosophy__symbol" aria-hidden="true">◌</span>
+      <div>
+        <p class="sl-eyebrow"><span class="sl-eyebrow__number">04</span> BUILT TO GET OUT OF THE WAY</p>
+        <h2 id="philosophy-title">The task keeps going.<br /><em>You keep the thread.</em></h2>
+      </div>
+      <p>Slingring confirms ChatGPT has started, then returns the conversation link. It doesn't read the answer, wait for completion, or retry a possibly submitted prompt. Follow-ups go straight to that same chat.</p>
+    </section>
+
+    <section class="sl-install" id="install" aria-labelledby="install-title">
+      <div class="sl-install__heading">
+        <div><p class="sl-eyebrow">READY WHEN YOUR AGENTS ARE</p><h2 id="install-title">Give them a way to <em>delegate.</em></h2></div>
+        <a class="sl-install__docs" href="/docs/quickstart">Installation guide <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="sl-install__command">
+        <code><span aria-hidden="true">$ </span>{installCommand}</code>
+        <button type="button" class="sl-install__copy" data-copy={installCommand} aria-label="Copy install command">Copy <span aria-hidden="true">↗</span></button>
+      </div>
+      <div class="sl-install__under"><p>Apple Silicon Mac · Google Chrome · Signed-in ChatGPT account</p><p>No OpenAI API key required. <span class="sl-install__copy-status" role="status" aria-live="polite"></span></p></div>
+    </section>
+  </main>
 </BaseLayout>
+
 <script>
-  const home = document.querySelector<HTMLElement>(".sr-home");
-  if (home) {
-    const tabs = [...home.querySelectorAll<HTMLButtonElement>("[role=tab]")];
-    const activate = (tab: HTMLButtonElement) => {
-      for (const item of tabs) {
-        const selected = item === tab;
-        item.setAttribute("aria-selected", String(selected));
-        item.tabIndex = selected ? 0 : -1;
-        const panel = document.getElementById(item.getAttribute("aria-controls") || "");
+  const landing = document.querySelector<HTMLElement>(".sl");
+  if (landing) {
+    const tabs = [...landing.querySelectorAll<HTMLButtonElement>("[role=tab]")];
+    const activate = (selectedTab: HTMLButtonElement) => {
+      for (const tab of tabs) {
+        const selected = tab === selectedTab;
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        const panel = document.getElementById(tab.getAttribute("aria-controls") || "");
         if (panel) panel.hidden = !selected;
       }
     };
     tabs.forEach((tab, index) => {
       tab.addEventListener("click", () => activate(tab));
-      tab.addEventListener("keydown", event => {
+      tab.addEventListener("keydown", (event) => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
         const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
-        activate(tabs[next]); tabs[next].focus();
+        activate(tabs[next]);
+        tabs[next].focus();
       });
     });
-    const copy = home.querySelector<HTMLButtonElement>(".sr-copy");
+
+    const copy = landing.querySelector<HTMLButtonElement>(".sl-install__copy");
     copy?.addEventListener("click", async () => {
-      const status = home.querySelector<HTMLElement>(".sr-copy-result");
+      const status = landing.querySelector<HTMLElement>(".sl-install__copy-status");
       try {
         await navigator.clipboard.writeText(copy.dataset.copy || "");
         if (status) status.textContent = "Install command copied.";
       } catch {
-        if (status) status.textContent = "Select the command and copy it manually.";
+        if (status) status.textContent = "Select the command to copy it manually.";
       }
     });
   }
 </script>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@1,6..72,400;1,6..72,500&display=swap');
-  .sr-home{--sr-ink:#292c28;--sr-muted:#686e63;--sr-paper:#faf9f5;--sr-surface:#fffefa;--sr-line:#dfdfd5;--sr-accent:#b0522e;--sr-green:#53664b;--sr-wash:#f0f1e9;color:var(--sr-ink);font-family:'DM Sans',sans-serif;background:var(--sr-paper);padding:0 max(28px,calc((100vw - 1120px)/2));overflow:clip}
-  :global(body:has(.sr-home)){background:#faf9f5}
-  :global(body:has(.sr-home) .site-header),:global(body:has(.sr-home) .site-footer){font-family:'DM Sans',sans-serif;background:#faf9f5}
-  :global(html[data-theme=dark]) .sr-home{--sr-ink:#e9e9df;--sr-muted:#a0a497;--sr-paper:#191d19;--sr-surface:#20251f;--sr-line:#394136;--sr-accent:#e29b73;--sr-green:#a7b69d;--sr-wash:#262e24}
-  :global(html[data-theme=dark] body:has(.sr-home)),:global(html[data-theme=dark] body:has(.sr-home) .site-header),:global(html[data-theme=dark] body:has(.sr-home) .site-footer){background:#191d19}
-  :global(body:has(.sr-home) .site-nav__index){color:#686e63;opacity:1}
-  :global(html[data-theme=dark] body:has(.sr-home) .site-nav__index){color:#a0a497}
-  .sr-home h1,.sr-home h2,.sr-home h3,.sr-home p{margin:0}.sr-home h1,.sr-home h2,.sr-home h3{color:var(--sr-ink);font-family:'DM Sans',sans-serif}.sr-home a{color:inherit;text-decoration:none}.sr-home em{font-family:'Newsreader',Georgia,serif;font-weight:400;font-style:italic;letter-spacing:-.045em}.sr-home button{font-family:inherit}.sr-home a:focus-visible,.sr-home button:focus-visible{outline:2px solid var(--sr-accent);outline-offset:5px}.sr-home h2{font-size:clamp(31px,3.2vw,43px);font-weight:500;letter-spacing:-.055em;line-height:1.13}
-  .sr-hero{display:grid;grid-template-columns:1.05fr 1fr;gap:68px;align-items:center;min-height:690px;padding:82px 0 90px}.sr-mark{width:38px;height:34px;position:relative;margin-bottom:29px}.sr-mark span{position:absolute;width:25px;height:31px;border:1.5px solid var(--sr-accent);border-radius:50%;transform:rotate(28deg);left:0}.sr-mark span+span{left:11px;opacity:.48}.sr-hero h1{font-size:clamp(55px,6.4vw,82px);line-height:.99;letter-spacing:-.065em;font-weight:500}.sr-hero h1 em{color:var(--sr-accent);font-size:1.08em;line-height:1.18}.sr-intro{font-size:17px;line-height:1.6;margin-top:24px!important;letter-spacing:-.025em}.sr-explain{font-size:14px;line-height:1.7;color:var(--sr-muted);margin-top:13px!important}.sr-actions{display:flex;align-items:center;gap:25px;margin-top:28px;flex-wrap:wrap}.sr-primary{display:inline-flex;gap:34px;align-items:center;padding:13px 19px;border-radius:6px;background:var(--sr-ink);color:var(--sr-paper)!important;font-size:13px;font-weight:500;transition:transform .2s,background .2s}.sr-primary:hover{transform:translateY(-2px);background:var(--sr-accent)}.sr-text-link{font-size:12px;font-weight:500;display:inline-flex;gap:15px;align-items:center}.sr-text-link:hover{color:var(--sr-accent)}.sr-platform{font-size:11px;color:var(--sr-muted);margin-top:22px!important}.sr-platform span{padding:0 7px}
-  .sr-demo{background:var(--sr-surface);border:1px solid var(--sr-line);border-radius:12px;box-shadow:0 24px 54px -25px #28301f22;transform:rotate(-1deg);transition:transform .35s;position:relative}.sr-demo:hover{transform:rotate(0)}.sr-demo:before{content:'';position:absolute;inset:17px -11px -12px 12px;border:1px solid var(--sr-line);border-radius:12px;z-index:-1;background:var(--sr-wash);transform:rotate(2deg)}.sr-demo-top{display:flex;align-items:center;gap:9px;padding:19px 22px;border-bottom:1px solid var(--sr-line);font-size:12px;font-weight:500}.sr-mini-ring{width:15px;height:15px;border:1.4px solid var(--sr-accent);border-radius:50%;box-shadow:3px 0 0 -1px var(--sr-surface),4px 0 0 0 var(--sr-accent);margin-right:4px}.sr-example{margin-left:auto;font:9px ui-monospace,monospace;letter-spacing:.12em;color:var(--sr-muted)}.sr-demo-body{padding:26px 24px 23px}.sr-origin,.sr-destination{display:flex;align-items:center;justify-content:space-between;gap:10px}.sr-mono{font:9px/1.5 ui-monospace,monospace;letter-spacing:.14em;color:var(--sr-muted)}.sr-badge{font-size:9px;color:var(--sr-muted);background:var(--sr-wash);padding:4px 7px;border-radius:4px}.sr-request{font-size:19px;line-height:1.5;letter-spacing:-.03em;padding:19px 0 0;font-weight:400}.sr-passage{height:76px;display:flex;align-items:center;justify-content:center;gap:15px}.sr-line{height:1px;width:29%;background:var(--sr-line)}.sr-passage-ring{display:block;width:27px;height:34px;border:1px solid var(--sr-accent);border-radius:50%;transform:rotate(28deg);outline:1px solid color-mix(in srgb,var(--sr-accent) 30%,transparent);outline-offset:4px;position:relative}.sr-passage-ring:after{content:'';width:4px;height:4px;background:var(--sr-accent);border-radius:50%;position:absolute;right:-2px;top:5px}.sr-check{font-size:10px;color:var(--sr-green);display:flex;gap:6px}.sr-chat{margin-top:15px;background:var(--sr-wash);border:1px solid color-mix(in srgb,var(--sr-line) 60%,transparent);border-radius:6px;padding:16px}.sr-chat-heading{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:500}.sr-chat-dot{width:5px;height:5px;background:var(--sr-green);border-radius:50%}.sr-chat-status{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--sr-muted);margin:17px 0 20px}.sr-spinner{width:11px;height:11px;border:1px dashed var(--sr-green);border-radius:50%}.sr-returned{display:flex;align-items:center;justify-content:space-between;font:10px/1.5 ui-monospace,monospace;border-top:1px solid var(--sr-line);padding-top:11px;gap:6px;color:var(--sr-green);overflow-wrap:anywhere}.sr-demo-footer{border-top:1px solid var(--sr-line);padding:16px 24px;font-size:10px;color:var(--sr-muted);display:flex;justify-content:space-between;gap:8px}.sr-demo-footer>span{opacity:.75}
-  .sr-purpose{border-top:1px solid var(--sr-line);display:grid;grid-template-columns:1fr 1fr;gap:120px;padding:80px 0 88px;scroll-margin-top:80px}.sr-kicker{font:9px/1.7 ui-monospace,monospace;letter-spacing:.13em;color:var(--sr-muted);margin-bottom:22px!important}.sr-section-heading>p:last-child{font-size:14px;line-height:1.8;color:var(--sr-muted);max-width:340px;margin-top:22px}.sr-steps{display:grid;gap:28px;padding-top:8px}.sr-steps article{display:flex;gap:22px;align-items:flex-start}.sr-step-number{font:10px/2 ui-monospace,monospace;color:var(--sr-accent);padding-top:1px}.sr-steps h3{font-weight:500;font-size:16px;letter-spacing:-.03em;margin-bottom:8px}.sr-steps p{font-size:13px;line-height:1.8;color:var(--sr-muted);max-width:330px}
-  .sr-use{border-top:1px solid var(--sr-line);padding:72px 0 78px;display:grid;grid-template-columns:1fr 1fr;gap:120px;align-items:center}.sr-example-workspace{min-width:0;border:1px solid var(--sr-line);border-radius:8px;overflow:hidden;background:var(--sr-surface)}.sr-tabs{display:flex;border-bottom:1px solid var(--sr-line);padding:0 22px;gap:22px}.sr-tabs button{font-size:11px;line-height:1.6;padding:15px 0;background:none;color:var(--sr-muted);border:0;border-radius:0;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}.sr-tabs button[aria-selected=true]{color:var(--sr-ink);border-bottom-color:var(--sr-accent)}.sr-example-panel{padding:21px 24px 25px}.sr-example-panel[hidden]{display:none}.sr-example-panel>p{font-size:12px;line-height:1.7;color:var(--sr-muted);max-width:310px;min-height:41px}.sr-example-panel pre{margin:20px 0 21px;padding:0;border:0;background:none;color:var(--sr-ink);font:12px/1.9 ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;overflow-wrap:anywhere;min-height:92px}.sr-example-panel code{font:inherit;color:inherit;border:0;padding:0;background:none}.sr-dollar{color:var(--sr-accent)}
-  .sr-quiet{display:grid;grid-template-columns:60px 1fr auto;gap:28px;align-items:center;background:var(--sr-wash);padding:40px;border-radius:8px;margin-bottom:75px}.sr-quiet-glyph{font-size:62px;font-weight:300;line-height:1;color:var(--sr-green)}.sr-quiet h2{font-size:31px}.sr-quiet p{font-size:12px;line-height:1.85;color:var(--sr-muted);max-width:370px;margin-top:15px}.sr-quiet-notes{display:flex;flex-direction:column;gap:17px;font-size:11px;color:var(--sr-green);padding-left:30px;border-left:1px solid var(--sr-line)}
-  .sr-start{border-top:1px solid var(--sr-line);padding:63px 0 72px;display:grid;grid-template-columns:1fr 1.3fr;gap:30px 55px;align-items:start}.sr-start h2{font-size:31px;letter-spacing:-.04em}.sr-start>div>p{font-size:12px;line-height:1.8;color:var(--sr-muted);margin-top:14px}.sr-install-wrap{min-width:0}.sr-install{display:flex;align-items:center;border:1px solid var(--sr-line);border-radius:6px;background:var(--sr-surface);overflow:hidden;min-height:54px}.sr-install>code{font:10px/1.8 ui-monospace,monospace;padding:13px 14px;overflow-wrap:anywhere;flex:1;min-width:0;background:none;border:0;color:var(--sr-ink)}.sr-copy{display:flex;align-items:center;gap:8px;align-self:stretch;cursor:pointer;border:0;border-left:1px solid var(--sr-line);border-radius:0;padding:0 14px;background:transparent;font-size:10px;color:var(--sr-muted)}.sr-copy:hover{color:var(--sr-accent);background:var(--sr-wash)}.sr-install-note{font-size:10px!important;line-height:1.8!important}.sr-copy-result{display:block;min-height:15px;font-size:10px;color:var(--sr-green);margin-top:6px}.sr-install-guide{margin-top:-15px}
-  @media(prefers-reduced-motion:no-preference){.sr-hero-copy{animation:arrive .65s ease both}.sr-demo{animation:arrive .8s .12s ease both}@keyframes arrive{from{opacity:0;translate:0 12px}to{opacity:1;translate:0 0}}}
-  @media(min-width:1600px){.sr-home{padding-inline:calc((100vw - 1180px)/2)}}
-  @media(max-width:1000px){.sr-hero{gap:40px}.sr-hero h1{font-size:64px}.sr-purpose,.sr-use{gap:65px}.sr-demo-footer{flex-direction:column;gap:5px}.sr-quiet{padding:30px;gap:22px;grid-template-columns:35px 1fr}.sr-quiet-glyph{font-size:42px}.sr-quiet-notes{grid-column:2;flex-direction:row;flex-wrap:wrap;border-left:0;padding-left:0;gap:15px}.sr-wide{display:none}}
-  @media(max-width:760px){.sr-home{padding:0 24px}.sr-hero{grid-template-columns:1fr;gap:47px;padding:44px 0 64px;min-height:auto}.sr-hero-copy{max-width:550px}.sr-hero h1{font-size:72px}.sr-demo{max-width:490px;width:calc(100% - 12px);justify-self:center}.sr-demo-footer{flex-direction:row}.sr-purpose,.sr-use{grid-template-columns:1fr;gap:37px;padding:52px 0}.sr-section-heading>p:last-child{max-width:440px}.sr-steps{gap:25px}.sr-steps p{max-width:none}.sr-use-heading h2 br{display:none}.sr-quiet{margin:5px 0 52px;padding:26px 22px}.sr-quiet h2{font-size:29px}.sr-quiet-notes{font-size:10px;line-height:1.6;flex-direction:column;gap:8px}.sr-start{grid-template-columns:1fr;padding:45px 0 44px;gap:24px}.sr-install-guide{margin-top:0}.sr-start>div>p{margin-top:11px}}
-  @media(max-width:420px){.sr-home{padding-inline:20px}.sr-hero h1{font-size:62px}.sr-intro{font-size:16px}.sr-explain{font-size:13px}.sr-demo-top{padding:17px 18px}.sr-demo-body{padding:22px 18px}.sr-demo-footer{padding:14px 18px;font-size:9px}.sr-request{font-size:19px}.sr-destination{gap:5px}.sr-check{font-size:9px}.sr-chat{padding:13px}.sr-chat-heading{font-size:10px}.sr-tabs{gap:20px;padding-inline:19px}.sr-example-panel{padding-inline:19px}.sr-quiet{grid-template-columns:1fr}.sr-quiet-glyph{display:none}.sr-quiet-notes{grid-column:auto}.sr-install>code{font-size:9px;padding-inline:12px}.sr-copy{padding:0 10px}}
-</style>

@@ -9,7 +9,7 @@ Local CLI use does not need a relay. For remote assistants, deploy the `relay/` 
 
 ## Deploy
 
-Clone the repository (GitHub authorization is required only while it remains private) and authenticate Wrangler to **your** Cloudflare account. The checked-in `relay/wrangler.jsonc` deliberately has no account ID, zone ID or custom domain. For a new installation, the default config deploys a Worker to your own account; choose a different Worker name in your own checkout if needed. Do not reuse another person's Worker or deployment hostname.
+Clone the repository and authenticate Wrangler to **your** Cloudflare account. The checked-in `relay/wrangler.jsonc` deliberately has no account ID, zone ID or custom domain. For a new installation, the default config deploys a Worker to your own account; choose a different Worker name in your own checkout if needed. Do not reuse another person's Worker or deployment hostname.
 
 ```bash
 cd relay

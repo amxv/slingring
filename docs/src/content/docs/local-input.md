@@ -5,7 +5,7 @@ order: 2
 category: Guides
 ---
 
-Use Slingring when you want a second opinion, a deeper review, or a fresh ChatGPT conversation without copying context by hand.
+Use Slingring to delegate a task to ChatGPT from any local agent or terminal. Send a prompt, a prepared brief, or images; get back the conversation link.
 
 ## From your terminal or local agent
 

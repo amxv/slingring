@@ -1,10 +1,10 @@
 // Bootstrap edits only this identity block; prose pages remain project-owned.
 const generatedIdentity = {
   "name": "slingring",
-  "strapline": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
-  "description": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
+  "strapline": "Delegate tasks to ChatGPT from any local or remote agent.",
+  "description": "Delegate tasks to ChatGPT from any local or remote agent.",
   "repoUrl": "https://github.com/amxv/slingring",
-  "footerText": "Launch ChatGPT tasks from local and remote agents, then get out of the way.",
+  "footerText": "Delegate tasks to ChatGPT from any local or remote agent.",
   "distributionText": "Made for your Mac. Ready for your agents."
 } as const;
 

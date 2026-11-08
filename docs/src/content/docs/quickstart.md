@@ -5,11 +5,11 @@ order: 1
 category: Start here
 ---
 
-Slingring lets another agent start a conversation in your ChatGPT account and return the link. You continue in ChatGPT; the agent does not receive the answer.
+Slingring lets local and remote agents delegate tasks to your ChatGPT account. It returns a conversation link as soon as ChatGPT starts, and your agent can use that link to send follow-ups. It does not retrieve the answer.
 
 ## 1. Install
 
-You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. Public releases can be installed without GitHub authentication. **While this repository remains private**, you also need an authenticated GitHub CLI (`gh`) with repository access to download its releases.
+You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. Public releases install without GitHub authentication.
 
 ```bash
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
