@@ -527,7 +527,7 @@ pub async fn run_with_progress(
         "native session authentication failed"
     );
     let bootstrap = format!("about:blank#slingring-{token}");
-    native::write(&mut socket,&json!({"type":"task","job":task_id,"prompt":task.prompt(),"tab_url":bootstrap,
+    native::write(&mut socket,&json!({"type":"task","job":task_id,"operation":task.operation(),"prompt":task.prompt(),"tab_url":bootstrap,
         "chatgpt_url":task.conversation_url(),"effort":task.reasoning_effort(),"image_count":task.image_paths().len(),"timeout_ms":config.start_timeout_secs*1000,
         "deadline_ms":crate::queue::now()+deadline.saturating_duration_since(tokio::time::Instant::now()).as_millis() as u64})).await?;
     progress(if task.conversation_url().is_some() {
@@ -556,10 +556,12 @@ pub async fn run_with_progress(
                 )
             })?;
         ensure!(event["job"] == task_id, "unexpected native job");
-        if let Some(kind) = event["type"]
-            .as_str()
-            .filter(|value| matches!(*value, "upload" | "will_submit" | "started" | "failed"))
-        {
+        if let Some(kind) = event["type"].as_str().filter(|value| {
+            matches!(
+                *value,
+                "upload" | "will_submit" | "started" | "paused" | "failed"
+            )
+        }) {
             trace(kind);
         }
         match event["type"].as_str() {
@@ -599,6 +601,8 @@ pub async fn run_with_progress(
                     Some("send_ready") => "send_ready",
                     Some("activity_wait") => "activity_wait",
                     Some("submission_recovery") => "submission_recovery",
+                    Some("pause_controls") => "pause_controls",
+                    Some("pause_verification") => "pause_verification",
                     _ => return Err(failure("invalid_native_event", submitted, conversation_url)),
                 };
                 progress(stage);
@@ -627,7 +631,7 @@ pub async fn run_with_progress(
                     .map_err(|_| failure("image_upload_failed", false, None))?;
                 native::write(&mut socket, &json!({"type":"uploaded","ok":true})).await?;
             }
-            Some("will_submit") if !submitted => {
+            Some("will_submit") if !submitted && !task.is_pause() => {
                 let owned = target.as_ref().ok_or_else(|| {
                     failure("tab_binding_failed", false, conversation_url.clone())
                 })?;
@@ -640,7 +644,11 @@ pub async fn run_with_progress(
                 native::write(&mut socket, &json!({"type":"continue"})).await?;
             }
             Some("started") if submitted => {
-                let result = TaskResult {
+                let mut result = TaskResult {
+                    pause_status: None,
+                    requested_effort: None,
+                    verified_effort: None,
+                    effort_verification: Default::default(),
                     job_id: task_id.into(),
                     url: event["url"].as_str().context("task URL missing")?.into(),
                     reasoning_effort: event["effort"].as_str().map(str::to_string),
@@ -649,11 +657,37 @@ pub async fn run_with_progress(
                         .context("activity evidence missing")?
                         .into(),
                 };
+                result.record_effort(task.reasoning_effort());
                 task.validate_result(&result)
                     .map_err(|_| failure("invalid_start_result", true, conversation_url.clone()))?;
                 progress("activity_confirmed");
                 // The listener and its path guard drop synchronously here,
                 // before the serial worker can begin another job.
+                return Ok(handoff_started(result, socket, cdp, controller_id));
+            }
+            Some("paused") if task.is_pause() && !submitted => {
+                let owned = target.as_ref().ok_or_else(|| {
+                    failure("tab_binding_failed", false, conversation_url.clone())
+                })?;
+                cdp.assert_target(owned).await.map_err(|_| {
+                    failure("conversation_changed", false, conversation_url.clone())
+                })?;
+                let result = TaskResult {
+                    job_id: task_id.into(),
+                    url: event["url"].as_str().context("pause URL missing")?.into(),
+                    reasoning_effort: None,
+                    requested_effort: None,
+                    verified_effort: None,
+                    effort_verification: crate::model::EffortVerification::NotRequested,
+                    pause_status: event["status"].as_str().map(str::to_string),
+                    evidence: event["evidence"]
+                        .as_str()
+                        .context("pause evidence missing")?
+                        .into(),
+                };
+                task.validate_result(&result)
+                    .map_err(|_| failure("pause_unverified", false, conversation_url.clone()))?;
+                progress("pause_confirmed");
                 return Ok(handoff_started(result, socket, cdp, controller_id));
             }
             Some("failed") => {

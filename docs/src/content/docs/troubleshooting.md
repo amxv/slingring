@@ -22,7 +22,7 @@ These commands do not open a browser. Do not include credentials or private MCP 
 | No Chrome profiles | Open Google Chrome once, create/select a profile, and sign into ChatGPT. Reopen Configure → Chrome Profile. |
 | Wrong account | Use Configure → Chrome Profile or `slingring profile use NAME`. Check the login in normal Chrome. |
 | Browser helper missing | Run `slingring browser install`, then `slingring setup --profile NAME`. Explicit `browser-binary` overrides must point to a valid fork. |
-| Extra High or Pro unavailable | Choose a level exposed by the selected account. Slingring will not silently downgrade. |
+| Extra High or Pro unavailable | Check Configure → Subscription matches your plan. Plus allows Instant/Medium/High; Pro also enables Extra High/Pro. The selected account must expose the requested level; new tasks never silently downgrade. |
 | Remote offline | Keep the Mac awake and online, start the service, and check the relay credentials. |
 | Remote URL not configured | Complete the one-time [relay setup](/docs/reference/relay). Local use still works. |
 | Follow-up still waiting or chat busy | Readiness waits within the task-start timeout for a visible voice button and no stop control. Let the existing response finish; Slingring never interrupts it. A waiting follow-up can delay later queued tasks. |

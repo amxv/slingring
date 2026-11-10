@@ -16,7 +16,7 @@ slingring new-task "Review this plan and point out its biggest risks"
 A local agent can run the same command. For longer prompts, ask it to write a brief to a file and send that file:
 
 ```bash
-slingring new-task --prompt-file ./brief.md --reasoning-effort "Extra High"
+slingring new-task --prompt-file ./brief.md --reasoning-effort High
 ```
 
 Piped input works too:
@@ -47,6 +47,6 @@ You can send several requests together. They queue up and start one at a time; y
 
 ## When a task fails
 
-Read the error before trying again. An **uncertain** result means ChatGPT may have received the prompt. Check **Open Latest Chat**, your ChatGPT history, or `slingring jobs --json` first. Do not immediately create a replacement request.
+Read the error before trying again. An **uncertain** result means ChatGPT may have received the prompt. Check **Open Latest Chat**, your ChatGPT history, or `slingring jobs --request-id ID --json` using the recovery ID printed to stderr first. Never repeat the write just to poll its status. Do not immediately create a replacement request.
 
 The [command reference](/docs/command-reference) covers limits and safe retries.

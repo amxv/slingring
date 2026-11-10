@@ -1,6 +1,6 @@
 use crate::{
     config::{self, Config},
-    model::{MAX_JSON, NewTask, SendMessage},
+    model::{MAX_JSON, NewTask, PauseTask, SendMessage},
     queue::{Browser, Queue},
 };
 use anyhow::{Context, Result, ensure};
@@ -28,6 +28,7 @@ use tokio::{
 pub enum Request {
     Submit { id: String, task: NewTask },
     SubmitFollowup { id: String, task: SendMessage },
+    Pause { id: String, task: PauseTask },
     Mcp { body: Value, key: String },
     Status,
     Queue,
@@ -84,7 +85,7 @@ struct ContextState {
 }
 fn is_submission(request: &Request) -> bool {
     match request {
-        Request::Submit { .. } | Request::SubmitFollowup { .. } => true,
+        Request::Submit { .. } | Request::SubmitFollowup { .. } | Request::Pause { .. } => true,
         Request::Mcp { body, .. } => {
             crate::mcp::metadata(body).is_none() && !crate::mcp::status_request(body)
         }
@@ -127,6 +128,10 @@ where
                 serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
             }
             Ok(Request::SubmitFollowup { id, task }) => {
+                let config = Config::load(&ctx.root)?;
+                serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
+            }
+            Ok(Request::Pause { id, task }) => {
                 let config = Config::load(&ctx.root)?;
                 serde_json::to_value(ctx.queue.submit(id, task, config).await?)?
             }

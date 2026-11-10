@@ -35,6 +35,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var automaticUpdates = false
     private var browserHeaded = false
     private var latestURL: URL?
+    private var subscriptionItems: [NSMenuItem] = []
     private var effortItems: [NSMenuItem] = []
     private var browserModeItems: [NSMenuItem] = []
     private let profilesMenu = NSMenu()
@@ -82,12 +83,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             browserChoices.addItem(choice); browserModeItems.append(choice)
         }
         browserMode.submenu = browserChoices; settings.addItem(browserMode)
+        let subscription = NSMenuItem(title: "OpenAI Subscription", action: nil, keyEquivalent: "")
+        let plans = NSMenu()
+        for plan in ["Plus", "Pro"] {
+            let choice = NSMenuItem(title: plan, action: #selector(selectSubscription(_:)), keyEquivalent: "")
+            choice.target = self; choice.representedObject = plan.lowercased()
+            choice.toolTip = "Declare your existing subscription to filter reasoning choices. This does not change billing."
+            plans.addItem(choice); subscriptionItems.append(choice)
+        }
+        subscription.submenu = plans; settings.addItem(subscription)
         let reasoning = NSMenuItem(title: "Default Reasoning", action: nil, keyEquivalent: "")
         let choices = NSMenu()
+        choices.autoenablesItems = false
         for level in ["Instant", "Medium", "High", "Extra High", "Pro", "Use ChatGPT Setting"] {
             let choice = NSMenuItem(title: level, action: #selector(selectEffort(_:)), keyEquivalent: "")
             choice.target = self
             choice.representedObject = level == "Use ChatGPT Setting" ? "site" : level
+            // Start conservatively until the CLI returns the saved subscription.
+            choice.isHidden = ["Extra High", "Pro"].contains(level)
             choices.addItem(choice); effortItems.append(choice)
         }
         reasoning.submenu = choices; settings.addItem(reasoning)
@@ -205,8 +218,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             for choice in self.browserModeItems {
                 choice.state = ((choice.representedObject as? String) == "headed") == self.browserHeaded ? .on : .off
             }
-            let effort = config["default_effort"] as? String ?? "site"
-            for choice in self.effortItems { choice.state = (choice.representedObject as? String) == effort ? .on : .off }
+            let subscription = SubscriptionPresentation(config)
+            for choice in self.subscriptionItems {
+                choice.state = (choice.representedObject as? String) == subscription.subscription ? .on : .off
+            }
+            for choice in self.effortItems {
+                let effort = choice.representedObject as? String ?? "site"
+                choice.state = effort == subscription.effort ? .on : .off
+                choice.isHidden = !subscription.allows(effort)
+            }
             self.latestURL = task.latestURL
             self.latestItem.isEnabled = self.latestURL != nil
         }
@@ -250,6 +270,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             if result.code != 0 { self.alert("Slingring command failed", result.output) }
             self.refresh()
         }
+    }
+    @objc private func selectSubscription(_ sender: NSMenuItem) {
+        guard let plan = sender.representedObject as? String else { return }
+        change(["config", "set", "subscription", plan])
     }
     @objc private func selectEffort(_ sender: NSMenuItem) {
         guard let effort = sender.representedObject as? String else { return }

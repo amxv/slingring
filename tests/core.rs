@@ -50,6 +50,10 @@ impl Backend for Mock {
             self.gate.acquire().await.unwrap().forget();
             self.active.fetch_sub(1, Ordering::SeqCst);
             Ok(TaskResult {
+                pause_status: None,
+                requested_effort: None,
+                verified_effort: None,
+                effort_verification: Default::default(),
                 job_id: id.into(),
                 url: format!("https://chatgpt.com/c/{id}"),
                 reasoning_effort: t.reasoning_effort().map(str::to_string),
@@ -85,7 +89,7 @@ fn effort_aliases_and_blank_default_are_explicit() {
             .unwrap()
             .reasoning_effort
             .as_deref(),
-        Some("Extra High")
+        Some("High")
     );
     let c = Config {
         default_effort: None,
@@ -161,6 +165,10 @@ fn mcp_negotiates_supported_versions_and_rejects_malformed_framing() {
 #[test]
 fn results_require_real_evidence_and_a_canonical_chat_url() {
     let mut r = TaskResult {
+        pause_status: None,
+        requested_effort: None,
+        verified_effort: None,
+        effort_verification: Default::default(),
         job_id: "x".into(),
         url: "https://chatgpt.com/c/test-id".into(),
         reasoning_effort: Some("Extra High".into()),
@@ -374,4 +382,63 @@ fn native_extension_identity_and_manifest_are_consistent() {
         manifest["host_permissions"],
         json!(["https://chatgpt.com/*"])
     );
+}
+
+#[test]
+fn request_ids_are_compatible_across_cli_and_mcp() {
+    for id in ["a".to_string(), "cli:stable_1-2".into(), "a".repeat(128)] {
+        assert!(slingring::queue::valid_job_id(&id));
+        assert!(slingring::mcp::valid_request_id(&id));
+        for tool in slingring::mcp::tools() {
+            if tool["name"] == "pause_task" {
+                continue;
+            }
+            assert_eq!(
+                tool["inputSchema"]["properties"]["request_id"]["maxLength"],
+                128
+            );
+        }
+    }
+    for id in [
+        "".to_string(),
+        "a".repeat(129),
+        "é".into(),
+        "x\ny".into(),
+        "a/b".into(),
+        "a b".into(),
+    ] {
+        assert!(!slingring::queue::valid_job_id(&id));
+        assert!(!slingring::mcp::valid_request_id(&id));
+    }
+}
+
+#[test]
+fn effort_metadata_is_explicit_and_legacy_results_remain_readable() -> Result<()> {
+    let mut legacy: TaskResult = serde_json::from_value(json!({
+        "url":"https://chatgpt.com/c/legacy", "reasoning_effort":"High", "evidence":"thinking"
+    }))?;
+    assert_eq!(legacy.requested_effort, None);
+    // Legacy data cannot prove which effort the caller requested.
+    assert_eq!(
+        serde_json::to_value(&legacy)?["effort_verification"],
+        "unverified"
+    );
+    legacy.record_effort(Some("High"));
+    let verified = serde_json::to_value(&legacy)?;
+    assert_eq!(verified["requested_effort"], "High");
+    assert_eq!(verified["verified_effort"], "High");
+    assert_eq!(verified["reasoning_effort"], "High");
+    assert_eq!(verified["effort_verification"], "verified");
+    legacy.reasoning_effort = None;
+    legacy.record_effort(Some("Pro"));
+    let unverified = serde_json::to_value(&legacy)?;
+    assert_eq!(unverified["requested_effort"], "Pro");
+    assert_eq!(unverified["verified_effort"], Value::Null);
+    assert_eq!(unverified["effort_verification"], "unverified");
+    legacy.record_effort(None);
+    assert_eq!(
+        serde_json::to_value(&legacy)?["effort_verification"],
+        "not_requested"
+    );
+    Ok(())
 }

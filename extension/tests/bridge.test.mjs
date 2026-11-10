@@ -7,7 +7,7 @@ const source=readFileSync(new URL('../bridge.js',import.meta.url),'utf8');
 const target='https://chatgpt.com/c/existing-conversation';
 const bootstrap='about:blank#slingring-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,tabUrl=bootstrap,initialBlank=false,
-  submitError=null,recoverError=null}={}) {
+  submitError=null,recoverError=null,pauseError=null,pauseStatus="stopped",pauseEvidence="completion_controls"}={}) {
   const page=new JSDOM('<body></body>',{url:'chrome-extension://test-extension/bridge.html#token=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa&job=test-job',runScripts:'outside-only'});
   const w=page.window,events=[],navigations=[],contentRequests=[],removed=[],order=[];
   let nativeListener,runtimeListener,resolve,updatedListener,tabCommitted=!initialBlank;
@@ -20,7 +20,7 @@ async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,
     if(message.type==='bind_tab'){assert.equal(tabCommitted,true);post({type:'tab_bound',ok:true});}
     if(message.type==='upload')post({type:'uploaded',ok:true});
     if(message.type==='will_submit')post({type:'continue'});
-    if(message.type==='started')post({type:'ack'});
+    if(['started','paused'].includes(message.type))post({type:'ack'});
     if(['failed','released'].includes(message.type))resolve(message);
   }};
   const sender={id:'test-extension',tab:{id:5},frameId:0,url:senderUrl};
@@ -42,6 +42,7 @@ async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,
     },
     sendMessage:async (id,message)=>{
       assert.equal(id,5);contentRequests.push(message);order.push(message.action);
+      if(message.action==='pause')return pauseError ? {ok:false,code:pauseError} : {ok:true,url:resultUrl,status:pauseStatus,evidence:pauseEvidence};
       if(message.action==='prepare')return prepareError ? {ok:false,code:prepareError,submitted:false} :
         {ok:true,effort:task.effort??null,upload_selector:'input[type="file"][multiple]'};
       if(message.action==='recover')return recoverError ? {ok:false,code:recoverError,submitted:true,url:currentUrl} :
@@ -169,4 +170,31 @@ test('refresh without new activity stays uncertain and never resubmits',async()=
   assert.equal(r.terminal.code,'recovery_unverified');
   assert.deepEqual(r.contentRequests.map(m=>m.action),['prepare','submit','recover']);
   assert.equal(r.contentRequests.filter(m=>m.action==='submit').length,1);
+});
+
+ test('pause uses only exact target and pause action, never submit or upload',async()=>{
+  for(const status of ['stopped','already_idle']){
+   const r=await run({task:{operation:'pause',prompt:''},pauseStatus:status});
+   assert.deepEqual(r.navigations,[bootstrap,target]);
+   assert.deepEqual(r.contentRequests.map(x=>x.action),['pause']);
+   assert.equal(r.events.find(e=>e.type==='paused').status,status);
+   assert.equal(r.events.some(e=>['will_submit','started','upload'].includes(e.type)),false);
+   assert.equal(r.terminal.type,'released');
+  }
+ });
+ test('pause uncertainty never triggers submission recovery or fake success',async()=>{
+  const r=await run({task:{operation:'pause',prompt:''},pauseError:'pause_unverified'});
+  assert.equal(r.terminal.type,'failed');assert.equal(r.terminal.code,'pause_unverified');
+  assert.deepEqual(r.contentRequests.map(x=>x.action),['pause']);assert.equal(r.order.includes('reload'),false);
+ });
+ test('pause rejects malformed tasks and mismatched completion destinations',async()=>{
+  const invalid=await run({task:{operation:'pause',prompt:'must not send'}});
+  assert.equal(invalid.terminal.code,'invalid_pause');assert.equal(invalid.contentRequests.length,0);
+  const wrong=await run({task:{operation:'pause',prompt:''},resultUrl:'https://chatgpt.com/c/other'});
+  assert.equal(wrong.terminal.code,'invalid_pause_result');
+ });
+
+test('pause preserves verified stopped-thinking evidence',async()=>{
+ const r=await run({task:{operation:'pause',prompt:''},pauseEvidence:'stopped_thinking'});
+ assert.equal(r.events.find(e=>e.type==='paused').evidence,'stopped_thinking');
 });

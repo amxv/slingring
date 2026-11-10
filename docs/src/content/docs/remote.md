@@ -25,17 +25,23 @@ Keep the entire URL private. Anyone who has it can submit prompts through your a
 
 Ask it to use `new_task` with your prompt and, optionally, a reasoning level. For example: “Start a ChatGPT chat to review this plan using High reasoning, then give me the link.”
 
-`new_task` accepts `prompt`, optional `reasoning_effort`, and optional `request_id`. Leave effort out, or leave it blank, to use the default configured on your Mac. Choose a fresh unique `request_id` before starting any job that may outlast your MCP client's timeout.
+`new_task` accepts `prompt`, optional `reasoning_effort`, and optional `request_id`. Leave effort out, or leave it blank, to use the default configured on your Mac. Choose a fresh unique `request_id` before a new-task or follow-up call that may outlast your MCP client's timeout. IDs are 1..128 ASCII letters, digits, underscore, hyphen, or colon.
 
 To continue that chat, ask the assistant to call `send_message` with `chatgpt_url`, `message`, optionally `reasoning_effort`, and a fresh `request_id`. Use the exact `https://chatgpt.com/c/...` link without a query or fragment. Other routes are unsupported. The follow-up opens that URL directly, skips the model picker when effort is omitted, waits for the voice button with no stop control, and sends once when ready. Explicit effort changes are best-effort; a missing picker is not a reason to block the message. Its confirmed result contains the same link after fresh activity starts; it does not wait for or retrieve the completed answer.
 
-Both write tools reject extra fields. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests.
+All tools reject extra fields. Live effort enums reflect Configure → Subscription: Plus allows Instant, Medium, and High; Pro also allows Extra High and Pro. Explicit tier-unavailable effort is rejected before submission. Messages are limited to 128 KiB. Local file paths and images are not exposed through MCP. Readiness uses the existing startup timeout; a busy chat can delay other queued requests.
+
+### Pause a response
+
+Call `pause_task` with exactly one argument, `chatgpt_url`. Do not include `request_id` or message text. It uses the same serial queue without sending a message or extracting answers. A confirmed pause reports `pause_status: stopped` after clicking Stop, or `already_idle` when observing an idle turn. Stable evidence must be latest-turn completion controls (`evidence: completion_controls`) or its dedicated exact “Stopped thinking” UI status with adjacent Dictate/Start Voice controls and no Stop/active signals (`evidence: stopped_thinking`). These are UI predicates, not response-body reads. Missing Stop/voice controls alone are insufficient; cancellation without either positive indicator remains uncertain, even if there is no response/footer.
+
+A pending pause receipt includes a generated recovery ID after the same five-second post-admission window. Use `get_job_status` with that ID, never another pause call to poll. If a timeout prevents receipt of the ID, inspect the Mac's journal or the conversation rather than assuming nothing happened.
 
 ### If the task is still starting
 
 The Mac waits up to five seconds after accepting an MCP request for a confirmed result or failure. If it needs longer, the call returns a receipt containing `request_id`, `job_id`, `accepted: true`, `outcome: in_progress`, the current job phase, and `recovery_tool: get_job_status`. The accepted task continues in the Mac's queue. **Acceptance does not mean a message was submitted.**
 
-Ask the assistant to query `get_job_status` with that ID until the outcome is terminal. Open the returned conversation URL after `submitted`. This keeps browser startup and busy conversations from consuming the calling client's entire timeout.
+Ask the assistant to query `get_job_status` with that ID until the outcome is terminal. Never repeat a write call to poll. Open the returned conversation URL after `submitted`. This keeps browser startup and busy conversations from consuming the calling client's entire timeout.
 
 ### If your agent times out before getting a receipt
 

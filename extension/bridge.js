@@ -23,7 +23,7 @@ const EFFORTS=new Set(['Instant','Medium','High','Extra High','Pro']);
 const EFFORT_KINDS=new Set(['known','missing','ambiguous','unrecognized']);
 const EFFORT_PHASES=new Set(['prepare','before_authorization','after_authorization']);
 const stages=new Set(['chat_loading','chat_mode_verification','conversation_loading','composer_ready','effort_selection',
-  'prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait','submission_recovery']);
+  'prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait','submission_recovery','pause_controls','pause_verification']);
 const progress=stage=>native.postMessage({type:'progress',job,stage});
 function bootstrapCommitted(id,url) {
   return new Promise((resolve,reject)=>{
@@ -96,6 +96,7 @@ async function run() {
   const ready=next("task",15000);
   native.postMessage({type:"hello",token,job});
   const task=await ready;
+  if(task.operation!=null && !["pause","new_task","send_message"].includes(task.operation))throw Error("invalid_task");
   if(task.job!==job || typeof task.prompt!=="string")throw Error("invalid_task");
   if(task.tab_url!==`about:blank#slingring-${token}`)throw Error('invalid_tab_bootstrap');
   if(!Number.isInteger(task.image_count) || task.image_count<0 || task.image_count>16)throw Error('invalid_image_count');
@@ -103,6 +104,7 @@ async function run() {
     if(!canonical(task.chatgpt_url) || (task.effort!=null && !EFFORTS.has(task.effort)))throw Error("invalid_followup");
     targetUrl=task.chatgpt_url;
   }
+  if(task.operation==='pause' && (!targetUrl || task.prompt!=='' || task.image_count!==0 || task.effort!=null))throw Error('invalid_pause');
   const deadline=task.deadline_ms || Date.now()+120000;
   if(deadline-Date.now()<5000)throw Error('deadline_before_submission');
   // Bind the extension's tab to the Rust-owned CDP target before navigation.
@@ -122,6 +124,20 @@ async function run() {
   progress(targetUrl ? 'conversation_loading' : 'chat_loading');
   await chrome.tabs.update(tabId,{url:destination});
   await contentReady;
+  if(task.operation==='pause') {
+    progress('pause_controls');
+    const result=await content('pause',{chatgpt_url:targetUrl,deadline_ms:deadline-1000});
+    if(result.url!==targetUrl || !['stopped','already_idle'].includes(result.status) ||
+        !['completion_controls','stopped_thinking'].includes(result.evidence))throw Error('invalid_pause_result');
+    const acknowledged=next('ack',10000);
+    finished=true;
+    native.postMessage({type:'paused',job,url:targetUrl,status:result.status,evidence:result.evidence});
+    await acknowledged;
+    await chrome.tabs.remove(tabId);
+    native.postMessage({type:'released',job});
+    const own=await chrome.tabs.getCurrent();if(own?.id)await chrome.tabs.remove(own.id);
+    return;
+  }
   const prepared=await content("prepare",{prompt:task.prompt,effort:task.effort,image_count:task.image_count,
     chatgpt_url:targetUrl,timeout_ms:task.timeout_ms,deadline_ms:task.deadline_ms});
   if(task.image_count){

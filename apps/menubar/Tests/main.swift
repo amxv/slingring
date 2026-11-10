@@ -58,3 +58,13 @@ for invalid in ["https://chatgpt.com.evil/c/id", "https://chatgpt.com/c/id?x=1",
     check(presentation.latestURL == nil, "Reject noncanonical latest-chat URLs")
 }
 print("Menu status tests passed")
+
+
+let plus = SubscriptionPresentation(["subscription": "plus", "default_effort": "High"])
+check(plus.allows("Instant") && plus.allows("Medium") && plus.allows("High"), "Plus basic efforts")
+check(!plus.allows("Extra High") && !plus.allows("Pro"), "Plus hides advanced efforts")
+check(plus.allows("site"), "Site setting remains available")
+let pro = SubscriptionPresentation(["subscription": "pro", "default_effort": "Extra High"])
+check(pro.allows("Extra High") && pro.allows("Pro"), "Pro includes advanced efforts")
+check(pro.effort == "Extra High", "Preserve existing default")
+check(SubscriptionPresentation(["default_effort": "Extra High"]).subscription == "pro", "Legacy advanced defaults retain Pro access")

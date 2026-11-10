@@ -6,6 +6,14 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.5 · 10 November 2026
+
+Add Plus/Pro subscription selection in the CLI and menu bar, with tier-aware reasoning choices in local and remote MCP tools. Fresh installations default to Plus and High; existing defaults, including Extra High, are preserved. Subscription settings live separately so older installed services cannot overwrite them.
+
+Add `slingring pause-task URL` (also `pause_task`) and the one-argument MCP `pause_task(chatgpt_url)` tool. Pauses use the existing serial queue and exact conversation URL, click Stop at most once, and confirm the outcome only from stable completion controls or the dedicated stopped-thinking indicator. Ambiguous outcomes remain uncertain. Pausing never sends a message or extracts generated answers; queued MCP pauses return a recovery ID promptly.
+
+Unify request IDs across CLI, local MCP and remote calls: 1–128 ASCII letters, digits, underscores, hyphens or colons. The CLI prints recovery IDs to stderr before waiting, and help explains status lookup without repeating a write. Record requested and verified reasoning effort separately, with an explicit warning when a follow-up's requested effort cannot be verified. Omitted follow-up effort continues to leave the picker untouched.
+
 ## 0.6.4 · 10 November 2026
 
 Stop Slingring's isolated Chrome process from starting its delayed GoogleUpdater scheduler. The scheduler could wake the global updater and attempt to replace installed Chrome through `rsync`, producing another macOS App Management notification attributed to Slingring. This is separate from the app-cloning operation disabled in 0.6.2.

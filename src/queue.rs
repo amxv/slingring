@@ -67,6 +67,8 @@ impl Backend for Browser {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
+    #[serde(default = "submission_operation")]
+    pub operation: String,
     pub status: String,
     pub created_at: u64,
     pub finished_at: Option<u64>,
@@ -80,12 +82,15 @@ pub struct Job {
     #[serde(default)]
     fingerprint: String,
 }
+fn submission_operation() -> String {
+    "submit".into()
+}
 impl Job {
     pub fn active(&self) -> bool {
         matches!(self.status.as_str(), "queued" | "starting")
     }
     pub fn public(&self) -> serde_json::Value {
-        serde_json::json!({"id":self.id,"status":self.status,"created_at":self.created_at,
+        serde_json::json!({"id":self.id,"operation":self.operation,"status":self.status,"created_at":self.created_at,
             "finished_at":self.finished_at,"result":self.result,"error":self.error,"url":self.url,
             "phase":self.phase,"phase_at":self.phase_at,
             "elapsed_ms":self.finished_at.map(|finished| finished.saturating_sub(self.created_at))
@@ -107,6 +112,28 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         return serde_json::json!({"request_id":request_id,"known":false,"outcome":"unknown",
             "guidance":"Record not found or pruned. Absence is NOT proof that nothing was submitted. Inspect the chat and Mac journal before deciding whether to submit a new request."});
     };
+    if job.operation == "pause" {
+        let (outcome, guidance) = match job.status.as_str() {
+            "queued" | "starting" => (
+                "in_progress",
+                "Pause is pending. Query this request_id; do not issue another pause to poll.",
+            ),
+            "paused" => (
+                "paused",
+                "The latest turn exposed stable completion controls or the stopped-thinking UI with idle composer controls. See evidence and pause_status; this does not prove the click caused completion.",
+            ),
+            "pause_not_attempted" => (
+                "not_attempted",
+                "The pause did not reach the browser. The conversation may still be generating.",
+            ),
+            _ => (
+                "uncertain",
+                "A pause was not verified. The conversation may still be generating; inspect its UI. No message was submitted or automatically retried.",
+            ),
+        };
+        return serde_json::json!({"request_id":request_id,"known":true,"operation":"pause",
+            "outcome":outcome,"guidance":guidance,"job":job.public()});
+    }
     let (outcome, guidance) = match job.status.as_str() {
         "queued" | "starting" => (
             "in_progress",
@@ -249,6 +276,18 @@ pub fn owner_running(root: &Path) -> Result<bool> {
 fn interrupt(job: &mut Job) {
     if job.active() {
         let pending = job.status == "queued";
+        if job.operation == "pause" {
+            job.status = if pending {
+                "pause_not_attempted"
+            } else {
+                "pause_uncertain"
+            }
+            .into();
+            job.finished_at = Some(now());
+            job.error =
+                Some("pause interrupted; response may still be generating; not replayed".into());
+            return;
+        }
         job.status = if pending { "failed" } else { "uncertain" }.into();
         job.finished_at = Some(now());
         job.error = Some(
@@ -410,6 +449,7 @@ impl State {
     fn finish(&mut self, id: &str, result: Result<TaskResult>, status: &str) -> Result<()> {
         self.retained.remove(id);
         let safe_code = match &result {
+            Ok(result) if result.pause_status.is_some() => "pause_confirmed",
             Ok(_) => "activity_confirmed",
             Err(error) => error
                 .downcast_ref::<StartError>()
@@ -445,7 +485,9 @@ impl State {
                 // external error strings which may contain private page text.
                 job.error = Some(format!(
                     "{safe_code}; {}",
-                    if status == "failed" {
+                    if status.starts_with("pause_") {
+                        "pause was not verified; response may still be generating; inspect the conversation"
+                    } else if status == "failed" {
                         "nothing was submitted"
                     } else {
                         "submission may have started; inspect the task before retrying"
@@ -628,6 +670,7 @@ impl Queue {
                 let permit = self.tx.try_reserve().context("queue unavailable")?;
                 state.jobs.push_back(Job {
                     id: id.clone(),
+                    operation: task.operation().into(),
                     status: "queued".into(),
                     created_at: now(),
                     finished_at: None,
@@ -674,7 +717,7 @@ async fn work(
                 let mut state = queue.state.lock().expect("queue lock");
                 let abandoned = !state.retained.contains(&id) && state.waiters.get(&id).is_none_or(|w| w.iter().all(oneshot::Sender::is_closed));
                 if deadline.is_some_and(|deadline| Instant::now() >= deadline) || abandoned {
-                    state.finish(&id, Err(anyhow::anyhow!("request expired or caller disconnected before launch; nothing was submitted")), "failed")?;
+                    state.finish(&id, Err(anyhow::anyhow!("request expired or caller disconnected before launch; nothing was submitted")), if task.is_pause() { "pause_not_attempted" } else { "failed" })?;
                     true
                 } else {
                     let job = state.jobs.iter_mut().find(|j| j.id == id).context("job missing")?;
@@ -704,7 +747,7 @@ async fn work(
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 queue.state.lock().expect("queue lock").finish(&id,
-                    Err(anyhow::anyhow!("request expired before browser launch; nothing was submitted")), "failed")?;
+                    Err(anyhow::anyhow!("request expired before browser launch; nothing was submitted")), if task.is_pause() { "pause_not_attempted" } else { "failed" })?;
                 if rx.is_empty() {
                     if let Some(config) = open_config.take() { close_bounded(backend.as_ref(), &config).await; }
                     queue.busy.store(false, Ordering::Release);
@@ -736,6 +779,7 @@ async fn work(
                 r = tokio::time::timeout_at(deadline, backend.run_with_progress(&config, &task, &id, progress)) => match r {
                     Ok(Ok(mut result)) => {
                         result.job_id = id.clone();
+                        result.record_effort(task.reasoning_effort());
                         task.validate_result(&result).map(|()| result)
                     }
                     Ok(Err(error)) => Err(error),
@@ -743,7 +787,7 @@ async fn work(
                 }
             };
             let success = result.is_ok();
-            let status = if success { "started" } else if result.as_ref().err()
+            let status = if task.is_pause() { if success { "paused" } else { "pause_uncertain" } } else if success { "started" } else if result.as_ref().err()
                 .and_then(|e| e.downcast_ref::<StartError>()).is_some_and(|e| !e.may_have_submitted) { "failed" } else { "uncertain" };
             // Persist the proven outcome and release waiters before potentially
             // slow browser cleanup. The worker still serializes subsequent jobs.
@@ -768,13 +812,19 @@ async fn work(
         .jobs
         .iter()
         .filter(|j| j.active())
-        .map(|j| (j.id.clone(), j.status.clone()))
+        .map(|j| (j.id.clone(), j.status.clone(), j.operation.clone()))
         .collect();
-    for (id, status) in ids {
+    for (id, status, operation) in ids {
         let _ = state.finish(
             &id,
             Err(anyhow::anyhow!("service stopped; request was not replayed")),
-            if status == "queued" {
+            if operation == "pause" {
+                if status == "queued" {
+                    "pause_not_attempted"
+                } else {
+                    "pause_uncertain"
+                }
+            } else if status == "queued" {
                 "failed"
             } else {
                 "uncertain"

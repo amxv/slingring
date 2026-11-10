@@ -50,6 +50,10 @@ impl Backend for FakeBrowser {
                 .into());
             }
             Ok(TaskResult {
+                pause_status: None,
+                requested_effort: None,
+                verified_effort: None,
+                effort_verification: Default::default(),
                 job_id: id.into(),
                 url: format!("https://chatgpt.com/c/{id}"),
                 reasoning_effort: task.reasoning_effort().map(str::to_string),
@@ -514,6 +518,10 @@ impl Backend for SlowCleanup {
                 anyhow::bail!("PRIVATE external page error must never reach journal");
             }
             Ok(TaskResult {
+                pause_status: None,
+                requested_effort: None,
+                verified_effort: None,
+                effort_verification: Default::default(),
                 job_id: id.into(),
                 url: format!("https://chatgpt.com/c/{id}"),
                 reasoning_effort: task.reasoning_effort().map(str::to_string),
@@ -576,4 +584,17 @@ async fn proven_outcomes_are_published_before_slow_cleanup_and_raw_errors_stay_p
         assert!(!slingring::queue::owner_running(dir.path())?);
     }
     Ok(())
+}
+
+#[test]
+fn mcp_status_accepts_cli_compatible_recovery_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = format!("cli:{}", "a".repeat(124));
+    let response = read_status(dir.path(), &id);
+    assert_eq!(response["result"]["structuredContent"]["request_id"], id);
+    assert_eq!(
+        response["result"]["structuredContent"]["outcome"],
+        "unknown"
+    );
+    assert!(!dir.path().join("journal.json").exists());
 }

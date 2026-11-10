@@ -19,11 +19,11 @@ pub struct LocalServer {
     root: PathBuf,
 }
 
-fn tools() -> Vec<Tool> {
-    mcp::tools()
+fn tools(root: &Path) -> Result<Vec<Tool>> {
+    Ok(mcp::tools_for_config(&Config::load(root)?)
         .into_iter()
         .map(|value| serde_json::from_value(value).expect("valid MCP tool schema"))
-        .collect()
+        .collect())
 }
 
 impl ServerHandler for LocalServer {
@@ -34,7 +34,10 @@ impl ServerHandler for LocalServer {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        tools().into_iter().find(|tool| tool.name == name)
+        tools(&self.root)
+            .ok()?
+            .into_iter()
+            .find(|tool| tool.name == name)
     }
 
     async fn list_tools(
@@ -42,7 +45,9 @@ impl ServerHandler for LocalServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        Ok(ListToolsResult::with_all_items(tools(&self.root).map_err(
+            |_| ErrorData::internal_error("Slingring configuration unavailable", None),
+        )?))
     }
 
     async fn call_tool(

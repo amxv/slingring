@@ -7,6 +7,27 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// User-declared access, not billing or account verification.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Subscription {
+    #[default]
+    Plus,
+    Pro,
+}
+impl Subscription {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plus" => Ok(Self::Plus),
+            "pro" => Ok(Self::Pro),
+            _ => anyhow::bail!("subscription must be plus or pro"),
+        }
+    }
+    pub fn allows(self, effort: &str) -> bool {
+        self == Self::Pro || matches!(effort, "Instant" | "Medium" | "High")
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -15,6 +36,9 @@ pub struct Config {
     pub browser_headed: bool,
     pub profile: String,
     pub default_effort: Option<String>,
+    /// Sidecar keeps config.json readable by installed older releases.
+    #[serde(skip)]
+    pub subscription: Subscription,
     pub start_timeout_secs: u64,
     pub relay_url: Option<String>,
     pub device_token: Option<String>,
@@ -32,7 +56,8 @@ impl Default for Config {
             browser_binary: "agent-browser-browse".into(),
             browser_headed: false,
             profile: "Default".into(),
-            default_effort: Some("Extra High".into()),
+            default_effort: Some("High".into()),
+            subscription: Subscription::Plus,
             start_timeout_secs: 180,
             relay_url: None,
             device_token: None,
@@ -120,13 +145,56 @@ pub fn secure_url(value: &str, websocket: bool) -> Result<String> {
 impl Config {
     pub fn load(root: &Path) -> Result<Self> {
         let path = root.join("config.json");
-        let c: Self = if path.exists() {
-            serde_json::from_slice(&read_private(&path, crate::model::MAX_JSON as u64)?)?
+        let mut c: Self = if path.exists() {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&read_private(&path, crate::model::MAX_JSON as u64)?)?;
+            // Existing files that omitted this field used the old implicit default.
+            // Only a genuinely fresh installation adopts High.
+            if let Some(object) = value.as_object_mut() {
+                object
+                    .entry("default_effort")
+                    .or_insert(serde_json::json!("Extra High"));
+            }
+            serde_json::from_value(value)?
         } else {
             Self::default()
         };
+        let subscription_path = root.join("subscription.json");
+        c.subscription = if subscription_path.exists() {
+            serde_json::from_slice(&read_private(&subscription_path, 1024)?)?
+        } else if c
+            .default_effort
+            .as_deref()
+            .is_some_and(|e| !Subscription::Plus.allows(e))
+        {
+            // Preserve advanced defaults saved by releases without a plan setting.
+            Subscription::Pro
+        } else {
+            Subscription::Plus
+        };
         c.validate()?;
         Ok(c)
+    }
+    pub fn check_effort(&self, effort: &str) -> Result<()> {
+        ensure!(
+            self.subscription.allows(effort),
+            "Extra High and Pro require a Pro subscription; use Instant, Medium or High, or set subscription pro"
+        );
+        Ok(())
+    }
+    pub fn set_subscription(&mut self, root: &Path, subscription: Subscription) -> Result<()> {
+        ensure!(
+            self.default_effort
+                .as_deref()
+                .is_none_or(|e| subscription.allows(e)),
+            "saved default requires Pro; first set default-effort high before selecting Plus"
+        );
+        atomic(
+            &root.join("subscription.json"),
+            &serde_json::to_vec(&subscription)?,
+        )?;
+        self.subscription = subscription;
+        Ok(())
     }
     pub fn validate(&self) -> Result<()> {
         if let Some(effort) = &self.default_effort {
@@ -171,7 +239,7 @@ impl Config {
     }
     pub fn redacted(&self) -> serde_json::Value {
         serde_json::json!({"browser_binary": self.browser_binary, "browser_headed": self.browser_headed, "profile": self.profile,
-            "default_effort": self.default_effort, "start_timeout_secs": self.start_timeout_secs,
+            "default_effort": self.default_effort, "subscription": self.subscription, "start_timeout_secs": self.start_timeout_secs,
             "remote_enabled": self.remote_enabled, "remote_configured": self.relay_url.is_some() && self.device_token.is_some(),
             "mcp_url_configured": self.mcp_url.is_some(), "heartbeat_secs": self.heartbeat_secs})
     }

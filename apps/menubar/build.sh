@@ -24,6 +24,7 @@ for key in CFBundleShortVersionString CFBundleVersion AppReleaseVersion; do
 done
 /usr/bin/swiftc -O -target "$swift_arch-apple-macos13.0" \
   "$source_dir/Sources/main.swift" \
+  "$source_dir/Sources/SubscriptionPresentation.swift" \
   "$source_dir/Sources/TaskPresentation.swift" \
   "$source_dir/Sources/LoginRegistration.swift" \
   "$source_dir/Sources/LoginPresentation.swift" \

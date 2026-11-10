@@ -34,7 +34,7 @@ slingring profile use "Profile 6"
 
 Replace `Profile 6` with a directory or unique name from your own list. Slingring does not choose among multiple accounts for you.
 
-Under **Configure → Default Reasoning**, choose a level your account supports. The initial default is Extra High. Choose High for an account without Extra High, or Use ChatGPT Setting to retain the site's selection.
+Under **Configure → Subscription**, select Plus or Pro to match your account. Fresh installs use Plus with High reasoning; saved defaults are preserved. **Configure → Default Reasoning** shows levels for that tier: Plus supports Instant, Medium, and High; Pro also supports Extra High and Pro. Use ChatGPT Setting retains the site's selection.
 
 ## 3. Send your first task
 

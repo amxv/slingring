@@ -332,6 +332,90 @@
     // conversation from being mistaken for a ready new-chat composer.
     return voice.length===1 && userTurns().length>0;
   }
+  // Pause uses controls and structure only. Never inspect answer/user text,
+  // clone response nodes, or reuse startEvidence/content-presence heuristics.
+  function stoppedThinkingControl(user,root) {
+    // Verified current Chat UI: one user turn owns a dedicated turn-state
+    // wrapper. Its early-thinking status is a button with a plain status span
+    // and chevron. Never scan arbitrary text, response bodies or whole buttons.
+    const scope=user?.closest('[data-talvt-turn-state]');
+    if(!scope || userTurns().filter(e=>scope.contains(e)).length!==1 ||
+        scope.querySelector('.markdown,.prose,[data-message-content],[data-message-author-role="assistant"],[data-conversation-role="assistant"],article[data-turn="assistant"]'))return null;
+    const states=[...scope.querySelectorAll('button')].filter(e=>visible(e) &&
+      !!(user.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING) &&
+      !e.closest('[data-user-message-bubble],[data-message-author-role="user"],form,[data-composer-body],pre,code') &&
+      !e.hasAttribute('aria-label') && e.children.length===2 && e.firstElementChild.tagName==='SPAN' &&
+      e.firstElementChild.childElementCount===0 && e.lastElementChild.tagName.toLowerCase()==='svg');
+    if(states.length!==1 || states[0].firstElementChild.textContent.trim()!=='Stopped thinking')return null;
+    const buttons=[...(root?.querySelectorAll('button') || [])].filter(e=>visible(e) && !e.disabled && e.getAttribute('aria-disabled')!=='true');
+    const voices=buttons.filter(e=>/^(?:start voice|start voice mode|use voice mode|voice mode)$/i.test(e.getAttribute('aria-label') || ''));
+    const dictations=buttons.filter(e=>e.hasAttribute('data-dictation-button') && /^dictate$/i.test(e.getAttribute('aria-label') || ''));
+    if(voices.length!==1 || dictations.length!==1)return null;
+    // The live composer nests each control in a small wrapper. Require both
+    // adjacent action branches in a container with exactly these two buttons.
+    let pair=dictations[0].parentElement;
+    for(let depth=0;depth<3 && pair && pair!==root;depth++,pair=pair.parentElement) {
+      if(pair.contains(voices[0]) && pair.children.length===2 && pair.querySelectorAll('button').length===2)
+        return {status:states[0],label:states[0].firstElementChild,voice:voices[0],dictation:dictations[0]};
+    }
+    return null;
+  }
+  function pauseObservation() {
+    const users=userTurns(),user=users.at(-1),input=composer();
+    const main=user?.closest('main,[role="main"]');
+    const empty={user:null,turn:null,users:users.length,complete:false,stop:null,active:true};
+    if(!user || !main || !input || !visible(main))return empty;
+    const after=e=>!e.contains(user) && !!(user.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING);
+    const candidates=[...main.querySelectorAll('article[data-turn="assistant"],[data-message-author-role="assistant"],[data-conversation-role="assistant"]')]
+      .filter(e=>visible(e) && after(e));
+    const last=candidates.at(-1);
+    const turn=last?.closest('article[data-turn="assistant"]') || last;
+    const root=composerRoot();
+    const stops=[...(root?.querySelectorAll('button') || [])].filter(e=>visible(e) &&
+      !e.closest('[data-message-author-role],[data-user-message-bubble],[data-conversation-role],article,.markdown,.prose,[data-message-content],pre,code') &&
+      (['stop-button','composer-stop-button'].includes(e.getAttribute('data-testid')) ||
+      /^stop(?: generating| responding| generation| response| streaming)?(?: \(.*\))?$/i.test(e.getAttribute('aria-label') || '')));
+    const stop=stops.length===1 && !stops[0].disabled && stops[0].getAttribute('aria-disabled')!=='true' ? stops[0]:null;
+    const activeSelector='[aria-busy="true"],[role="progressbar"],[data-is-streaming="true"],[data-streaming="true"],.result-streaming,.pulsing-dot';
+    const active=!!stops.length || voiceActive() || main.matches(activeSelector) || [...main.querySelectorAll(activeSelector)]
+      .some(e=>visible(e) && (root?.contains(e) || e.contains(user) || (root && e.contains(root)) || after(e)));
+    const buttons=[...(turn?.querySelectorAll('button') || [])].filter(e=>visible(e) && !e.disabled &&
+      e.getAttribute('aria-disabled')!=='true' && !e.closest('.markdown,.prose,[data-message-content],pre,code'));
+    const control=(test,label)=>buttons.find(e=>e.getAttribute('data-testid')===test || e.getAttribute('aria-label')===label);
+    const footerControls=[control('copy-turn-action-button','Copy response'),
+      control('good-response-turn-action-button','Good response'),control('bad-response-turn-action-button','Bad response')];
+    const complete=!!turn && footerControls.every(Boolean);
+    const stopped=stoppedThinkingControl(user,root);
+    return {user,turn,users:users.length,complete,stop,active,stopped,footerControls};
+  }
+  async function pauseTask(url,deadline=Date.now()+45000) {
+    let clicked=false,clickedUser=null,clickedUsers=0,stable=null,stableSince=0,samples=0;
+    const started=Date.now();
+    while(Date.now()<deadline) {
+      if(location.href!==url)throw Error('conversation_changed');
+      const state=pauseObservation();
+      if(clicked && (state.user!==clickedUser || state.users!==clickedUsers))throw Error('pause_unverified');
+      if(state.stop && !clicked) {
+        // One guarded click only. Never retry an uncertain cancellation.
+        if(location.href!==url || !state.stop.isConnected)throw Error('conversation_changed');
+        clickedUser=state.user;clickedUsers=state.users;
+        state.stop.click();clicked=true;stable=null;samples=0;
+      } else if((state.complete || state.stopped) && !state.active) {
+        if(!stable || stable.user!==state.user || stable.turn!==state.turn || stable.users!==state.users ||
+            stable.footerControls.some((e,i)=>e!==state.footerControls[i]) ||
+            stable.stopped?.status!==state.stopped?.status || stable.stopped?.label!==state.stopped?.label || stable.stopped?.voice!==state.stopped?.voice ||
+            stable.stopped?.dictation!==state.stopped?.dictation) {
+          stable=state;stableSince=Date.now();samples=1;
+        } else samples++;
+        // Rehydration, history replacement and transient footer controls must
+        // settle over multiple observations, not just absence of Stop/voice.
+        if(samples>=6 && Date.now()-stableSince>=2500 && Date.now()-started>=3500)
+          return {status:clicked?'stopped':'already_idle',evidence:state.stopped?'stopped_thinking':'completion_controls'};
+      } else {stable=null;samples=0;}
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    throw Error(clicked?'pause_unverified':'pause_stop_unavailable');
+  }
   function fileInput() {
     const inputs = [...document.querySelectorAll('input[type="file"]')];
     return inputs.find(e=>e.multiple && e.getAttribute('aria-label')==='Attach photos') ||
@@ -503,5 +587,5 @@
   }
   globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
     currentEffort,effortState,powerState,setEffort,ensureEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
-    followupReady,followupIdle,noAttachments,turnBaseline,conversationLoadFailure,ensureConversationLoaded,messageSendError,recoveredEvidence};
+    pauseObservation,pauseTask,followupReady,followupIdle,noAttachments,turnBaseline,conversationLoadFailure,ensureConversationLoaded,messageSendError,recoveredEvidence};
 })();

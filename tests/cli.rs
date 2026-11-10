@@ -214,10 +214,15 @@ fn stdio_metadata_is_browser_free_and_files_are_never_exposed() {
     assert_eq!(messages[0]["result"]["protocolVersion"], "2025-11-25");
     let value = &messages[1];
     assert_eq!(value["id"], 2);
-    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(value["result"]["tools"].as_array().unwrap().len(), 4);
     assert_eq!(value["result"]["tools"][0]["name"], "new_task");
     assert_eq!(value["result"]["tools"][1]["name"], "send_message");
     assert_eq!(value["result"]["tools"][2]["name"], "get_job_status");
+    assert_eq!(value["result"]["tools"][3]["name"], "pause_task");
+    assert_eq!(
+        value["result"]["tools"][0]["inputSchema"]["properties"]["reasoning_effort"]["enum"],
+        serde_json::json!(["", "Instant", "Medium", "High"])
+    );
     assert_eq!(
         value["result"]["tools"][0]["annotations"]["readOnlyHint"],
         true
@@ -234,5 +239,54 @@ fn stdio_metadata_is_browser_free_and_files_are_never_exposed() {
         messages[3]["result"]["structuredContent"]["outcome"],
         "unknown"
     );
+    assert!(!home.path().join("slingring.sock").exists());
+}
+
+#[test]
+fn invalid_write_request_ids_are_rejected_before_service_start() {
+    let home = tempfile::tempdir().unwrap();
+    for id in [
+        "unsafe\nline".to_string(),
+        "a".repeat(129),
+        "../path".into(),
+    ] {
+        cli(home.path())
+            .args(["new-task", "fixture", "--request-id", &id])
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("invalid request ID"))
+            .stderr(predicate::str::contains("Request ID:").not());
+        cli(home.path())
+            .args([
+                "send-message",
+                "https://chatgpt.com/c/fixture",
+                "fixture",
+                "--request-id",
+                &id,
+            ])
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("invalid request ID"));
+    }
+    assert!(!home.path().join("slingring.sock").exists());
+    assert!(!home.path().join("journal.json").exists());
+}
+
+#[test]
+fn cli_status_accepts_colon_and_128_character_recovery_keys() {
+    let home = tempfile::tempdir().unwrap();
+    let id = format!("cli:{}", "a".repeat(124));
+    let output = cli(home.path())
+        .args(["jobs", "--request-id", &id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["request_id"], id);
+    assert_eq!(value["outcome"], "unknown");
     assert!(!home.path().join("slingring.sock").exists());
 }

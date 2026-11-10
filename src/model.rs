@@ -28,6 +28,23 @@ pub struct SendMessage {
     pub image_paths: Vec<PathBuf>,
 }
 
+/// Stop only the current response in one exact conversation, using its UI.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PauseTask {
+    pub chatgpt_url: String,
+}
+
+impl PauseTask {
+    pub fn resolve(self) -> Result<Self> {
+        ensure!(
+            canonical_url(&self.chatgpt_url),
+            "chatgpt_url must be an exact https://chatgpt.com/c/<id> conversation URL without a query or fragment"
+        );
+        Ok(self)
+    }
+}
+
 /// Both operations share the same queue, browser owner and submission guard.
 /// A follow-up may request an effort explicitly; otherwise it leaves the
 /// existing conversation's setting alone. Local CLI callers may attach images;
@@ -36,6 +53,13 @@ pub struct SendMessage {
 pub enum Task {
     New(NewTask),
     Message(SendMessage),
+    Pause(PauseTask),
+}
+
+impl From<PauseTask> for Task {
+    fn from(task: PauseTask) -> Self {
+        Self::Pause(task)
+    }
 }
 
 impl From<NewTask> for Task {
@@ -50,7 +74,7 @@ impl From<SendMessage> for Task {
 }
 
 impl SendMessage {
-    pub fn resolve(mut self, _config: &crate::config::Config) -> Result<Self> {
+    pub fn resolve(mut self, config: &crate::config::Config) -> Result<Self> {
         ensure!(
             canonical_url(&self.chatgpt_url),
             "chatgpt_url must be an exact https://chatgpt.com/c/<id> conversation URL without a query or fragment"
@@ -61,6 +85,9 @@ impl SendMessage {
             Some(value) if !value.is_empty() => Some(effort(value)?),
             _ => None,
         };
+        if let Some(effort) = &self.reasoning_effort {
+            config.check_effort(effort)?;
+        }
         validate_images(&mut self.image_paths)?;
         Ok(self)
     }
@@ -71,36 +98,58 @@ impl Task {
         match self {
             Self::New(task) => task.resolve(config).map(Self::New),
             Self::Message(task) => task.resolve(config).map(Self::Message),
+            Self::Pause(task) => task.resolve().map(Self::Pause),
+        }
+    }
+    pub fn is_pause(&self) -> bool {
+        matches!(self, Self::Pause(_))
+    }
+    pub fn operation(&self) -> &'static str {
+        match self {
+            Self::New(_) => "new_task",
+            Self::Message(_) => "send_message",
+            Self::Pause(_) => "pause",
         }
     }
     pub fn prompt(&self) -> &str {
         match self {
             Self::New(task) => &task.prompt,
             Self::Message(task) => &task.message,
+            Self::Pause(_) => "",
         }
     }
     pub fn conversation_url(&self) -> Option<&str> {
         match self {
             Self::New(_) => None,
             Self::Message(task) => Some(&task.chatgpt_url),
+            Self::Pause(task) => Some(&task.chatgpt_url),
         }
     }
     pub fn reasoning_effort(&self) -> Option<&str> {
         match self {
             Self::New(task) => task.reasoning_effort.as_deref(),
             Self::Message(task) => task.reasoning_effort.as_deref(),
+            Self::Pause(_) => None,
         }
     }
     pub fn image_paths(&self) -> &[PathBuf] {
         match self {
             Self::New(task) => &task.image_paths,
             Self::Message(task) => &task.image_paths,
+            Self::Pause(_) => &[],
         }
     }
     pub fn fingerprint(&self, profile: &str) -> Result<String> {
         match self {
             // Preserve existing new_task receipts across an upgrade.
             Self::New(task) => task.fingerprint(profile),
+            Self::Pause(task) => {
+                let mut hash = Sha256::new();
+                hash.update(b"pause_task\0");
+                hash.update(serde_json::to_vec(task)?);
+                hash.update(profile.as_bytes());
+                Ok(format!("{:x}", hash.finalize()))
+            }
             Self::Message(task) => {
                 let mut hash = Sha256::new();
                 hash.update(b"send_message\0");
@@ -113,6 +162,10 @@ impl Task {
     }
     pub fn validate_result(&self, result: &TaskResult) -> Result<()> {
         result.validate()?;
+        ensure!(
+            self.is_pause() == result.pause_status.is_some(),
+            "operation result mismatch"
+        );
         if let Self::New(_) = self {
             ensure!(
                 self.reasoning_effort().is_none()
@@ -128,9 +181,27 @@ impl Task {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortVerification {
+    NotRequested,
+    Verified,
+    // Historical journal entries did not record the requested level.
+    #[default]
+    Unverified,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TaskResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_status: Option<String>,
+    #[serde(default)]
+    pub requested_effort: Option<String>,
+    #[serde(default)]
+    pub verified_effort: Option<String>,
+    #[serde(default)]
+    pub effort_verification: EffortVerification,
     #[serde(default)]
     pub job_id: String,
     pub url: String,
@@ -186,6 +257,9 @@ impl NewTask {
             Some(value) if !value.is_empty() => Some(effort(value)?),
             _ => config.default_effort.clone(),
         };
+        if let Some(effort) = &self.reasoning_effort {
+            config.check_effort(effort)?;
+        }
         validate_images(&mut self.image_paths)?;
         Ok(self)
     }
@@ -254,15 +328,38 @@ pub fn canonical_url(url: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 impl TaskResult {
+    pub fn record_effort(&mut self, requested: Option<&str>) {
+        self.requested_effort = requested.map(str::to_string);
+        self.verified_effort = self.reasoning_effort.clone();
+        self.effort_verification = match requested {
+            None => EffortVerification::NotRequested,
+            Some(value) if self.reasoning_effort.as_deref() == Some(value) => {
+                EffortVerification::Verified
+            }
+            Some(_) => EffortVerification::Unverified,
+        };
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             canonical_url(&self.url),
             "browser returned a noncanonical conversation URL"
         );
-        ensure!(
-            matches!(self.evidence.as_str(), "thinking" | "working" | "streaming"),
-            "browser returned invalid start evidence"
-        );
+        if let Some(status) = self.pause_status.as_deref() {
+            ensure!(
+                matches!(status, "stopped" | "already_idle")
+                    && matches!(
+                        self.evidence.as_str(),
+                        "completion_controls" | "stopped_thinking"
+                    )
+                    && self.reasoning_effort.is_none(),
+                "browser returned invalid pause evidence"
+            );
+        } else {
+            ensure!(
+                matches!(self.evidence.as_str(), "thinking" | "working" | "streaming"),
+                "browser returned invalid start evidence"
+            );
+        }
         if let Some(e) = &self.reasoning_effort {
             ensure!(effort(e)? == *e, "invalid verified effort");
         }

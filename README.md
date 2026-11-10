@@ -15,9 +15,9 @@ slingring new-task "Draft a deployment plan" --reasoning-effort High
 slingring send-message https://chatgpt.com/c/YOUR-CHAT-ID "Add a rollback checklist"
 ```
 
-The CLI also supports prompt files, images, and JSON output.
+The CLI also supports prompt files, images, and JSON output. Use `slingring pause-task CHATGPT_URL` to stop a response without sending a message. Recover pending or uncertain operations with `slingring jobs --request-id ID --json`, never by repeating a write.
 
-**MCP for remote agents.** Connect an always-on assistant or cloud agent to your private MCP URL. It can call `new_task`, `send_message`, and `get_job_status`. Remote requests pass through a relay in your own Cloudflare account to Slingring on your Mac.
+**MCP for remote agents.** Connect an always-on assistant or cloud agent to your private MCP URL. It can call `new_task`, `send_message`, `pause_task`, and `get_job_status`. Remote requests pass through a relay in your own Cloudflare account to Slingring on your Mac.
 
 Both interfaces use the same task queue and browser. Headless is the default; visible browser mode is available for debugging. Slingring returns a conversation URL, **not the generated answer**, and never automatically retries an uncertain submission.
 
@@ -29,7 +29,7 @@ Requires an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed i
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-The installer sets up the CLI, menu bar app, browser helper, and extension. Select your Chrome profile in **Slingring → Configure → Chrome Profile**, then send a task. No separate browser automation tools are required.
+The installer sets up the CLI, menu bar app, browser helper, and extension. Select your Chrome profile in **Slingring → Configure → Chrome Profile**, then select **Configure → Subscription** to match your Plus or Pro plan. Fresh installs use Plus with High reasoning; saved settings are preserved. No separate browser automation tools are required.
 
 Local CLI use does not need a relay. To delegate from remote agents, follow the one-time [remote setup guide](https://slingring.ashray.xyz/docs/remote).
 

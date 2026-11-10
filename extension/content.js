@@ -49,6 +49,14 @@
         (task.image_count && !dom.attachmentsUnchanged(task.attachments)))) throw Error('attachments_changed');
   }
   async function handle(message) {
+    if (message.action === "pause") {
+      if(task || preparing || submitted || !canonical(message.chatgpt_url))throw Error('invalid_pause_state');
+      preparing=true;
+      guardTarget(message.chatgpt_url);
+      const result=await dom.pauseTask(message.chatgpt_url,Math.min(message.deadline_ms || Date.now()+45000,Date.now()+45000));
+      guardTarget(message.chatgpt_url);
+      return {ok:true,url:message.chatgpt_url,...result};
+    }
     if (message.action === "prepare") {
       if (task || preparing || submitted) throw Error("duplicate_prepare");
       const target=message.chatgpt_url ?? null;

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(version, about = env!("CARGO_PKG_DESCRIPTION"))]
+#[command(version, about = env!("CARGO_PKG_DESCRIPTION"), after_help = "Examples:\n  slingring new-task 'Research this topic' --reasoning-effort high\n  slingring send-message https://chatgpt.com/c/ID 'Explore the second option'\n  slingring jobs --request-id REQUEST_ID --json\n\nSuccessful submissions return a conversation URL after activity begins, not a finished answer.\nReference: https://slingring.ashray.xyz/docs/command-reference")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -10,50 +10,79 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Start one ChatGPT chat, return its URL once real activity begins.
-    #[command(alias = "new_task")]
+    #[command(
+        alias = "new_task",
+        after_help = "Examples:\n  slingring new-task 'Research this topic'\n  slingring new-task --prompt-file task.txt --reasoning-effort high\n\nOmitted effort uses the saved default (High on fresh installs). Plus supports Instant, Medium and High; Pro also supports Extra High and Pro."
+    )]
     NewTask {
+        /// Prompt text; use --prompt-file or --stdin for longer input.
         prompt: Option<String>,
+        /// Read the prompt from FILE; use - for stdin. Choose exactly one input source.
         #[arg(long, conflicts_with_all = ["prompt", "stdin"])]
         prompt_file: Option<String>,
+        /// Read the prompt from stdin instead of a positional prompt or file.
         #[arg(long, conflicts_with = "prompt")]
         stdin: bool,
+        /// Instant, Medium, High, "Extra High" (xhigh), or Pro. Omit for the configured default.
         #[arg(long)]
         reasoning_effort: Option<String>,
         /// Attach a local image. Repeat for multiple images. CLI only.
         #[arg(long = "image")]
         images: Vec<std::path::PathBuf>,
-        /// Reuse this ID only to recover the SAME request, never another task.
+        /// Fresh stable key (1..128 ASCII letters/digits/_/-/:). Recover with jobs --request-id ID; never resend to poll.
         #[arg(long)]
         request_id: Option<String>,
+        /// Print structured submission metadata instead of URL-only stdout; recovery ID is on stderr.
         #[arg(long)]
         json: bool,
     },
     /// Follow up in an existing ChatGPT Chat conversation, optionally attaching local images.
-    #[command(alias = "send_message")]
+    #[command(
+        alias = "send_message",
+        after_help = "Example:\n  slingring send-message https://chatgpt.com/c/ID 'Explore the second option'\n\nOmitting --reasoning-effort preserves the chat setting, regardless of your saved default. An explicit effort is best-effort; an unavailable picker does not block a ready follow-up."
+    )]
     SendMessage {
         /// Exact https://chatgpt.com/c/ID conversation URL.
         chatgpt_url: String,
+        /// Follow-up text. Choose exactly one positional, file, or stdin input.
         message: Option<String>,
+        /// Read the message from FILE; use - for stdin.
         #[arg(long, conflicts_with_all = ["message", "stdin"])]
         message_file: Option<String>,
+        /// Read the message from stdin instead of a positional message or file.
         #[arg(long, conflicts_with = "message")]
         stdin: bool,
-        /// Optional reasoning level. Omit to keep this chat's current setting.
+        /// Instant, Medium, High, "Extra High" (xhigh), or Pro. Omit to preserve this chat; explicit changes are best-effort.
         #[arg(long)]
         reasoning_effort: Option<String>,
         /// Attach a local image. Repeat for multiple images. CLI only.
         #[arg(long = "image")]
         images: Vec<std::path::PathBuf>,
-        /// Reuse this ID only to recover the SAME message and attachments.
+        /// Fresh stable key (1..128 ASCII letters/digits/_/-/:). Recover with jobs --request-id ID; never resend to poll.
         #[arg(long)]
         request_id: Option<String>,
+        /// Print submission and effort-verification metadata; does not wait for a finished answer.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a running response in an exact ChatGPT conversation and verify the UI stopped.
+    #[command(
+        alias = "pause_task",
+        after_help = "Example:\n  slingring pause-task https://chatgpt.com/c/ID\n\nUses only the isolated browser and never extracts generated answers. If the outcome is uncertain, inspect the conversation before retrying."
+    )]
+    PauseTask {
+        /// Exact https://chatgpt.com/c/ID conversation URL.
+        chatgpt_url: String,
+        /// Print a JSON result.
         #[arg(long)]
         json: bool,
     },
     /// Configure a Chrome profile and install the bundled extension assets.
     Setup {
+        /// Chrome profile directory or unique display name; inspect with profile list.
         #[arg(long)]
         profile: Option<String>,
+        /// New-chat default: Instant, Medium, High, "Extra High" (xhigh), or Pro. Omit to preserve existing settings.
         #[arg(long)]
         default_effort: Option<String>,
     },
@@ -67,25 +96,31 @@ pub enum Command {
         #[command(subcommand)]
         action: BrowserAction,
     },
-    /// Inspect or persist settings, including browser-mode headed|headless.
+    /// Inspect or persist subscription, new-chat defaults and browser settings.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
-    /// Read status without starting a daemon or browser.
+    /// Read status as JSON without starting a daemon or browser.
     Status {
+        /// Compatibility flag: output is always JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Read the bounded task journal, without prompts or assistant output.
-    #[command(alias = "queue")]
+    /// Read the bounded task journal as JSON, without prompts or assistant output.
+    #[command(
+        alias = "queue",
+        after_help = "Example:\n  slingring jobs --request-id REQUEST_ID\n\nRead-only recovery: inspect uncertain submissions in ChatGPT before retrying. Unknown or evicted IDs do not prove nothing was sent. Never automatically replay a request."
+    )]
     Jobs {
+        /// Compatibility flag: output is always JSON.
         #[arg(long)]
         json: bool,
         /// Inspect a single recorded request without submitting anything.
         #[arg(long)]
         request_id: Option<String>,
     },
+    /// Control the local service process, independently of login settings.
     Service {
         #[command(subcommand)]
         action: ServiceAction,
@@ -97,9 +132,11 @@ pub enum Command {
     },
     /// Run the event-driven local service in the foreground.
     Daemon {
+        /// Exit after local work drains instead of keeping the service available.
         #[arg(long)]
         ephemeral: bool,
     },
+    /// Configure or toggle the outbound remote MCP connection.
     Remote {
         #[command(subcommand)]
         action: RemoteAction,
@@ -121,6 +158,7 @@ pub enum Command {
     },
     /// Install the latest release, or check without installing.
     Upgrade {
+        /// Check release availability without installing or changing the service.
         #[arg(long)]
         check: bool,
         #[arg(long, hide = true, conflicts_with = "check")]
@@ -130,30 +168,46 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum AutoUpdateAction {
+    /// Enable the independently scheduled daily upgrade check.
     On,
+    /// Disable the independently scheduled daily upgrade check.
     Off,
+    /// Inspect the daily upgrade schedule and current registration.
     Status,
 }
 #[derive(Debug, Subcommand)]
 pub enum ConfigAction {
+    /// Print redacted configuration as JSON (also the default without --json).
     #[command(alias = "get")]
     Show {
+        /// Compatibility flag: output is always JSON.
         #[arg(long)]
         json: bool,
     },
+    /// Persist a setting. Subscription is your declared plan, not a billing change.
+    #[command(
+        after_help = "Examples:\n  slingring config set subscription pro\n  slingring config set default-effort high\n  slingring config set browser-mode headless\n\nPlus supports Instant, Medium and High. Pro also supports Extra High and Pro. Switching to Plus requires a compatible saved default first. Default effort applies only to new chats; site preserves ChatGPT's setting."
+    )]
     Set {
-        /// Setting name, such as browser-mode or default-effort.
+        /// subscription, default-effort, browser-mode, profile, browser-binary, start-timeout-secs or heartbeat-secs.
         key: String,
+        /// subscription: plus|pro; default-effort: a mode or site/default reset; browser-mode: headed|headless; timeouts: seconds.
         value: String,
     },
 }
 #[derive(Debug, Subcommand)]
 pub enum ServiceAction {
+    /// Start the local process now; does not change future login startup preferences.
     Start,
+    /// Stop the local process, not already-running ChatGPT responses. Use pause-task for those.
     Stop,
+    /// Stop and start the local process now; does not replay interrupted jobs.
     Restart,
+    /// Install the launchd service, stopping the existing process first.
     Install,
+    /// Stop and remove the launchd service registration.
     Uninstall,
+    /// Print process/remote status as JSON without starting a browser.
     Status,
 }
 #[derive(Debug, Subcommand)]
@@ -187,6 +241,7 @@ pub enum LoginToggleAction {
 pub enum ProfileAction {
     /// List Chrome profiles without opening Chrome.
     List {
+        /// Print structured profile rows instead of the readable list.
         #[arg(long)]
         json: bool,
     },
@@ -202,17 +257,24 @@ pub enum BrowserAction {
 }
 #[derive(Debug, Subcommand)]
 pub enum RemoteAction {
+    /// Save the relay endpoint and credentials without enabling remote access.
     Configure {
+        /// HTTPS/WSS relay origin; Slingring uses its /device WebSocket endpoint.
         #[arg(long)]
         url: String,
+        /// Read a raw device token or JSON {device_token,mcp_url} from stdin; never place tokens in arguments.
         #[arg(long, alias = "device-token-stdin", required = true)]
         token_stdin: bool,
+        /// Secret-bearing MCP connection URL, used with raw-token stdin; JSON credentials carry their own mcp_url.
         #[arg(long)]
         mcp_url: Option<String>,
     },
+    /// Enable outbound remote MCP and start the local service.
     On,
+    /// Disable outbound remote MCP; the idle service exits when work drains.
     #[command(alias = "disable")]
     Off,
+    /// Print remote/process status as JSON without launching a browser.
     Status,
     /// Print the secret-bearing MCP connection URL. Do not share publicly.
     Url,

@@ -104,6 +104,19 @@ describe('HTTP framing', () => {
     expect(response.headers.get('X-Slingring-Request-Id')).toBe('chosen-36');
     expect(await response.json()).toEqual({ jsonrpc: '2.0', id: 3, result: { content: [] } });
   });
+  it.each(['new_task', 'send_message', 'pause_task', 'get_job_status'])('preserves CLI-compatible recovery IDs for %s', async (name) => {
+    const id = 'cli:' + 'x'.repeat(124);
+    const body = {jsonrpc:'2.0',id:4,method:'tools/call',params:{name,arguments:{request_id:id}}};
+    const call = relay.fetch(req(body, {'Idempotency-Key':id})); await sent();
+    const frame = JSON.parse(socket.frames[0]);
+    expect(frame.idempotency_key).toBe(id);
+    expect(frame.request).toEqual(body);
+    result({jsonrpc:'2.0',id:4,result:{content:[]}});
+    expect((await call).headers.get('X-Slingring-Request-Id')).toBe(id);
+  });
+  it('rejects recovery keys longer than 128 characters', async () => {
+    expect((await relay.fetch(req({}, {'Idempotency-Key':'a'.repeat(129)}))).status).toBe(400);
+  });
   it('acknowledges notifications only after daemon confirms delivery', async () => {
     const promise = relay.fetch(req({ jsonrpc: '2.0', method: 'notifications/initialized' }));
     await sent(); result(null);

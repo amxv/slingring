@@ -367,6 +367,10 @@ async fn validated_success_is_immediate_even_when_native_and_cdp_cleanup_stall()
             Some(peer)
         };
         let expected = TaskResult {
+            pause_status: None,
+            requested_effort: None,
+            verified_effort: None,
+            effort_verification: Default::default(),
             job_id: "proved".into(),
             url: CHAT.into(),
             reasoning_effort: Some("Medium".into()),

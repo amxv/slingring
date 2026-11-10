@@ -38,3 +38,19 @@ test('submission re-queries a React-replaced send button after the native acknow
   assert.equal(result.ok,true);assert.equal(result.evidence,'thinking');assert.equal(submitted,1);
   page.window.close();
 });
+
+test('pause dispatch never calls submission, effort, composer-text, or recovery helpers',async()=>{
+ const url='https://chatgpt.com/c/pause-content';
+ const p=new JSDOM('<main></main>',{url,runScripts:'outside-only'}),w=p.window;
+ let listener,calls=0;
+ w.__slingringDOM=new Proxy({canonicalUrl:()=>url,pauseTask:async target=>{
+  assert.equal(target,url);calls++;return {status:'already_idle',evidence:'completion_controls'};
+ }},{get:(object,key)=>{if(!(key in object))throw Error(`forbidden_helper_${String(key)}`);return object[key];}});
+ w.chrome={runtime:{id:'test-extension',onMessage:{addListener:fn=>{listener=fn;}},sendMessage:async()=>{}}};
+ w.eval(source);
+ const send=message=>new Promise(resolve=>listener({kind:'slingring',id:'pause-job',...message},
+  {id:'test-extension',url:'chrome-extension://test-extension/bridge.html'},resolve));
+ const result=await send({action:'pause',chatgpt_url:url});
+ assert.equal(result.ok,true);assert.equal(result.status,'already_idle');assert.equal(calls,1);
+ const repeated=await send({action:'pause',chatgpt_url:url});assert.equal(repeated.ok,false);assert.equal(calls,1);p.window.close();
+});

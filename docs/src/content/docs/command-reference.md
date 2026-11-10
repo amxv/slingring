@@ -5,7 +5,7 @@ order: 20
 category: Reference
 ---
 
-Slingring has two ways to submit messages to ChatGPT: a macOS command-line interface and three MCP tools for local or remote agents. Both use the same configured Chrome account and serial task queue.
+Slingring has two ways to submit messages to ChatGPT: a macOS command-line interface and four MCP tools for local or remote agents. Both use the same configured Chrome account and serial task queue.
 
 **A successful submission means ChatGPT has started thinking, working, or streaming a response.** Slingring returns the conversation URL, not the answer, and does not wait for generation to finish.
 
@@ -21,6 +21,8 @@ slingring new-task [PROMPT] [--prompt-file FILE | --stdin]
   [--reasoning-effort LEVEL] [--image PATH]... [--request-id ID] [--json]
 slingring send-message CHATGPT_URL [MESSAGE] [--message-file FILE | --stdin]
   [--reasoning-effort LEVEL] [--image PATH]... [--request-id ID] [--json]
+
+slingring pause-task CHATGPT_URL [--json]
 
 slingring config show [--json]
 slingring config set KEY VALUE
@@ -54,7 +56,7 @@ slingring new-task "Review this architecture and identify the main risks"
 
 # Longer brief with an explicit reasoning level
 slingring new-task --prompt-file ./architecture.md \
-  --reasoning-effort "Extra High" \
+  --reasoning-effort High \
   --request-id architecture-review-001 \
   --json
 
@@ -72,7 +74,7 @@ slingring new-task "Compare these two designs" \
   --image ./design-b.png
 ```
 
-New conversations are created in **Chat**, not Work. When `--reasoning-effort` is omitted or blank, Slingring uses the configured default, initially `Extra High`. You can select `Instant`, `Medium`, `High`, `Extra High`, or `Pro` when available to your account.
+New conversations are created in **Chat**, not Work. When `--reasoning-effort` is omitted or blank, Slingring uses the configured default, initially `High` on a fresh Plus configuration. Plus allows `Instant`, `Medium`, and `High`; Pro also allows `Extra High` and `Pro`. Saved defaults are preserved. Set your subscription tier before requesting a Pro-only level.
 
 ### Follow up in an existing conversation
 
@@ -97,7 +99,7 @@ cat follow-up.md | slingring send-message "$CHAT_URL" --stdin
 
 `--message-file -` also reads standard input. As with new tasks, provide exactly one message source.
 
-Omitting `--reasoning-effort` on a follow-up **leaves the existing chat's reasoning setting alone**. An explicit level requests a best-effort change; if the model picker is unavailable, Slingring may still send the message without verifying that change.
+Omitting `--reasoning-effort` on a follow-up **leaves the existing chat's reasoning setting alone**. An explicit level outside the configured subscription tier is rejected. A tier-allowed explicit level requests a best-effort change; if the model picker is unavailable, Slingring may still send the message without verifying that change.
 
 Before sending, Slingring waits for the conversation to become ready (voice control visible, no active stop control), protects existing drafts, and checks that the target URL has not changed. It does not interrupt a response or automatically retry an uncertain send.
 
@@ -112,7 +114,7 @@ Before sending, Slingring waits for the conversation to become ready (voice cont
 | `--request-id ID` | Both | Assign a stable identifier to this logical submission for later status recovery. |
 | `--json` | Both | Print the confirmed result as JSON instead of only the conversation URL. |
 
-CLI write commands wait for a confirmed start or an error; they do not return the MCP's five-second pending receipt. By default, a successful plain-text command prints only the conversation URL.
+CLI submission commands print a recovery request ID to stderr early and wait for a confirmed start or an error; they do not return the MCP's five-second pending receipt. By default, a successful plain-text command prints only the conversation URL.
 
 A representative `--json` result:
 
@@ -120,12 +122,27 @@ A representative `--json` result:
 {
   "job_id": "architecture-review-001",
   "url": "https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef",
-  "reasoning_effort": "Extra High",
+  "reasoning_effort": "High",
+  "requested_effort": "High",
+  "verified_effort": "High",
+  "effort_verification": "verified",
   "evidence": "thinking"
 }
 ```
 
 `evidence` is one of `thinking`, `working`, or `streaming`. It confirms new response activity, **not** completion. For a follow-up the URL is the existing conversation's URL, and `reasoning_effort` may be `null`.
+
+The structured `requested_effort`, `verified_effort`, and `effort_verification` fields distinguish requested settings from observed selections. Do not treat a requested value as proof of verification. Legacy records without verification metadata remain unverified.
+
+### Pause an existing response
+
+```bash
+slingring pause-task https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef --json
+```
+
+Pause uses the same exact conversation URL rule and serial queue. It never sends a new message. A confirmed result reports `pause_status: stopped` if Slingring clicked Stop, or `pause_status: already_idle` if it observed an idle turn. Evidence must remain stable: either latest-turn completion controls (`evidence: completion_controls`), or the latest turn’s dedicated exact “Stopped thinking” UI status with adjacent Dictate/Start Voice controls and no Stop/active signals (`evidence: stopped_thinking`). Missing Stop or voice controls alone cannot prove completion. Stopping during thinking without either positive indicator remains uncertain, even when no response or footer appears. No generated answer is retrieved.
+
+The CLI waits for the result and prints its recovery ID to stderr early. Recover through `jobs --request-id ID --json`; do not repeat `pause-task` to poll. The pause command does not accept `--request-id`.
 
 ## Configure and operate Slingring
 
@@ -152,7 +169,8 @@ slingring browser install
 
 ```bash
 slingring config show --json
-slingring config set default-effort "Extra High"
+slingring config set subscription plus
+slingring config set default-effort High
 slingring config set browser-mode headed
 slingring config set browser-mode headless
 slingring config set timeout-secs 180
@@ -160,13 +178,16 @@ slingring config set timeout-secs 180
 
 | `config set` key | Values and meaning |
 | --- | --- |
-| `default-effort` | `Instant`, `Medium`, `High`, `Extra High`, `Pro`; `site` or `default` clears the override. |
+| `subscription` | `plus` (fresh default) or `pro`; match your account. |
+| `default-effort` | Plus: `Instant`, `Medium`, `High`. Pro also allows `Extra High`, `Pro`. `site` or `default` clears the override. |
 | `profile` | Selected Chrome profile directory. Prefer `profile use` for validated selection. |
 | `browser-binary` | Browser helper executable; an explicit absolute override takes precedence over the managed helper. |
 | `browser-mode` | `headless` (default) or `headed` (visible browser for debugging). |
 | `browser-headed` | Equivalent boolean setting: `true` or `false`. |
 | `timeout-secs` | Task-start budget, 1 to 3,600 seconds; default 180. `start-timeout-secs` is an alias. |
 | `heartbeat-secs` | Remote connection heartbeat, 30 to 300 seconds; default 60. |
+
+The menu wraps these settings through **Configure → Subscription** and tier-filtered **Default Reasoning** choices. Saved defaults are preserved; legacy Extra High/Pro defaults infer Pro when no tier was saved. The private `subscription.json` sidecar preserves compatibility with older installed services, which do not gain new controls until upgraded.
 
 `default-reasoning-effort` and `chrome-profile` are also accepted key aliases; underscores may be used in place of hyphens.
 
@@ -188,6 +209,8 @@ slingring service restart
 slingring service stop
 slingring service uninstall
 ```
+
+`status`, `jobs`, and `config show` always emit JSON. Their `--json` flags are retained as compatibility flags and do not change the format.
 
 `status` distinguishes active/queued work from historical `latest_finished_job` and `latest_started_job` records. A historical `started` status confirms that ChatGPT began responding; it does not mean Slingring is still running that task. If another process owns the queue but cannot answer, `status_available: false` warns that saved history is not a live queue snapshot.
 
@@ -247,12 +270,13 @@ slingring auto-update off
 
 ## MCP tools
 
-Start the local **stdio** MCP server with `slingring mcp`, or connect a remote MCP client to the private URL from `slingring remote url`. The local server uses the official Rust MCP SDK and requires a standard initialization handshake. Both surfaces expose the same three text-only tools.
+Start the local **stdio** MCP server with `slingring mcp`, or connect a remote MCP client to the private URL from `slingring remote url`. The local server uses the official Rust MCP SDK and requires a standard initialization handshake. Both surfaces expose the same four text-only tools.
 
 | Tool | Required arguments | Optional arguments | Effect |
 | --- | --- | --- | --- |
 | `new_task` | `prompt` | `reasoning_effort`, `request_id` | Submit a new ChatGPT Chat conversation. |
 | `send_message` | `chatgpt_url`, `message` | `reasoning_effort`, `request_id` | Submit a follow-up to an existing conversation. |
+| `pause_task` | `chatgpt_url` | None | Stop an existing response without sending a message. |
 | `get_job_status` | `request_id` | None | Read recorded status; never send or retry. |
 
 All tools reject unrecognized arguments. MCP tools do not accept image paths, image bytes, or local file attachments. Use the CLI for image inputs.
@@ -270,7 +294,7 @@ All tools reject unrecognized arguments. MCP tools do not accept image paths, im
 }
 ```
 
-`prompt` must contain non-whitespace text (up to 128 KiB). `reasoning_effort` accepts `Instant`, `Medium`, `High`, `Extra High`, `Pro`, or an empty string. Omitted or empty effort uses the Mac's configured default.
+`prompt` must contain non-whitespace text (up to 128 KiB). Live `reasoning_effort` enums reflect the configured subscription: Plus exposes `Instant`, `Medium`, and `High`; Pro additionally exposes `Extra High` and `Pro`. An empty string is also accepted. Explicit tier-unavailable values are rejected. Omitted or empty effort uses the Mac's configured default.
 
 ### `send_message`
 
@@ -287,6 +311,21 @@ All tools reject unrecognized arguments. MCP tools do not accept image paths, im
 
 `chatgpt_url` follows the exact conversation URL rule described above. `message` is nonblank and limited to 128 KiB. Omitting `reasoning_effort` leaves the chat's current setting untouched; supplying it asks for a best-effort change. This tool opens the exact conversation directly without navigating through the homepage.
 
+### `pause_task`
+
+```json
+{
+  "name": "pause_task",
+  "arguments": {
+    "chatgpt_url": "https://chatgpt.com/c/01234567-89ab-cdef-0123-456789abcdef"
+  }
+}
+```
+
+Exactly one argument is accepted: `chatgpt_url`. Do not add `request_id`, message text, or other fields. The URL must satisfy the same canonical conversation rule. The tool shares the serial queue and does not submit text or retrieve generated content. Confirmed pauses use `pause_status: stopped` after clicking Stop or `already_idle` when observing an idle turn, with stable `completion_controls` or `stopped_thinking` evidence as described above; ambiguous UI returns uncertainty.
+
+If still pending after the five-second post-admission result window, the receipt supplies a generated `request_id`. Query `get_job_status` with that ID. Never repeat the pause call to poll, even if a caller timed out before receiving its recovery ID.
+
 ### `get_job_status`
 
 ```json
@@ -298,13 +337,13 @@ All tools reject unrecognized arguments. MCP tools do not accept image paths, im
 }
 ```
 
-This lookup reads only locally recorded metadata. It does not start a browser, resubmit the message, or extend the job's lifetime. The `request_id` is required and must be 1 to 100 characters from `A-Z`, `a-z`, `0-9`, `_`, or `-`.
+This lookup reads only locally recorded metadata. It does not start a browser, resubmit the message, or extend the job's lifetime. The `request_id` is required and must be 1 to 128 ASCII characters from `A-Z`, `a-z`, `0-9`, `_`, `-`, or `:`. The same rule applies to CLI IDs, submission-tool IDs, and remote idempotency headers.
 
 ## Results and safe recovery
 
 ### Confirmed result or pending receipt
 
-For MCP write calls, Slingring waits **up to five seconds after queue admission**. If new ChatGPT activity has been confirmed, the result includes a URL and structured fields such as `job_id`, `request_id`, `accepted: true`, `outcome: submitted`, `reasoning_effort`, and `evidence`.
+For MCP write calls, Slingring waits **up to five seconds after queue admission**. Pause confirmation is described above. For new-task and follow-up submissions, if new ChatGPT activity has been confirmed, the result includes a URL and structured fields such as `job_id`, `request_id`, `accepted: true`, `outcome: submitted`, `reasoning_effort`, and `evidence`.
 
 If the job is still starting, the call instead returns a non-error **accepted receipt**. Representative fields (abbreviated):
 
@@ -324,7 +363,7 @@ If the job is still starting, the call instead returns a non-error **accepted re
 
 **Accepted does not mean submitted.** The task keeps running in memory after the MCP call returns or the caller disconnects. Inspect it with `get_job_status` using the original request ID.
 
-The status lookup returns an `outcome` and, when recorded, job metadata, a phase, elapsed time, and diagnostic guidance. These are the possible recovery outcomes:
+The status lookup returns an `outcome` and, when recorded, job metadata, a phase, elapsed time, and diagnostic guidance. For message submissions, these are the possible recovery outcomes. For pauses, inspect the operation and `pause_status`/`evidence` metadata; a pause never sends a message:
 
 | Outcome | Meaning | What to do |
 | --- | --- | --- |
@@ -351,7 +390,7 @@ A shortened example of a successful status lookup:
 
 ### Request IDs and idempotency
 
-**Choose a unique `request_id` before each logical write and retain it.** Otherwise, a client timeout may leave you without a reliable lookup key. IDs are bound to the operation, selected profile, and submitted message/attachment inputs. Reusing an ID with different inputs is rejected.
+**Choose a unique `request_id` before each logical new-task or follow-up write and retain it.** Otherwise, a client timeout may leave you without a reliable lookup key. Pause has a one-argument MCP contract and generates its own recovery ID instead. IDs are bound to the operation, selected profile, and submitted message/attachment inputs. Reusing an ID with different inputs is rejected.
 
 For raw remote HTTP clients, `Idempotency-Key` is the equivalent request header. If the header and the tool's `request_id` are both present, they must match. The relay may echo `X-Slingring-Request-Id` in a response, but a caller that disconnects before a response cannot depend on that header.
 
@@ -367,7 +406,7 @@ Queued jobs left by a crash are classified as not submitted; interrupted starts 
 
 The local stdio server uses the official `rmcp` SDK; the remote relay supports MCP initialization, ping, tool discovery, and tool calls. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`. Remote Streamable HTTP returns JSON to POST requests; GET and DELETE are not implemented.
 
-Tool metadata advertises `readOnlyHint: true` and `openWorldHint: false`. These are client-facing hints, **not permissions**. `new_task` and `send_message` still send messages using your ChatGPT account. Treat MCP access as permission to create and modify conversations; `get_job_status` is the only read-only tool.
+Tool metadata advertises `readOnlyHint: true` and `openWorldHint: false`. These are client-facing hints, **not permissions**. `new_task` and `send_message` still send messages using your ChatGPT account, and `pause_task` can stop a response. Treat MCP access as permission to create and modify conversations; `get_job_status` is the only read-only tool.
 
 ## Limits and operational guarantees
 
@@ -380,7 +419,7 @@ Tool metadata advertises `readOnlyHint: true` and `openWorldHint: false`. These 
 | Default browser-start budget | **180 seconds**, including follow-up readiness. Local queue waiting is excluded. |
 | MCP receipt window | **5 seconds** after admission, then an accepted receipt if still in progress. |
 | Remote deadlines | **230-second** Mac-side job deadline (including queue wait) and **240-second** relay HTTP safety limit; the browser budget may be shorter. |
-| Conversation output | URL and submission evidence only, **never generated answer text**. |
+| Conversation output | URL and submission or pause evidence only, **never generated answer text**. |
 
 Jobs are serialized, but Slingring cannot lock a ChatGPT conversation against a human or another client editing it. A follow-up waiting for a busy conversation can delay later queued tasks. A client-side or network timeout does not cancel a job already accepted by MCP.
 

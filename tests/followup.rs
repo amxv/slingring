@@ -67,7 +67,10 @@ fn followup_tool_keeps_strict_fields_plus_explicit_recovery_id() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["new_task", "send_message", "get_job_status"]);
+    assert_eq!(
+        names,
+        ["new_task", "send_message", "get_job_status", "pause_task"]
+    );
 
     for field in [
         "prompt",
@@ -174,6 +177,7 @@ fn message_limits_and_omitted_effort_leave_existing_chat_unchanged() -> Result<(
     );
     let config = Config {
         default_effort: Some("Pro".into()),
+        subscription: slingring::config::Subscription::Pro,
         ..Config::default()
     };
     let task = Task::from(message("  Keep literal whitespace.\n")).resolve(&config)?;
@@ -188,6 +192,7 @@ fn message_limits_and_omitted_effort_leave_existing_chat_unchanged() -> Result<(
 fn explicit_followup_effort_is_opt_in_and_part_of_idempotency() -> Result<()> {
     let config = Config {
         default_effort: Some("Pro".into()),
+        subscription: slingring::config::Subscription::Pro,
         ..Config::default()
     };
     let plain = Task::from(message("one follow-up")).resolve(&config)?;
@@ -206,6 +211,10 @@ fn explicit_followup_effort_is_opt_in_and_part_of_idempotency() -> Result<()> {
     // Follow-up effort is best-effort. A missing picker must not invalidate a
     // confirmed URL and fresh activity *after* the message was submitted.
     chosen.validate_result(&TaskResult {
+        pause_status: None,
+        requested_effort: None,
+        verified_effort: None,
+        effort_verification: Default::default(),
         job_id: "chosen".into(),
         url: CHAT.into(),
         reasoning_effort: None,
@@ -263,6 +272,10 @@ fn text_only_followup_serialization_remains_backward_compatible() -> Result<()> 
 fn result_must_belong_to_requested_chat_and_fingerprints_bind_every_input() -> Result<()> {
     let task = Task::from(message("same text")).resolve(&Config::default())?;
     let mut result = TaskResult {
+        pause_status: None,
+        requested_effort: None,
+        verified_effort: None,
+        effort_verification: Default::default(),
         job_id: "followup".into(),
         url: CHAT.into(),
         reasoning_effort: Some("Extra High".into()),
@@ -369,6 +382,10 @@ impl Backend for Mock {
                 }
                 .into()),
                 Finish::Started | Finish::WrongConversation => Ok(TaskResult {
+                    pause_status: None,
+                    requested_effort: None,
+                    verified_effort: None,
+                    effort_verification: Default::default(),
                     job_id: id.into(),
                     url: if matches!(self.finish, Finish::WrongConversation) {
                         "https://chatgpt.com/c/wrong-chat".into()
@@ -485,7 +502,7 @@ async fn creation_and_followups_share_serial_queue_idempotency_and_private_metad
             Seen {
                 id: "creation".into(),
                 target: None,
-                requested_effort: Some("Extra High".into())
+                requested_effort: Some("High".into())
             },
             Seen {
                 id: "followup".into(),

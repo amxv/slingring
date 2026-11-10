@@ -3,7 +3,7 @@ use crate::{
     config::{self, Config},
     daemon::{self, Request},
     login,
-    model::{MAX_PROMPT, NewTask, SendMessage},
+    model::{MAX_PROMPT, NewTask, PauseTask, SendMessage},
     service,
 };
 use anyhow::{Context, Result, ensure};
@@ -43,12 +43,31 @@ async fn submit_local(
     json: bool,
     remote: bool,
 ) -> Result<()> {
+    ensure!(
+        crate::queue::valid_job_id(&id),
+        "invalid request ID: expected 1..128 ASCII letters, digits, underscore, hyphen or colon"
+    );
+    eprintln!(
+        "Request ID: {id}. Recover with: slingring jobs --request-id {id}; do not resubmit to poll."
+    );
     service::start(root, !remote).await?;
     match daemon::call(root, &request).await {
         Ok(value) => {
+            if value["effort_verification"] == "unverified" && value["requested_effort"].is_string()
+            {
+                eprintln!(
+                    "Warning: the requested reasoning effort was not verified. The follow-up was submitted; inspect the conversation setting rather than resubmitting."
+                );
+            }
             if json {
                 output(value)
             } else {
+                if let Some(status) = value["pause_status"].as_str() {
+                    eprintln!(
+                        "Pause verified: {status} ({}). No generated response was read.",
+                        value["evidence"].as_str().unwrap_or("UI evidence")
+                    );
+                }
                 println!("{}", value["url"].as_str().context("missing task URL")?);
                 Ok(())
             }
@@ -176,6 +195,22 @@ pub async fn run(command: Command) -> Result<()> {
             )
             .await
         }
+        Command::PauseTask { chatgpt_url, json } => {
+            let task = PauseTask { chatgpt_url }.resolve()?;
+            let config = Config::load(&root)?;
+            let id = uuid::Uuid::new_v4().to_string();
+            submit_local(
+                &root,
+                Request::Pause {
+                    id: id.clone(),
+                    task,
+                },
+                id,
+                json,
+                config.remote_enabled,
+            )
+            .await
+        }
         Command::Setup {
             profile,
             default_effort,
@@ -195,6 +230,7 @@ pub async fn run(command: Command) -> Result<()> {
             }
             if let Some(effort) = default_effort {
                 config.default_effort = Some(crate::model::effort(&effort)?);
+                config.check_effort(config.default_effort.as_deref().unwrap())?;
             }
             config.browser_binary = crate::dependencies::resolve(&root, &config.browser_binary)?
                 .to_string_lossy()
@@ -272,8 +308,18 @@ pub async fn run(command: Command) -> Result<()> {
                             {
                                 None
                             } else {
-                                Some(crate::model::effort(&value)?)
+                                let effort = crate::model::effort(&value)?;
+                                config.check_effort(&effort)?;
+                                Some(effort)
                             };
+                        }
+                        "subscription" => {
+                            config.set_subscription(
+                                &root,
+                                crate::config::Subscription::parse(&value)?,
+                            )?;
+                            reload(&root).await?;
+                            return output(json!({"saved":true,"config":config.redacted()}));
                         }
                         "profile" | "chrome-profile" => config.profile = value,
                         "browser-binary" => config.browser_binary = value,

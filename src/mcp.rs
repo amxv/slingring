@@ -1,7 +1,7 @@
 //! Stateless JSON-RPC MCP. Image paths are deliberately absent at this boundary.
 use crate::{
     config::Config,
-    model::{NewTask, SendMessage, Task},
+    model::{NewTask, PauseTask, SendMessage, Task},
     queue::{self, Queue},
 };
 use serde_json::{Value, json};
@@ -21,40 +21,64 @@ fn result(id: Value, result: Value) -> Value {
 pub fn tool() -> Value {
     json!({"name":"new_task","description":"Submit a new ChatGPT Chat task once. Within about five seconds of admission, return either a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue after this call returns; use get_job_status(request_id) for the outcome, never submit again to poll. Provide a fresh unique request_id BEFORE sending so a caller timeout cannot lose the recovery key. Never automatically retry uncertain submissions. Omitted effort uses the configured default.",
         "inputSchema":{"type":"object","properties":{
-            "prompt":{"type":"string","minLength":1,"maxLength":131072},
-            "reasoning_effort":{"type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]},
+            "prompt":{"description":"Task instructions to submit once in a new ChatGPT Chat conversation. Generated answers are never returned.","type":"string","minLength":1,"maxLength":131072},
+            "reasoning_effort":{"description":"Requested effort. Omit or use an empty string to use the configured default; new chats require verified selection.","type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]},
             "request_id":request_id_schema()},
             "required":["prompt"],"additionalProperties":false},
+        "outputSchema":output_schema(),
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
 }
 pub fn message_tool() -> Value {
     json!({"name":"send_message","description":"Submit a follow-up once to an exact existing ChatGPT Chat URL, without visiting the homepage. Optional reasoning_effort selects Instant, Medium, High, Extra High or Pro on a best-effort basis. If omitted, leave the chat's reasoning setting untouched: no selector reads or changes. A missing/rehydrating effort UI must not block submission; a requested level may remain unverified if unavailable, but this never changes the conversation target. Within about five seconds of admission, return either a confirmed activity URL or an accepted in_progress receipt. Accepted jobs continue after this call returns; use get_job_status(request_id), never resubmit to poll. Supply a fresh unique request_id before sending for timeout recovery. Wait for idle voice readiness, do not interrupt a response and never automatically retry uncertain submissions.",
         "inputSchema":{"type":"object","properties":{
-            "chatgpt_url":{"type":"string","minLength":23,"maxLength":150,
+            "chatgpt_url":{"description":"Exact canonical existing conversation URL, with no query, fragment or trailing slash.","type":"string","minLength":23,"maxLength":150,
                 "pattern":"^https://chatgpt\\.com/c/[A-Za-z0-9-]{1,128}$"},
-            "message":{"type":"string","minLength":1,"maxLength":131072},
-            "reasoning_effort":{"type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]},
+            "message":{"description":"Follow-up text to submit once to the exact existing conversation.","type":"string","minLength":1,"maxLength":131072},
+            "reasoning_effort":{"description":"Optional best-effort selection; omit or use an empty string to leave the current setting untouched. Check requested_effort, verified_effort and effort_verification in the result.","type":"string","enum":["","Instant","Medium","High","Extra High","Pro"]},
             "request_id":request_id_schema()},
             "required":["chatgpt_url","message"],"additionalProperties":false},
+        "outputSchema":output_schema(),
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
 }
 fn request_id_schema() -> Value {
-    json!({"type":"string","minLength":1,"maxLength":100,"pattern":"^[A-Za-z0-9_-]+$"})
+    json!({"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_:-]+$","description":"Stable recovery key: 1..128 ASCII letters, digits, underscore, hyphen or colon. Choose a fresh unique value before each logical write; reuse it only for get_job_status, never resubmit to poll."})
 }
 pub fn status_tool() -> Value {
     json!({"name":"get_job_status","description":"Read the Mac's local task journal without opening a browser or submitting anything. Pass the request_id you supplied with new_task/send_message or the Idempotency-Key HTTP header. A missing/expired record is UNKNOWN, not proof that nothing was submitted. Never blindly retry an uncertain job.",
         "inputSchema":{"type":"object","properties":{"request_id":request_id_schema()},"required":["request_id"],"additionalProperties":false},
+        "outputSchema":output_schema(),
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}})
 }
 pub fn tools() -> Vec<Value> {
-    vec![tool(), message_tool(), status_tool()]
+    vec![tool(), message_tool(), status_tool(), pause_tool()]
+}
+pub fn pause_tool() -> Value {
+    json!({"name":"pause_task","description":"Attempt to stop the current response in one exact ChatGPT conversation using its UI. Verify idle using stable completion controls on the latest assistant turn, or its exact Stopped thinking UI status with adjacent Dictate and Voice controls. Missing Stop or a voice icon alone never proves completion. No generated response text is read or returned. Returns stopped or already_idle when verified, otherwise explicit uncertainty. Within about five seconds of admission a pending operation returns a request_id for read-only get_job_status; never call pause_task again to poll. Do not automatically retry an uncertain pause.",
+        "inputSchema":{"type":"object","properties":{
+            "chatgpt_url":{"type":"string","minLength":23,"maxLength":150,
+                "pattern":"^https://chatgpt\\.com/c/[A-Za-z0-9-]{1,128}$",
+                "description":"Exact canonical conversation URL to pause, with no query, fragment or trailing slash."}},
+            "required":["chatgpt_url"],"additionalProperties":false},
+        "outputSchema":output_schema(),
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}})
+}
+pub fn tools_for_config(config: &Config) -> Vec<Value> {
+    let mut tools = tools();
+    for tool in &mut tools {
+        if let Some(values) =
+            tool["inputSchema"]["properties"]["reasoning_effort"]["enum"].as_array_mut()
+        {
+            values.retain(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|effort| effort.is_empty() || config.subscription.allows(effort))
+            });
+        }
+    }
+    tools
 }
 pub fn valid_request_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 100
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    queue::valid_job_id(id)
 }
 pub fn declared_request_id(request: &Value) -> Result<Option<&str>, &'static str> {
     let Some(id) = request["params"]["arguments"].get("request_id") else {
@@ -62,7 +86,7 @@ pub fn declared_request_id(request: &Value) -> Result<Option<&str>, &'static str
     };
     let id = id.as_str().ok_or("request_id must be a string")?;
     if !valid_request_id(id) {
-        return Err("request_id must be 1..100 ASCII letters, digits, underscore or hyphen");
+        return Err("request_id must be 1..128 ASCII letters, digits, underscore, hyphen or colon");
     }
     Ok(Some(id))
 }
@@ -128,17 +152,50 @@ pub fn metadata(request: &Value) -> Option<Option<Value>> {
 }
 /// Control requests are completed outside the submission wait pool.
 pub fn immediate_response(root: &Path, request: &Value) -> Option<Option<Value>> {
-    metadata(request)
-        .or_else(|| status_request(request).then(|| Some(status_response(root, request))))
+    if let Some(mut response) = metadata(request) {
+        if request["method"] == "tools/list"
+            && let Some(value) = response
+                .as_mut()
+                .filter(|value| value.get("result").is_some())
+        {
+            *value = match Config::load(root) {
+                Ok(config) => result(
+                    request["id"].clone(),
+                    json!({"tools":tools_for_config(&config)}),
+                ),
+                Err(_) => error(
+                    request["id"].clone(),
+                    -32603,
+                    "Service configuration unavailable",
+                ),
+            };
+        }
+        return Some(response);
+    }
+    status_request(request).then(|| Some(status_response(root, request)))
 }
 pub fn arguments(request: &Value) -> Result<Task, &'static str> {
     let name = request["params"]["name"].as_str().unwrap_or("");
-    if !matches!(name, "new_task" | "send_message") {
+    if !matches!(name, "new_task" | "send_message" | "pause_task") {
         return Err("Unknown tool");
     }
     let args = request["params"]["arguments"]
         .as_object()
         .ok_or("arguments must be an object")?;
+    if name == "pause_task" {
+        if args.len() != 1 || !args.contains_key("chatgpt_url") {
+            return Err("Only chatgpt_url is accepted");
+        }
+        let url = args["chatgpt_url"]
+            .as_str()
+            .ok_or("chatgpt_url must be a string")?;
+        return PauseTask {
+            chatgpt_url: url.into(),
+        }
+        .resolve()
+        .map(Task::from)
+        .map_err(|_| "chatgpt_url must be an exact canonical conversation URL");
+    }
     if name == "send_message" {
         if args.keys().any(|k| {
             k != "chatgpt_url" && k != "message" && k != "reasoning_effort" && k != "request_id"
@@ -236,6 +293,7 @@ pub async fn dispatch(
         tokio::time::Instant::now()
             + std::time::Duration::from_millis(deadline.saturating_sub(crate::queue::now()))
     });
+    let is_pause = task.is_pause();
     let receiver = match queue.accept_before(key.clone(), task, config, external_deadline) {
         Ok(receiver) => receiver,
         Err(e) => {
@@ -253,10 +311,16 @@ pub async fn dispatch(
             }
             let mut details = queue.recovery_status(&key);
             if details["known"] == false {
-                details["outcome"] = json!("not_submitted");
-                details["guidance"] = json!(
+                details["outcome"] = json!(if is_pause {
+                    "not_attempted"
+                } else {
+                    "not_submitted"
+                });
+                details["guidance"] = json!(if is_pause {
+                    "Pause was rejected before queue admission. The conversation may still be generating."
+                } else {
                     "This attempt was rejected before queue admission. Nothing was submitted by this attempt. Diagnose the error before intentionally creating a new request."
-                );
+                });
             }
             details["job_id"] = json!(key);
             details["accepted"] = json!(false);
@@ -267,13 +331,14 @@ pub async fn dispatch(
     match tokio::time::timeout(RECEIPT_WAIT, receiver).await {
         Ok(Ok(Ok(r))) => {
             let url = r.url.clone();
+            let paused = r.pause_status.is_some();
             let mut details = serde_json::to_value(r).expect("serializable task result");
             details["request_id"] = json!(key);
-            details["outcome"] = json!("submitted");
+            details["outcome"] = json!(if paused { "paused" } else { "submitted" });
             details["accepted"] = json!(true);
             Some(result(
                 id,
-                json!({"content":[{"type":"text","text":url}],
+                json!({"content":[{"type":"text","text":if paused { details.to_string() } else { url }}],
                 "structuredContent":details,"isError":false}),
             ))
         }
@@ -293,9 +358,11 @@ pub async fn dispatch(
             // receipts leave the already-admitted job owned by the queue.
             if matches!(outcome, Ok(Err(_))) {
                 details["outcome"] = json!("uncertain");
-                details["guidance"] = json!(
+                details["guidance"] = json!(if is_pause {
+                    "The queue stopped before verifying pause. The response may still be generating. Query the returned request_id; never retry automatically."
+                } else {
                     "The queue stopped before replying. Query the same request_id; never resubmit automatically."
-                );
+                });
             }
             Some(tool_result(id, details, false))
         }
@@ -307,4 +374,21 @@ fn tool_result(id: Value, details: Value, is_error: bool) -> Value {
         json!({"content":[{"type":"text","text":details.to_string()}],
         "structuredContent":details,"isError":is_error}),
     )
+}
+
+/// Optional fields cover confirmed results, accepted receipts and recovery records.
+/// Error results may add error/guidance fields without pretending a URL exists.
+pub fn output_schema() -> Value {
+    json!({"type":"object","properties":{
+        "request_id":request_id_schema(), "job_id":{"type":"string"},
+        "url":{"type":"string","description":"Canonical conversation URL when known; never generated answer text."},
+        "accepted":{"type":"boolean"}, "known":{"type":"boolean"},
+        "outcome":{"type":"string","description":"Recovery outcome; unknown is not evidence of no submission."},
+        "reasoning_effort":{"type":["string","null"],"description":"Legacy verified effort field."},
+        "requested_effort":{"type":["string","null"]},
+        "verified_effort":{"type":["string","null"]},
+        "effort_verification":{"type":"string","enum":["not_requested","verified","unverified"]},
+        "pause_status":{"type":"string","enum":["stopped","already_idle"]},
+        "recovery_tool":{"type":"string"}, "job":{"type":["object","null"]}
+    },"additionalProperties":true})
 }

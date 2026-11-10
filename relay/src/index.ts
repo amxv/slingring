@@ -138,7 +138,7 @@ export class Relay {
     }
     if (!acceptsJson(request.headers.get('Accept'))) return reply(406, { error: 'Accept application/json required' });
     const key = request.headers.get('Idempotency-Key');
-    if (key !== null && !/^[a-zA-Z0-9_-]{1,100}$/.test(key)) return reply(400, { error: 'Invalid Idempotency-Key' });
+    if (key !== null && !/^[a-zA-Z0-9_:-]{1,128}$/.test(key)) return reply(400, { error: 'Invalid Idempotency-Key' });
     let body: unknown;
     try { body = await readJson(request); }
     catch (error) { return reply(error instanceof Error && error.message === 'large' ? 413 : 400, { error: 'Invalid or oversized JSON body' }); }
@@ -156,7 +156,7 @@ export class Relay {
     // The caller must know the ID BEFORE a slow request begins to recover a
     // result after its own timeout. Prefer its explicit request_id or header.
     const args = object(body.params) && object(body.params.arguments) ? body.params.arguments : null;
-    const declared = typeof args?.request_id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(args.request_id)
+    const declared = typeof args?.request_id === 'string' && /^[A-Za-z0-9_:-]{1,128}$/.test(args.request_id)
       ? args.request_id : null;
     const receipt = key ?? declared ?? id;
     const frame = JSON.stringify({ type: 'rpc', id, request: body, expires_at: Date.now() + WAIT_MS - 10_000,
