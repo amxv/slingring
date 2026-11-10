@@ -138,7 +138,7 @@ installed_identity() {
   if grep -q '^Signature=adhoc$' "$old_prefix-info"; then return 0; fi
   command -v openssl >/dev/null 2>&1 || { echo 'openssl is required to preserve the installed signing identity.' >&2; return 1; }
   # Extract only the public certificate embedded in the installed executable.
-  codesign --display --extract-certificates "$old_prefix-cert" "$old_path" >/dev/null 2>&1 || return 1
+  codesign --display --extract-certificates="$old_prefix-cert" "$old_path" >/dev/null 2>&1 || return 1
   [ -f "$old_prefix-cert0" ] || { echo 'Installed signing certificate is missing; installation unchanged.' >&2; return 1; }
   old_fingerprint=$(openssl x509 -inform DER -in "$old_prefix-cert0" -noout -sha1 -fingerprint | sed 's/.*=//;s/://g' | tr '[:lower:]' '[:upper:]')
   printf '%s' "$old_fingerprint" | grep -Eq '^[[:xdigit:]]{40}$' || return 1

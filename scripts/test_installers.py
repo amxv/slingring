@@ -267,9 +267,13 @@ identity=marker('identity')
 identifier=marker('identifier','com.amxv.slingring.'+('menubar' if is_app else 'cli'))
 requirement=marker('requirement','identifier "'+identifier+'" and anchor H"'+identity+'"')
 if '--display' in args:
-    if '--extract-certificates' in args:
+    # This optional-argument flag requires '=' on macOS. A separate prefix is
+    # treated as another code path, so accepting it would hide a real failure.
+    if '--extract-certificates' in args: sys.exit(1)
+    certificate_flags=[arg for arg in args if arg.startswith('--extract-certificates=')]
+    if certificate_flags:
         if not identity: sys.exit(1)
-        Path(args[args.index('--extract-certificates')+1]+'0').write_text(identity)
+        Path(certificate_flags[0].split('=',1)[1]+'0').write_text(identity)
     elif '--requirements' in args: print(('# ' if not marker('requirement') else '')+'designated => '+requirement)
     else:
         print('Identifier='+identifier)
