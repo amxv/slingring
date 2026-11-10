@@ -6,6 +6,14 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.2 · 10 November 2026
+
+Stop the isolated task browser from cloning Chrome's app bundle and hard-linking its installed executable. This unnecessary Chrome update-survival feature caused macOS to report that **Slingring was blocked from modifying apps**. Task submissions no longer need App Management access for that operation. The change applies only to Slingring's short-lived browser; normal Chrome updates, code-signature validation, browser fingerprint defaults, and existing headless/headed preferences are preserved.
+
+Add regression coverage for both browser modes and an opt-in, empty-profile browser smoke test that verifies the real launch flags and absence of app-clone/hard-link operations. Ad-hoc signing still cannot guarantee permission retention across binary changes; this patch removes the unnecessary app modification rather than resetting or bypassing macOS privacy consent.
+
+Add explicit opt-in local certificate signing during installation. Later upgrades preserve an existing certificate-backed CLI and menu bar identity, and stop before replacement if the signer or designated requirement cannot be preserved. Private keys stay in the local Keychain; public release artifacts remain ad-hoc signed. No trust, key-access, or privacy settings are changed automatically.
+
 ## 0.6.1 · 8 November 2026
 
 Fix an intermittent **service did not start** alert after an upgrade or macOS launchd restart. Service startup now allows for launchd's 30-second throttling window instead of falsely failing after five seconds, detects early failures of directly spawned daemons, and reports bounded, actionable launchd diagnostics. CLI service commands do not accidentally kickstart the normal user's LaunchAgent when using a separate `SLINGRING_HOME`, and a manually started service works independently of the login autostart preference.

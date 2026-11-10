@@ -33,6 +33,14 @@ Run the web-component tests using the committed Bun lockfiles:
 
 Never run a live ChatGPT submission as part of routine tests; it requires explicit authorization. Preserve user browser profiles, credentials and existing installations.
 
+On macOS, an opt-in blank-browser smoke test checks the pinned helper's actual launch flags and verifies that Chrome never attempts to clone or hard-link its app bundle. It uses an empty profile, opens only `about:blank`, and closes only its own named session:
+
+```bash
+SLINGRING_HOME="$(mktemp -d -t slingring-browser-smoke)" \
+SLINGRING_TEST_BROWSER="$HOME/.config/slingring/browser/agent-browser-browse" \
+cargo test --locked real_browser_does_not_clone_or_hard_link_the_chrome_app -- --ignored
+```
+
 Before publishing changes, run `gitleaks git --log-opts='--all' .` if Gitleaks is available. The narrow exception in `.gitleaks.toml` permits only the Chrome extension's public identification key, not deployment or user credentials.
 
 ## Documentation

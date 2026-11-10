@@ -94,10 +94,13 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             // to an already heavy ChatGPT renderer.
             "--no-webmcp",
             // Do not discover LAN casting targets or install Chrome's default
-            // apps inside our isolated throwaway profile. CDP still uses the
-            // loopback endpoint; no LAN device access is required.
+            // apps inside our isolated throwaway profile. Chrome's macOS
+            // update-survival clone also hard-links its installed executable,
+            // triggering App Management consent attributed to Slingring. Our
+            // short-lived browser does not need that bundle-writing feature.
+            // This does not disable Chrome updates or code-signature checks.
             "--args",
-            "--disable-features=MediaRouter,--disable-default-apps",
+            "--disable-features=MediaRouter,MacAppCodeSignClone,--disable-default-apps",
             "--json",
         ])
         .args(args)

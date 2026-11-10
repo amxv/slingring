@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs the macOS CLI and optional signed Swift app. Private releases use authenticated gh.
-# Ad-hoc signing is not Developer ID notarization. Never strip quarantine.
+# Public releases are ad-hoc signed. An explicit local identity can preserve
+# macOS permissions across upgrades; never change Keychain trust or quarantine.
 set -eu
 cli='slingring'
 binary='slingring'
@@ -103,6 +104,7 @@ if [ "$mac" = 1 ]; then
   [ -z "$(find "$stage/unpacked" -type l -print -quit)" ] || { echo 'Archive symlinks are not allowed' >&2; exit 1; }
   [ -x "$stage/unpacked/$cli" ] || { echo 'Archive is missing the CLI' >&2; exit 1; }
   [ -x "$stage/unpacked/$app/Contents/MacOS/$app_exec" ] || { echo 'Archive is missing the menu bar app' >&2; exit 1; }
+  codesign --verify --strict "$stage/unpacked/$cli"
   codesign --verify --deep --strict "$stage/unpacked/$app"
   "$stage/unpacked/$app/Contents/MacOS/$app_exec" --check
   source_cli="$stage/unpacked/$cli"
@@ -110,10 +112,59 @@ else
   source_cli="$stage/$asset"
   chmod 755 "$source_cli"
 fi
-"$source_cli" --version
-# Install the verified browser dependency BEFORE touching the working CLI/app.
-# The helper is private to Slingring; no Homebrew, npm, Python, or upstream CLI.
-"$source_cli" browser install >/dev/null
+# A certificate-backed local signature must survive an upgrade. Never silently
+# replace it with the release's ad-hoc identity or rotate to another certificate.
+# CLI_CODESIGN_IDENTITY is an explicit, unambiguous certificate SHA-1 fingerprint.
+# No certificate, private key, trust setting, or Keychain ACL is created here.
+signing_identity=${CLI_CODESIGN_IDENTITY:-}
+if [ -n "$signing_identity" ]; then
+  printf '%s' "$signing_identity" | grep -Eq '^[[:xdigit:]]{40}$' || {
+    echo 'CLI_CODESIGN_IDENTITY must be the 40-digit SHA-1 fingerprint of a local code-signing certificate.' >&2; exit 1;
+  }
+  signing_identity=$(printf '%s' "$signing_identity" | tr '[:lower:]' '[:upper:]')
+fi
+installed_identity() {
+  old_path=$1
+  old_prefix=$2
+  [ -e "$old_path" ] || return 0
+  codesign --verify --deep --strict "$old_path" || {
+    echo 'Installed signature could not be verified; installation unchanged.' >&2; return 1;
+  }
+  codesign --display --verbose=2 "$old_path" > "$old_prefix-info" 2>&1 || return 1
+  sed -n 's/^Identifier=//p' "$old_prefix-info" > "$old_prefix-identifier"
+  [ "$(wc -l < "$old_prefix-identifier" | tr -d ' ')" = 1 ] && [ -s "$old_prefix-identifier" ] || {
+    echo 'Installed signing identifier is missing or ambiguous; installation unchanged.' >&2; return 1;
+  }
+  if grep -q '^Signature=adhoc$' "$old_prefix-info"; then return 0; fi
+  command -v openssl >/dev/null 2>&1 || { echo 'openssl is required to preserve the installed signing identity.' >&2; return 1; }
+  # Extract only the public certificate embedded in the installed executable.
+  codesign --display --extract-certificates "$old_prefix-cert" "$old_path" >/dev/null 2>&1 || return 1
+  [ -f "$old_prefix-cert0" ] || { echo 'Installed signing certificate is missing; installation unchanged.' >&2; return 1; }
+  old_fingerprint=$(openssl x509 -inform DER -in "$old_prefix-cert0" -noout -sha1 -fingerprint | sed 's/.*=//;s/://g' | tr '[:lower:]' '[:upper:]')
+  printf '%s' "$old_fingerprint" | grep -Eq '^[[:xdigit:]]{40}$' || return 1
+  codesign --display --requirements - "$old_path" > "$old_prefix-requirements-output" 2>&1 || return 1
+  sed -n 's/^# designated => /designated => /; /^designated => /p' "$old_prefix-requirements-output" > "$old_prefix-requirement"
+  [ "$(wc -l < "$old_prefix-requirement" | tr -d ' ')" = 1 ] || {
+    echo 'Installed designated requirement is missing or ambiguous; installation unchanged.' >&2; return 1;
+  }
+  printf '%s\n' "$old_fingerprint"
+}
+old_cli_identity=$(installed_identity "$target" "$stage/old-cli") || exit 1
+old_app_identity=$(installed_identity "$app_dest" "$stage/old-app") || exit 1
+for old_identity in "$old_cli_identity" "$old_app_identity"; do
+  [ -n "$old_identity" ] || continue
+  if [ -n "$signing_identity" ] && [ "$signing_identity" != "$old_identity" ]; then
+    echo 'Refusing to change an installed signing certificate; installation unchanged.' >&2; exit 1
+  fi
+  signing_identity=$old_identity
+done
+if [ -n "$signing_identity" ]; then
+  command -v security >/dev/null 2>&1 || { echo 'macOS security is required for local code signing.' >&2; exit 1; }
+  security find-identity -p codesigning > "$stage/signing-identities"
+  awk -v identity="$signing_identity" '$2 == identity { found=1 } END { exit !found }' "$stage/signing-identities" || {
+    echo 'The installed or requested signing identity is unavailable in Keychain; installation unchanged. Restore that identity before upgrading.' >&2; exit 1;
+  }
+fi
 mkdir -p "$install_dir"
 
 # Stage BOTH replacements before stopping the menu bar process. If any move
@@ -124,7 +175,37 @@ trap 'rm -rf "$stage" "$staged" "$backup"' EXIT HUP INT TERM
 cp "$source_cli" "$staged/$cli"
 chmod 755 "$staged/$cli"
 cp -R "$stage/unpacked/$app" "$staged/$app"
+sign_staged() {
+  sign_path=$1
+  old_prefix=$2
+  sign_identifier=$3
+  if [ -s "$old_prefix-identifier" ]; then sign_identifier=$(cat "$old_prefix-identifier"); fi
+  set -- --force --sign "$signing_identity" --timestamp=none --identifier "$sign_identifier" \
+    --preserve-metadata=entitlements,flags,runtime
+  if [ -s "$old_prefix-requirement" ]; then set -- "$@" --requirements "$old_prefix-requirement"; fi
+  codesign "$@" "$sign_path" || {
+    echo 'Local code signing failed; the working installation is unchanged. Check access to the selected signing key.' >&2; return 1;
+  }
+  if [ -s "$old_prefix-requirement" ]; then
+    codesign --display --requirements - "$sign_path" > "$old_prefix-new-requirements-output" 2>&1 || return 1
+    sed -n 's/^# designated => /designated => /; /^designated => /p' "$old_prefix-new-requirements-output" > "$old_prefix-new-requirement"
+    cmp -s "$old_prefix-requirement" "$old_prefix-new-requirement" || {
+      echo 'The designated requirement changed; installation unchanged.' >&2; return 1;
+    }
+    requirement=$(sed 's/^designated => //' "$old_prefix-requirement")
+    codesign --verify --strict --test-requirement "=$requirement" "$sign_path" || return 1
+  fi
+}
+if [ -n "$signing_identity" ]; then
+  sign_staged "$staged/$cli" "$stage/old-cli" com.amxv.slingring.cli
+  sign_staged "$staged/$app" "$stage/old-app" com.amxv.slingring.menubar
+fi
+codesign --verify --strict "$staged/$cli"
 codesign --verify --deep --strict "$staged/$app"
+"$staged/$cli" --version
+# Install the verified browser dependency BEFORE touching the working CLI/app.
+# Signing failures must not stop the running service or replace either binary.
+"$staged/$cli" browser install >/dev/null
 app_program="$app_dest/Contents/MacOS/$app_exec"
 app_pids() {
   /bin/ps -axww -o uid= -o pid= -o command= 2>/dev/null |
@@ -192,7 +273,7 @@ restore() {
 if ! mv "$staged/$app" "$app_dest" || ! mv "$staged/$cli" "$target"; then
   restore; echo 'Install failed; restored previous CLI and app' >&2; exit 1
 fi
-if ! codesign --verify --deep --strict "$app_dest" || ! "$target" --version; then
+if ! codesign --verify --strict "$target" || ! codesign --verify --deep --strict "$app_dest" || ! "$target" --version; then
   restore; echo 'Installed app or CLI failed verification; restored previous release' >&2; exit 1
 fi
 rm -rf "$backup/old-app"

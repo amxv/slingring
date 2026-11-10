@@ -39,6 +39,20 @@ Updates refuse to replace an installation while a task is active. They update th
 
 The installer migrates legacy LaunchAgent presence as the service login preference (a missing old plist is treated as an opt-out), initializes the menu bar login item where possible, and preserves subsequent explicit opt-outs through updates. It never resets those choices during automatic updates.
 
+### Optional local signing identity
+
+Public release bundles are ad-hoc signed. Their code hash changes with each build, so macOS can invalidate previous privacy consent after an update even though the signing identifier is unchanged. Starting in 0.6.2, the temporary task browser no longer needs App Management access for Chrome's app-cloning operation. Slingring's own installation and upgrade are separate app-modification operations.
+
+If you maintain a dedicated certificate-backed code-signing identity in your Mac's Keychain, you can explicitly opt into signing the verified CLI and menu bar app locally. Download and inspect the installer, then supply the certificate's full 40-character SHA-1 fingerprint:
+
+```bash
+CLI_CODESIGN_IDENTITY=YOUR_CERTIFICATE_SHA1 sh install.sh upgrade
+```
+
+Later upgrades discover the installed certificate and preserve the CLI and app's designated requirements automatically. If the matching private key is unavailable, signing fails, or either requirement changes, the installer stops before replacing the working installation. It never silently falls back to ad-hoc signing. The private key stays on your Mac; this does not sign public GitHub artifacts, create a Developer ID identity, or notarize the app.
+
+The installer does not create certificates, change Keychain trust or key-access permissions, or alter macOS privacy settings. Keychain may require your approval to use the selected key. Switching from ad-hoc to certificate-backed signing is a one-time identity change, so macOS may require fresh consent for any permissions you actually use. Permission retention is controlled by macOS and must be verified on your installation.
+
 ## Source builds
 
 ```bash

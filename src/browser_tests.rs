@@ -218,7 +218,7 @@ for argument do
   case "$argument" in
     --pin-tab) pinned=true;;
     --no-webmcp) webmcp=true;;
-    --disable-features=MediaRouter,--disable-default-apps) features=true;;
+    --disable-features=MediaRouter,MacAppCodeSignClone,--disable-default-apps) features=true;;
     --user-agent|--executable-path) exit 9;;
   esac
 done
@@ -238,6 +238,76 @@ printf '{"success":true,"data":{"mode":"%s","headed_env":"%s","pinned":%s,"webmc
         assert_eq!(result["webmcp"], true);
         assert_eq!(result["features"], true);
     }
+}
+
+/// Opt-in real-browser check, with an empty profile and no website navigation.
+/// The separate home ensures this cannot close the user's Slingring session.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "requires the installed pinned browser helper and an isolated SLINGRING_HOME"]
+async fn real_browser_does_not_clone_or_hard_link_the_chrome_app() {
+    let root = config::root().unwrap().canonicalize().unwrap();
+    assert!(root.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+    assert!(
+        root.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("slingring-browser-smoke")
+    );
+    let profile = tempfile::tempdir().unwrap();
+    let config = Config {
+        browser_binary: std::env::var("SLINGRING_TEST_BROWSER").unwrap(),
+        profile: profile.path().to_string_lossy().into_owned(),
+        ..Config::default()
+    };
+    let result: Result<()> = async {
+        agent(&config, &["open", "about:blank"]).await?;
+        let endpoint = agent(&config, &["get", "cdp-url"]).await?;
+        let mut cdp =
+            Cdp::connect(endpoint["cdpUrl"].as_str().context("endpoint missing")?).await?;
+        // Give Chrome's background startup work time to run, then inspect
+        // browser metrics only. Do not inspect page content or enable Runtime.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let histograms = cdp
+            .call("Browser.getHistograms", json!({"query":"Mac.App"}), None)
+            .await?;
+        let values = histograms["histograms"]
+            .as_array()
+            .context("browser histogram response missing")?;
+        ensure!(
+            !values.iter().any(|value| matches!(
+                value["name"].as_str(),
+                Some("Mac.AppClonefileError" | "Mac.AppHardLinkError")
+            )),
+            "Chrome attempted an app clone or executable hard link"
+        );
+        let info = cdp
+            .call("SystemInfo.getProcessInfo", json!({}), None)
+            .await?;
+        let pid = info["processInfo"]
+            .as_array()
+            .context("process metadata missing")?
+            .iter()
+            .find(|entry| entry["type"] == "browser")
+            .and_then(|entry| entry["id"].as_u64())
+            .context("browser PID missing")?;
+        let command = tokio::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .await?;
+        let command = String::from_utf8(command.stdout)?;
+        ensure!(
+            command.contains("--disable-features=MediaRouter,MacAppCodeSignClone")
+                && command.contains("--headless=new")
+                && command.contains(&format!("--user-data-dir={}", profile.path().display())),
+            "isolated Chrome did not receive the required launch settings"
+        );
+        Ok(())
+    }
+    .await;
+    let closed = close(&config).await;
+    result.unwrap();
+    closed.unwrap();
 }
 
 #[tokio::test]
