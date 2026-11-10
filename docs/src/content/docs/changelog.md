@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.3 · 10 November 2026
+
+Fix public-certificate extraction when preserving a locally signed installation during upgrades. macOS requires the certificate output prefix to use the `--extract-certificates=PREFIX` form; the installer now uses that syntax instead of failing before replacement. Regression tests reject the invalid form, and an isolated macOS upgrade verified that changed CLI and menu bar executables retain the same signing certificate and designated requirements.
+
+This maintenance release includes the installer correction already deployed on the website. It retains 0.6.2's browser app-cloning fix and does not change browser behavior or macOS trust and privacy settings.
+
 ## 0.6.2 · 10 November 2026
 
 Stop the isolated task browser from cloning Chrome's app bundle and hard-linking its installed executable. This unnecessary Chrome update-survival feature caused macOS to report that **Slingring was blocked from modifying apps**. Task submissions no longer need App Management access for that operation. The change applies only to Slingring's short-lived browser; normal Chrome updates, code-signature validation, browser fingerprint defaults, and existing headless/headed preferences are preserved.
