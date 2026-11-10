@@ -17,7 +17,7 @@ State directories use 0700 permissions and state/configuration files use 0600. T
 
 The browser runs with an isolated temporary profile copy. Native Messaging registration is scoped to that owned browser data directory. Slingring does not take control of ordinary Chrome windows or replace the normal agent-browser CLI.
 
-Task launches disable Chrome's macOS app-bundle cloning feature, which otherwise clones Chrome and hard-links its installed executable to survive an update while running. Slingring's short-lived browser does not need this app-modification operation or App Management permission. Normal Chrome updates and macOS code-signature checks remain enabled. Installing or upgrading Slingring itself can still modify its own CLI and menu bar app.
+Task launches disable two unnecessary sources of app modification: Chrome's macOS app-bundle cloning feature, which hard-links its installed executable, and the isolated process's delayed GoogleUpdater scheduler, which can wake the global updater and try to update installed Chrome under Slingring's responsibility. Slingring's short-lived browser needs neither operation. These process-local flags do not change normal Chrome updates, updater launchd jobs, update policy or macOS signature checks. Installing or upgrading Slingring itself can still modify its own CLI and menu bar app.
 
 Headless mode is the default. Opting into headed mode makes that same isolated automation browser visible for debugging, including the conversation and prompt on screen. It retains draft checks, profile ownership checks and compatibility flags. Changing the setting does not interrupt the current task.
 

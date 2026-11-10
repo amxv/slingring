@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.4 · 10 November 2026
+
+Stop Slingring's isolated Chrome process from starting its delayed GoogleUpdater scheduler. The scheduler could wake the global updater and attempt to replace installed Chrome through `rsync`, producing another macOS App Management notification attributed to Slingring. This is separate from the app-cloning operation disabled in 0.6.2.
+
+Use Chromium's process-local `--disable-updater-scheduler` switch in both headless and headed task browsers. Normal Chrome launches, updater launchd jobs, update policy and code-signature checks remain unchanged. The blank-browser smoke test now observes startup for 30 seconds, beyond Chrome 156's 19-second scheduler delay, and can verify that no updater process was started by its owned Chrome PID.
+
 ## 0.6.3 · 10 November 2026
 
 Fix public-certificate extraction when preserving a locally signed installation during upgrades. macOS requires the certificate output prefix to use the `--extract-certificates=PREFIX` form; the installer now uses that syntax instead of failing before replacement. Regression tests reject the invalid form, and an isolated macOS upgrade verified that changed CLI and menu bar executables retain the same signing certificate and designated requirements.

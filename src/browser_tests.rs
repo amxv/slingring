@@ -218,7 +218,7 @@ for argument do
   case "$argument" in
     --pin-tab) pinned=true;;
     --no-webmcp) webmcp=true;;
-    --disable-features=MediaRouter,MacAppCodeSignClone,--disable-default-apps) features=true;;
+    --disable-features=MediaRouter,MacAppCodeSignClone,--disable-default-apps,--disable-updater-scheduler) features=true;;
     --user-agent|--executable-path) exit 9;;
   esac
 done
@@ -245,7 +245,7 @@ printf '{"success":true,"data":{"mode":"%s","headed_env":"%s","pinned":%s,"webmc
 #[cfg(target_os = "macos")]
 #[tokio::test]
 #[ignore = "requires the installed pinned browser helper and an isolated SLINGRING_HOME"]
-async fn real_browser_does_not_clone_or_hard_link_the_chrome_app() {
+async fn real_browser_disables_app_cloning_and_updater_startup() {
     let root = config::root().unwrap().canonicalize().unwrap();
     assert!(root.starts_with(std::env::temp_dir().canonicalize().unwrap()));
     assert!(
@@ -255,6 +255,14 @@ async fn real_browser_does_not_clone_or_hard_link_the_chrome_app() {
             .starts_with("slingring-browser-smoke")
     );
     let profile = tempfile::tempdir().unwrap();
+    // Optional, explicit metadata-only integration check. Never print updater
+    // history; compare only new process events attributed to our browser PID.
+    let updater_history = std::env::var_os("SLINGRING_TEST_UPDATER_HISTORY")
+        .map(PathBuf::from)
+        .map(|path| {
+            let previous = std::fs::read_to_string(&path).unwrap();
+            (path, previous.lines().count())
+        });
     let config = Config {
         browser_binary: std::env::var("SLINGRING_TEST_BROWSER").unwrap(),
         profile: profile.path().to_string_lossy().into_owned(),
@@ -265,9 +273,10 @@ async fn real_browser_does_not_clone_or_hard_link_the_chrome_app() {
         let endpoint = agent(&config, &["get", "cdp-url"]).await?;
         let mut cdp =
             Cdp::connect(endpoint["cdpUrl"].as_str().context("endpoint missing")?).await?;
-        // Give Chrome's background startup work time to run, then inspect
-        // browser metrics only. Do not inspect page content or enable Runtime.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // Chrome 156's updater scheduler first runs 19 seconds after startup.
+        // Cover that delayed path, not just immediate app cloning. Do not
+        // inspect page content or enable Runtime.
+        tokio::time::sleep(Duration::from_secs(30)).await;
         let histograms = cdp
             .call("Browser.getHistograms", json!({"query":"Mac.App"}), None)
             .await?;
@@ -298,10 +307,29 @@ async fn real_browser_does_not_clone_or_hard_link_the_chrome_app() {
         let command = String::from_utf8(command.stdout)?;
         ensure!(
             command.contains("--disable-features=MediaRouter,MacAppCodeSignClone")
+                && command
+                    .split_whitespace()
+                    .any(|arg| arg == "--disable-updater-scheduler")
                 && command.contains("--headless=new")
                 && command.contains(&format!("--user-data-dir={}", profile.path().display())),
             "isolated Chrome did not receive the required launch settings"
         );
+        if let Some((path, previous_lines)) = &updater_history {
+            let history = std::fs::read_to_string(path)?;
+            ensure!(
+                history.lines().count() >= *previous_lines,
+                "updater history rotated during test"
+            );
+            for line in history.lines().skip(*previous_lines) {
+                let event: Value = serde_json::from_str(line)?;
+                ensure!(
+                    !(event["eventType"] == "UPDATER_PROCESS"
+                        && event["bound"] == "START"
+                        && event["parentPid"].as_u64() == Some(pid)),
+                    "owned Chrome started an updater process"
+                );
+            }
+        }
         Ok(())
     }
     .await;

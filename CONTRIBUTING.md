@@ -33,13 +33,15 @@ Run the web-component tests using the committed Bun lockfiles:
 
 Never run a live ChatGPT submission as part of routine tests; it requires explicit authorization. Preserve user browser profiles, credentials and existing installations.
 
-On macOS, an opt-in blank-browser smoke test checks the pinned helper's actual launch flags and verifies that Chrome never attempts to clone or hard-link its app bundle. It uses an empty profile, opens only `about:blank`, and closes only its own named session:
+On macOS, an opt-in blank-browser smoke test checks the pinned helper's actual launch flags, absence of app-clone/hard-link metrics, and suppression of its delayed updater scheduler. It observes an empty profile for 30 seconds, beyond Chrome 156's 19-second scheduler delay, opens only `about:blank`, and closes only its own named session:
 
 ```bash
 SLINGRING_HOME="$(mktemp -d -t slingring-browser-smoke)" \
 SLINGRING_TEST_BROWSER="$HOME/.config/slingring/browser/agent-browser-browse" \
-cargo test --locked real_browser_does_not_clone_or_hard_link_the_chrome_app -- --ignored
+cargo test --locked real_browser_disables_app_cloning_and_updater_startup -- --ignored
 ```
+
+For an additional macOS integration assertion, set `SLINGRING_TEST_UPDATER_HISTORY` to an existing GoogleUpdater `updater_history.jsonl` path. The test checks only new process metadata for its own browser PID and fails if that browser starts GoogleUpdater. It does not print history, change updater settings, or reject unrelated normal Chrome updates.
 
 Before publishing changes, run `gitleaks git --log-opts='--all' .` if Gitleaks is available. The narrow exception in `.gitleaks.toml` permits only the Chrome extension's public identification key, not deployment or user credentials.
 

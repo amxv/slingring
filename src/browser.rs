@@ -98,9 +98,12 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             // update-survival clone also hard-links its installed executable,
             // triggering App Management consent attributed to Slingring. Our
             // short-lived browser does not need that bundle-writing feature.
-            // This does not disable Chrome updates or code-signature checks.
+            // Also skip this process's delayed GoogleUpdater scheduler: it
+            // wakes the global updater, which can modify installed Chrome and
+            // inherit Slingring's responsibility. Normal Chrome's updater,
+            // launchd jobs, update policy and signature checks stay unchanged.
             "--args",
-            "--disable-features=MediaRouter,MacAppCodeSignClone,--disable-default-apps",
+            "--disable-features=MediaRouter,MacAppCodeSignClone,--disable-default-apps,--disable-updater-scheduler",
             "--json",
         ])
         .args(args)
