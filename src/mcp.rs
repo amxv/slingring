@@ -65,8 +65,12 @@ pub fn pause_tool() -> Value {
 pub fn tools_for_config(config: &Config) -> Vec<Value> {
     let mut tools = tools();
     for tool in &mut tools {
-        if let Some(values) =
-            tool["inputSchema"]["properties"]["reasoning_effort"]["enum"].as_array_mut()
+        if let Some(values) = tool
+            .get_mut("inputSchema")
+            .and_then(|schema| schema.get_mut("properties"))
+            .and_then(|properties| properties.get_mut("reasoning_effort"))
+            .and_then(|effort| effort.get_mut("enum"))
+            .and_then(Value::as_array_mut)
         {
             values.retain(|value| {
                 value

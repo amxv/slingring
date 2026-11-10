@@ -220,6 +220,24 @@ fn stdio_metadata_is_browser_free_and_files_are_never_exposed() {
     assert_eq!(value["result"]["tools"][2]["name"], "get_job_status");
     assert_eq!(value["result"]["tools"][3]["name"], "pause_task");
     assert_eq!(
+        value["result"]["tools"][2]["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["request_id"]
+    );
+    assert_eq!(
+        value["result"]["tools"][3]["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["chatgpt_url"]
+    );
+    assert_eq!(
         value["result"]["tools"][0]["inputSchema"]["properties"]["reasoning_effort"]["enum"],
         serde_json::json!(["", "Instant", "Medium", "High"])
     );

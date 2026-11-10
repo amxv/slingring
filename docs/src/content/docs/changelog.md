@@ -6,6 +6,10 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.6 · 10 November 2026
+
+Fix subscription-aware MCP tool descriptions adding an invalid, unused reasoning-effort field to `pause_task` and `get_job_status`. These tools now advertise exactly their supported conversation URL or request ID argument. Reasoning choices remain filtered by subscription only on `new_task` and `send_message`. Runtime argument validation was already strict; no messages or pause actions are replayed by this correction.
+
 ## 0.6.5 · 10 November 2026
 
 Add Plus/Pro subscription selection in the CLI and menu bar, with tier-aware reasoning choices in local and remote MCP tools. Fresh installations default to Plus and High; existing defaults, including Extra High, are preserved. Subscription settings live separately so older installed services cannot overwrite them.

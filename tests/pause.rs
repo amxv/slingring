@@ -130,6 +130,25 @@ fn live_tool_lists_filter_the_configured_subscription() -> Result<()> {
                 expected
             );
         }
+        let tools = listing["result"]["tools"].as_array().unwrap();
+        for (name, fields) in [
+            ("new_task", vec!["prompt", "reasoning_effort", "request_id"]),
+            (
+                "send_message",
+                vec!["chatgpt_url", "message", "reasoning_effort", "request_id"],
+            ),
+            ("get_job_status", vec!["request_id"]),
+            ("pause_task", vec!["chatgpt_url"]),
+        ] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            let properties = tool["inputSchema"]["properties"].as_object().unwrap();
+            assert_eq!(
+                properties.keys().map(String::as_str).collect::<Vec<_>>(),
+                fields,
+                "{subscription:?} {name} must not acquire phantom fields"
+            );
+            assert!(properties.values().all(|schema| schema["type"].is_string()));
+        }
         assert!(!home.path().join("slingring.sock").exists());
     }
     Ok(())
