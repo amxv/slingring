@@ -23,7 +23,7 @@ const EFFORTS=new Set(['Instant','Medium','High','Extra High','Pro']);
 const EFFORT_KINDS=new Set(['known','missing','ambiguous','unrecognized']);
 const EFFORT_PHASES=new Set(['prepare','before_authorization','after_authorization']);
 const stages=new Set(['chat_loading','chat_mode_verification','conversation_loading','composer_ready','effort_selection',
-  'prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait','submission_recovery','pause_controls','pause_verification']);
+  'composer_wait','prompt_filling','prompt_verification','attachment_wait','send_ready','activity_wait','submission_recovery','pause_controls','pause_verification']);
 const progress=stage=>native.postMessage({type:'progress',job,stage});
 function bootstrapCommitted(id,url) {
   return new Promise((resolve,reject)=>{
@@ -63,6 +63,11 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message.event==='progress' && message.id===job && !finished && stages.has(message.stage) &&
       (!targetUrl || sender.url===targetUrl)) {
     progress(message.stage);return false;
+  }
+  if(message.event==='composer_state' && message.id===job && !finished &&
+      (!targetUrl || sender.url===targetUrl) &&
+      ['missing','hidden','ambiguous','disabled','ready'].includes(message.state)) {
+    native.postMessage({type:'composer_state',job,state:message.state});return false;
   }
   if(message.event==='effort_state' && message.id===job && !finished &&
       (!targetUrl || sender.url===targetUrl) && EFFORTS.has(message.expected) &&

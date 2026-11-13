@@ -25,6 +25,7 @@ use tokio::{
 };
 
 pub type BrowserFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+pub type SubmissionGate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 pub trait Backend: Send + Sync + 'static {
     fn run<'a>(
         &'a self,
@@ -43,21 +44,44 @@ pub trait Backend: Send + Sync + 'static {
     ) -> BrowserFuture<'a, TaskResult> {
         self.run(config, task, id)
     }
+    /// The production browser calls this gate immediately before allowing Send.
+    /// Legacy/test backends conservatively mark intent before entering their run.
+    fn run_authorized<'a>(
+        &'a self,
+        config: &'a Config,
+        task: &'a Task,
+        id: &'a str,
+        progress: Arc<dyn Fn(&'static str) + Send + Sync>,
+        gate: SubmissionGate,
+    ) -> BrowserFuture<'a, TaskResult> {
+        Box::pin(async move {
+            if !task.is_pause() {
+                gate()?;
+            }
+            self.run_with_progress(config, task, id, progress).await
+        })
+    }
     fn close<'a>(&'a self, config: &'a Config) -> BrowserFuture<'a, ()>;
 }
 pub struct Browser;
 impl Backend for Browser {
-    fn run<'a>(&'a self, c: &'a Config, t: &'a Task, id: &'a str) -> BrowserFuture<'a, TaskResult> {
-        Box::pin(crate::browser::run(c, t, id))
+    fn run<'a>(
+        &'a self,
+        _c: &'a Config,
+        _t: &'a Task,
+        _id: &'a str,
+    ) -> BrowserFuture<'a, TaskResult> {
+        Box::pin(async { anyhow::bail!("browser execution requires durable queue authorization") })
     }
-    fn run_with_progress<'a>(
+    fn run_authorized<'a>(
         &'a self,
         c: &'a Config,
         t: &'a Task,
         id: &'a str,
         progress: Arc<dyn Fn(&'static str) + Send + Sync>,
+        gate: SubmissionGate,
     ) -> BrowserFuture<'a, TaskResult> {
-        Box::pin(crate::browser::run_with_progress(c, t, id, progress))
+        Box::pin(crate::browser::run_authorized(c, t, id, progress, gate))
     }
     fn close<'a>(&'a self, c: &'a Config) -> BrowserFuture<'a, ()> {
         Box::pin(crate::browser::close(c))
@@ -79,6 +103,9 @@ pub struct Job {
     pub phase: Option<String>,
     #[serde(default)]
     pub phase_at: Option<u64>,
+    /// None is a legacy record: a starting operation must remain uncertain.
+    #[serde(default)]
+    pub submission_intent: Option<bool>,
     #[serde(default)]
     fingerprint: String,
 }
@@ -275,7 +302,8 @@ pub fn owner_running(root: &Path) -> Result<bool> {
 }
 fn interrupt(job: &mut Job) {
     if job.active() {
-        let pending = job.status == "queued";
+        let pending = job.status == "queued"
+            || (job.operation != "pause" && job.submission_intent == Some(false));
         if job.operation == "pause" {
             job.status = if pending {
                 "pause_not_attempted"
@@ -292,7 +320,7 @@ fn interrupt(job: &mut Job) {
         job.finished_at = Some(now());
         job.error = Some(
             if pending {
-                "service interrupted before launch; nothing was submitted; not replayed"
+                "service interrupted before Send authorization; nothing was submitted; not replayed"
             } else {
                 "service interrupted during submission; inspect the chat before retrying"
             }
@@ -679,6 +707,7 @@ impl Queue {
                     url: task.conversation_url().map(str::to_string),
                     phase: Some("queued".into()),
                     phase_at: Some(now()),
+                    submission_intent: Some(false),
                     fingerprint,
                 });
                 if let Err(e) = state.save() {
@@ -773,10 +802,24 @@ async fn work(
                     crate::diagnostics::event(&state.root, &progress_id, stage, "in_progress", "none", elapsed);
                 }
             });
+            let gate_state = queue.state.clone();
+            let gate_id = id.clone();
+            let gate: SubmissionGate = Arc::new(move || {
+                let mut state = gate_state.lock().expect("queue lock");
+                let job = state.jobs.iter_mut().find(|j| j.id == gate_id && j.active())
+                    .context("submission job missing")?;
+                ensure!(job.submission_intent == Some(false), "submission already authorized");
+                job.submission_intent = Some(true);
+                job.phase = Some("submission_authorized".into());
+                job.phase_at = Some(now());
+                // This save is a barrier, unlike best-effort progress telemetry.
+                // Never send a native continue acknowledgement if it fails.
+                state.save().map_err(|_| anyhow::anyhow!("submission_intent_not_persisted"))
+            });
             let result = tokio::select! {
                 biased;
                 _ = stop.changed() => Err(anyhow::anyhow!("service stopped during submission; inspect queue before retrying")),
-                r = tokio::time::timeout_at(deadline, backend.run_with_progress(&config, &task, &id, progress)) => match r {
+                r = tokio::time::timeout_at(deadline, backend.run_authorized(&config, &task, &id, progress, gate)) => match r {
                     Ok(Ok(mut result)) => {
                         result.job_id = id.clone();
                         result.record_effort(task.reasoning_effort());
@@ -787,7 +830,9 @@ async fn work(
                 }
             };
             let success = result.is_ok();
-            let status = if task.is_pause() { if success { "paused" } else { "pause_uncertain" } } else if success { "started" } else if result.as_ref().err()
+            let definitely_pre_send = queue.state.lock().expect("queue lock").jobs.iter()
+                .find(|j| j.id == id).is_some_and(|j| j.submission_intent == Some(false));
+            let status = if task.is_pause() { if success { "paused" } else { "pause_uncertain" } } else if success { "started" } else if definitely_pre_send || result.as_ref().err()
                 .and_then(|e| e.downcast_ref::<StartError>()).is_some_and(|e| !e.may_have_submitted) { "failed" } else { "uncertain" };
             // Persist the proven outcome and release waiters before potentially
             // slow browser cleanup. The worker still serializes subsequent jobs.
@@ -812,9 +857,16 @@ async fn work(
         .jobs
         .iter()
         .filter(|j| j.active())
-        .map(|j| (j.id.clone(), j.status.clone(), j.operation.clone()))
+        .map(|j| {
+            (
+                j.id.clone(),
+                j.status.clone(),
+                j.operation.clone(),
+                j.submission_intent,
+            )
+        })
         .collect();
-    for (id, status, operation) in ids {
+    for (id, status, operation, intent) in ids {
         let _ = state.finish(
             &id,
             Err(anyhow::anyhow!("service stopped; request was not replayed")),
@@ -824,7 +876,7 @@ async fn work(
                 } else {
                     "pause_uncertain"
                 }
-            } else if status == "queued" {
+            } else if status == "queued" || intent == Some(false) {
                 "failed"
             } else {
                 "uncertain"
