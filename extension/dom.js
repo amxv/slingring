@@ -6,7 +6,19 @@
   const visible = e => !!e && !e.closest('[inert],[aria-hidden="true"]') &&
     getComputedStyle(e).display !== "none" && getComputedStyle(e).visibility !== "hidden" && e.getClientRects().length > 0;
   const normal = text => String(text || "").replace(/\r\n?/g, "\n").trim();
-  function composer() { return [...document.querySelectorAll(SELECTOR)].find(visible); }
+  const writable=e=>!e.disabled && !e.readOnly && e.getAttribute('aria-disabled')!=='true' &&
+    (e.tagName==='TEXTAREA' || e.getAttribute('contenteditable')==='true');
+  function composerState() {
+    const all=[...document.querySelectorAll(SELECTOR)],shown=all.filter(visible);
+    if(!all.length)return 'missing';
+    if(!shown.length)return 'hidden';
+    if(shown.length!==1)return 'ambiguous';
+    return writable(shown[0]) ? 'ready' : 'disabled';
+  }
+  function composer() {
+    const shown=[...document.querySelectorAll(SELECTOR)].filter(visible);
+    return shown.length===1 && writable(shown[0]) ? shown[0] : null;
+  }
   // innerText adds CSS paragraph margins as extra newlines in Chrome. Editors
   // can rehydrate our plain insertion into <p>/<div>/<br> without changing its
   // actual text. Read explicit line boundaries, never collapse whitespace or
@@ -143,7 +155,7 @@
     }
     throw Error('conversation_load_failed');
   }
-  async function ensureChat(deadline=Date.now()+120000) {
+  async function ensureChat(deadline=Date.now()+120000,onComposerWait=()=>{}) {
     const budget=limit=>Math.max(1,Math.min(limit,deadline-Date.now()-5000));
     for (let attempt=0; attempt<3; attempt++) {
       if(deadline-Date.now()<5000)throw Error('deadline_before_submission');
@@ -164,11 +176,19 @@
       }
       if (state.button?.isConnected) state.button.click();
       await waitFor(chatVerified,budget(15000),"chat_mode_unverified");
-      await waitFor(composer,budget(15000),"composer_unavailable");
+      onComposerWait();
+      try {
+        await waitFor(composer,budget(5000),"composer_unavailable",50);
+      } catch(error) {
+        // A verified Chat switch can precede its editable composer during
+        // hydration. Retry only readiness, before filling or authorizing Send.
+        if(error.message!=='composer_unavailable' || attempt===2)throw error;
+        continue;
+      }
       // Hydration can replace the first controls. This single active-job settle
       // delay mirrors Auto-Send; there is no timer or polling between jobs.
       await new Promise(resolve=>setTimeout(resolve,500));
-      if (chatVerified()) return;
+      if (chatVerified() && composer()) return;
     }
     throw Error("chat_mode_unverified");
   }
@@ -585,7 +605,7 @@
     if(users.length!==previousCount+1)return null;
     return startEvidence(expectedPrompt,null);
   }
-  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
+  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,composerState,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
     currentEffort,effortState,powerState,setEffort,ensureEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
     pauseObservation,pauseTask,followupReady,followupIdle,noAttachments,turnBaseline,conversationLoadFailure,ensureConversationLoaded,messageSendError,recoveredEvidence};
 })();

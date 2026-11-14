@@ -86,7 +86,7 @@
         verified=await ensureRequestedEffort(message.id,'prepare',message.effort,deadline,true);
       } else {
         progress(message.id,'chat_mode_verification');
-        await dom.ensureChat(deadline);
+        await dom.ensureChat(deadline,()=>progress(message.id,'composer_wait'));
         if ([...document.querySelectorAll('main [data-message-author-role],main [data-user-message-bubble]')].some(dom.visible)) throw Error("not_empty_chat");
         if(dom.hasDraft())throw Error('unrelated_draft_present');
         if(!dom.noAttachments())throw Error('attachments_present');
@@ -192,8 +192,14 @@
   }
   chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     if (!trusted(sender) || message?.kind!=="slingring") return false;
-    handle(message).then(reply).catch(error=>reply({ok:false,code:/^[a-z_]+$/.test(error.message)?error.message:"extension_failed",
-      submitted,url:dom.canonicalUrl()})).finally(()=>{if(message.action==='submit')dom.releaseAttachments?.(task?.attachments);});
+    handle(message).then(reply).catch(error=>{
+      // No DOM text, URLs or user content in readiness diagnostics.
+      if(message.action==='prepare' && typeof dom.composerState==='function')
+        chrome.runtime.sendMessage({kind:'slingring',event:'composer_state',id:message.id,
+          state:dom.composerState()}).catch(()=>{});
+      reply({ok:false,code:/^[a-z_]+$/.test(error.message)?error.message:"extension_failed",
+        submitted,url:dom.canonicalUrl()});
+    }).finally(()=>{if(message.action==='submit')dom.releaseAttachments?.(task?.attachments);});
     return true;
   });
   chrome.runtime.sendMessage({kind:"slingring",event:"ready"}).catch(()=>{});

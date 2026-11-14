@@ -424,15 +424,12 @@ fn handoff_started(
     result
 }
 
-pub async fn run(config: &Config, task: &Task, task_id: &str) -> Result<TaskResult> {
-    run_with_progress(config, task, task_id, Arc::new(|_| {})).await
-}
-
-pub async fn run_with_progress(
+pub async fn run_authorized(
     config: &Config,
     task: &Task,
     task_id: &str,
     progress: Arc<dyn Fn(&'static str) + Send + Sync>,
+    gate: crate::queue::SubmissionGate,
 ) -> Result<TaskResult> {
     trace("launch");
     progress("browser_launch");
@@ -565,6 +562,23 @@ pub async fn run_with_progress(
             trace(kind);
         }
         match event["type"].as_str() {
+            Some("composer_state") => {
+                if let Some(state) = event["state"].as_str().filter(|state| {
+                    matches!(
+                        *state,
+                        "missing" | "hidden" | "ambiguous" | "disabled" | "ready"
+                    )
+                }) {
+                    crate::diagnostics::event(
+                        &root,
+                        task_id,
+                        "composer_state",
+                        "not_ready",
+                        state,
+                        started_at.elapsed().as_millis() as u64,
+                    );
+                }
+            }
             Some("effort_state") => {
                 if let Some((phase, detail)) = safe_effort_observation(&event) {
                     crate::diagnostics::event(
@@ -594,6 +608,7 @@ pub async fn run_with_progress(
                     Some("chat_mode_verification") => "chat_mode_verification",
                     Some("conversation_loading") => "conversation_loading",
                     Some("composer_ready") => "composer_ready",
+                    Some("composer_wait") => "composer_wait",
                     Some("effort_selection") => "effort_selection",
                     Some("prompt_filling") => "prompt_filling",
                     Some("prompt_verification") => "prompt_verification",
@@ -638,7 +653,15 @@ pub async fn run_with_progress(
                 cdp.assert_target(owned).await.map_err(|_| {
                     failure("conversation_changed", false, conversation_url.clone())
                 })?;
-                // The queue persisted submission intent before this method ran.
+                // A fallible durable barrier must precede the native ack. A
+                // progress event alone cannot authorize a potentially real send.
+                gate().map_err(|_| {
+                    failure(
+                        "submission_intent_not_persisted",
+                        false,
+                        conversation_url.clone(),
+                    )
+                })?;
                 submitted = true;
                 progress("submission_authorized");
                 native::write(&mut socket, &json!({"type":"continue"})).await?;

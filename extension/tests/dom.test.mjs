@@ -228,3 +228,31 @@ test('a six-position Work-like picker is rejected even if its labels resemble Ch
   const p=picker(['Instant','Light','Medium','High','Extra High','Pro'],4);
   await assert.rejects(p.api.setEffort('Extra High'),/effort_unavailable_on_account/);p.close();
 });
+
+test('composer readiness distinguishes hidden, disabled, ambiguous and hydrated controls without reading text',()=>{
+  const p=page('<textarea id="prompt-textarea" hidden></textarea>');
+  const input=p.document.querySelector('textarea');
+  assert.equal(p.api.composerState(),'hidden');assert.equal(p.api.composer(),null);
+  input.hidden=false;input.disabled=true;
+  assert.equal(p.api.composerState(),'disabled');assert.equal(p.api.composer(),null);
+  input.disabled=false;input.readOnly=true;assert.equal(p.api.composer(),null);
+  input.readOnly=false;
+  const other=p.document.createElement('div');other.contentEditable='true';other.setAttribute('contenteditable','true');other.setAttribute('aria-label','Ask ChatGPT');
+  p.document.querySelector('main').append(other);
+  assert.equal(p.api.composerState(),'ambiguous');assert.equal(p.api.composer(),null);
+  other.remove();assert.equal(p.api.composerState(),'ready');assert.equal(p.api.composer(),input);
+  input.remove();assert.equal(p.api.composerState(),'missing');p.close();
+});
+
+test('new-chat readiness survives composer remount across an inner timeout and reports its phase',async()=>{
+  const p=page('<button aria-pressed="true">Chat</button><button aria-pressed="false">Work</button>','https://chatgpt.com/');
+  // Shorten only the fixture timer, leaving the real retry control flow intact.
+  const timeout=p.window.setTimeout.bind(p.window);
+  p.window.setTimeout=(fn,ms,...args)=>timeout(fn,Math.min(ms,60),...args);
+  let waits=0;
+  await p.api.ensureChat(Date.now()+20000,()=>{
+    waits++;
+    if(waits===2)p.document.querySelector('main').insertAdjacentHTML('beforeend','<textarea id="prompt-textarea"></textarea>');
+  });
+  assert.equal(waits,2);assert(p.api.composer());p.close();
+});
