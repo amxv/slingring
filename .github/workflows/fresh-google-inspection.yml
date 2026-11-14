@@ -1,0 +1,51 @@
+name: Fresh Google artifacts (inspect only)
+
+on:
+  workflow_call:
+    inputs:
+      approve_fresh_google_inspection:
+        required: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      approve_fresh_google_inspection:
+        description: 'Download and inspect official consumer Stable/Beta on a disposable Mac only; Google download terms apply; never launch'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fresh-google-inspection-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: inputs.approve_fresh_google_inspection == true
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed inspection code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run pure inspection fixtures
+        shell: bash
+        run: python3 -W error tests/hosted/test_inspect_fresh_google.py
+      - name: Inspect official artifacts without executing them
+        env:
+          SLINGRING_FRESH_GOOGLE_INSPECTION: explicitly-authorized
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/hosted/inspect_fresh_google.py --run-hosted "$RUNNER_TEMP/fresh-google-inspection.json"
+      - name: Upload only bounded inspection metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fresh-google-inspection
+          path: ${{ runner.temp }}/fresh-google-inspection.json
+          if-no-files-found: error
+          retention-days: 7
