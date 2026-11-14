@@ -57,6 +57,7 @@ final class Owned {
 final class Report {
     var mode = "unknown", status = "unproven", code = "not_started"
     var versions: [String: String] = [:]
+    var preflight: [[String: Any]] = []
     var steps: [[String: Any]] = []
     var cleanup: [[String: Any]] = []
     func record(_ label: String, _ owned: Owned) -> Bool {
@@ -70,7 +71,7 @@ final class Report {
     }
     func write(_ path: String) throws {
         let value: [String: Any] = ["schema": 1, "mode": mode, "status": status, "code": code,
-            "steps": steps, "cleanup": cleanup, "browser_versions": versions, "scope": "application_identity_only",
+            "steps": steps, "cleanup": cleanup, "preflight": preflight, "browser_versions": versions, "scope": "application_identity_only",
             "tree_cleanup": "unproven", "candidate_helper_integration": "not_run",
             "signature_scope": "integrity_and_system_execution_policy_only", "publisher_identity": "not_independently_pinned",
             "image_version": ProcessInfo.processInfo.environment["ImageVersion"] ?? "unknown"]
@@ -87,18 +88,86 @@ func hosted(_ env: [String: String]) -> Bool {
 func privateDirectory(_ url: URL) throws {
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
 }
-func checkInstalled(_ spec: Spec) throws {
-    try require(canonical(spec.bundle) == spec.bundle.path && canonical(spec.executable) == spec.executable.path, "unexpected_bundle_symlink")
-    try require(FileManager.default.isExecutableFile(atPath: spec.executable.path), "preinstalled_browser_missing")
-    try require(Bundle(url: spec.bundle)?.bundleIdentifier == spec.id, "bundle_metadata_mismatch")
-    for (tool, arguments) in [("/usr/bin/codesign", ["--verify", "--deep", "--strict", spec.bundle.path]),
-                              ("/usr/sbin/spctl", ["--assess", "--type", "execute", spec.bundle.path])] {
-        let process = Process(); process.executableURL = URL(fileURLWithPath: tool); process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try process.run()
-        try require(until(20) { !process.isRunning } && process.terminationStatus == 0, "signature_or_gatekeeper_unproven")
+final class BoundedDiagnostic {
+    private let lock = NSLock()
+    private var bytes = Data()
+    private var ended = false
+    private var clipped = false
+    func append(_ chunk: Data) {
+        lock.lock(); defer { lock.unlock() }
+        if chunk.isEmpty { ended = true }
+        let remaining = max(0, 8192 - bytes.count)
+        if chunk.count > remaining { clipped = true }
+        bytes.append(chunk.prefix(remaining))
     }
+    func finished() -> Bool { lock.lock(); defer { lock.unlock() }; return ended }
+    func complete() -> Bool { lock.lock(); defer { lock.unlock() }; return ended && !clipped }
+    func text() -> String { lock.lock(); defer { lock.unlock() }; return String(decoding: bytes, as: UTF8.self) }
 }
+// Raw tool diagnostics are classified in bounded memory, never persisted or returned.
+func probeCategory(_ probe: String, _ status: Int32, _ diagnostic: String) -> String {
+    let text = diagnostic.lowercased()
+    if probe == "spctl_status" {
+        if status == 0 && text.trimmingCharacters(in: .whitespacesAndNewlines) == "assessments enabled" { return "passed" }
+        if text.contains("assessments disabled") { return "assessment_disabled" }
+        return "assessment_status_unproven"
+    }
+    if probe == "spctl" && (text.contains("assessment system is disabled") || text.contains("assessments disabled")
+        || text.contains("not supported") || text.contains("operation not permitted") || text.contains("unable to obtain")) { return "assessment_unavailable" }
+    if status == 0 { return "passed" }
+    if probe == "codesign" {
+        if text.contains("not signed at all") { return "signature_missing" }
+        if text.contains("invalid signature") || text.contains("sealed resource is missing or invalid")
+            || text.contains("code or signature have been modified") { return "signature_invalid" }
+        return "signature_nonzero_unclassified"
+    }
+    if text.contains("assessment system is disabled") || text.contains("assessments disabled")
+        || text.contains("not supported") || text.contains("operation not permitted")
+        || text.contains("unable to obtain") { return "assessment_unavailable" }
+    if text.contains("rejected") { return "policy_rejected" }
+    return "assessment_nonzero_unclassified"
+}
+func verifyProbe(_ browser: String, _ name: String, _ tool: String, _ arguments: [String], _ report: Report) -> Bool {
+    let process = Process(); process.executableURL = URL(fileURLWithPath: tool); process.arguments = arguments
+    let output = Pipe(), captured = BoundedDiagnostic()
+    process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = output
+    output.fileHandleForReading.readabilityHandler = { handle in
+        let chunk = handle.availableData; captured.append(chunk)
+        if chunk.isEmpty { handle.readabilityHandler = nil }
+    }
+    defer { output.fileHandleForReading.readabilityHandler = nil; try? output.fileHandleForReading.close() }
+    let began = Date()
+    do { try process.run() } catch {
+        report.preflight.append(["browser": browser, "probe": name, "result": "tool_start_failed"])
+        return false
+    }
+    guard until(20, { !process.isRunning }) else {
+        report.preflight.append(["browser": browser, "probe": name, "result": "timeout", "elapsed_ms": 20000])
+        return false
+    }
+    _ = until(1) { captured.finished() }
+    let status = process.terminationStatus
+    let category = captured.complete() ? probeCategory(name, status, captured.text()) : "diagnostic_capture_incomplete"
+    report.preflight.append(["browser": browser, "probe": name, "result": category,
+        "exit_status": Int(status), "elapsed_ms": min(21000, max(0, Int(Date().timeIntervalSince(began) * 1000)))])
+    return status == 0 && category == "passed"
+}
+func checkInstalled(_ spec: Spec, _ report: Report) -> Bool {
+    guard canonical(spec.bundle) == spec.bundle.path && canonical(spec.executable) == spec.executable.path else {
+        report.preflight.append(["browser": spec.name, "probe": "bundle_paths", "result": "unexpected_symlink"]); return false
+    }
+    guard FileManager.default.isExecutableFile(atPath: spec.executable.path) else {
+        report.preflight.append(["browser": spec.name, "probe": "bundle_paths", "result": "executable_missing"]); return false
+    }
+    guard Bundle(url: spec.bundle)?.bundleIdentifier == spec.id else {
+        report.preflight.append(["browser": spec.name, "probe": "bundle_identifier", "result": "mismatch"]); return false
+    }
+    report.preflight.append(["browser": spec.name, "probe": "bundle_paths_and_identifier", "result": "passed"])
+    let signature = verifyProbe(spec.name, "codesign", "/usr/bin/codesign", ["--verify", "--deep", "--strict", spec.bundle.path], report)
+    let policy = verifyProbe(spec.name, "spctl", "/usr/sbin/spctl", ["--assess", "--type", "execute", spec.bundle.path], report)
+    return signature && policy
+}
+
 func arguments(_ profile: URL, headless: Bool) -> [String] {
     var values = ["--user-data-dir=\(profile.path)", "--no-first-run", "--no-default-browser-check",
         "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"]
@@ -200,7 +269,10 @@ func runHosted(mode: String, report: Report) throws {
     guard let temp = env["RUNNER_TEMP"], temp.hasPrefix("/Users/runner/") else { throw CheckError(code: "runner_temp_unproven") }
     guard let session = CGSessionCopyCurrentDictionary() as? [String: Any], session[kCGSessionOnConsoleKey as String] as? Bool == true else { throw CheckError(code: "gui_session_unavailable") }
     try require(NSRunningApplication.runningApplications(withBundleIdentifier: Spec.chrome.id).isEmpty && NSRunningApplication.runningApplications(withBundleIdentifier: Spec.cft.id).isEmpty, "preexisting_browser_refuse_to_touch")
-    try checkInstalled(.chrome); try checkInstalled(.cft)
+    let assessmentEnabled = verifyProbe("system", "spctl_status", "/usr/sbin/spctl", ["--status"], report)
+    let chromeVerified = checkInstalled(.chrome, report)
+    let cftVerified = checkInstalled(.cft, report)
+    try require(assessmentEnabled && chromeVerified && cftVerified, "preflight_verification_unproven")
     for spec in [Spec.chrome, Spec.cft] {
         guard let version = Bundle(url: spec.bundle)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
               version.range(of: "^[0-9]+(\\.[0-9]+){3}$", options: .regularExpression) != nil else { throw CheckError(code: "browser_version_unproven") }
@@ -251,6 +323,21 @@ func selfTest() throws {
     try require(good.matches(.cft, after: date) && !good.matches(.chrome, after: date), "binding_test_failed")
     let missing = Evidence(bundleID: Spec.cft.id, bundlePath: Spec.cft.bundle.path, executablePath: Spec.cft.executable.path, launchTime: nil, pid: 42, equalNativeObject: false, finishedLaunching: true, activationPolicy: 0)
     try require(!missing.matches(.cft, after: date), "binding_test_failed")
+    try require(probeCategory("codesign", 1, "secret-host-path: code object is not signed at all") == "signature_missing", "diagnostic_test_failed")
+    try require(probeCategory("codesign", 1, "a sealed resource is missing or invalid") == "signature_invalid", "diagnostic_test_failed")
+    try require(probeCategory("spctl", 3, "assessment system is disabled") == "assessment_unavailable", "diagnostic_test_failed")
+    try require(probeCategory("spctl", 3, "rejected; secret-host-path") == "policy_rejected", "diagnostic_test_failed")
+    try require(probeCategory("spctl", 1, "unknown private details") == "assessment_nonzero_unclassified", "diagnostic_test_failed")
+    try require(probeCategory("spctl", 0, "") == "passed", "diagnostic_test_failed")
+    try require(probeCategory("spctl", 0, "assessment system is disabled") == "assessment_unavailable", "diagnostic_test_failed")
+    let bounded = BoundedDiagnostic(); bounded.append(Data(repeating: 65, count: 16384)); bounded.append(Data())
+    try require(bounded.text().utf8.count == 8192 && bounded.finished() && !bounded.complete(), "diagnostic_bounds_failed")
+    let unfinished = BoundedDiagnostic(); unfinished.append(Data("assessments enabled".utf8))
+    try require(!unfinished.complete(), "diagnostic_completeness_failed")
+    unfinished.append(Data()); try require(unfinished.complete(), "diagnostic_completeness_failed")
+    try require(probeCategory("spctl_status", 0, "assessments enabled\n") == "passed", "diagnostic_test_failed")
+    try require(probeCategory("spctl_status", 0, "") == "assessment_status_unproven", "diagnostic_test_failed")
+    try require(probeCategory("spctl_status", 0, "assessments disabled") == "assessment_disabled", "diagnostic_test_failed")
     print("identity fixture self-tests passed; no browser or AppKit app lookup performed")
 }
 let args = CommandLine.arguments

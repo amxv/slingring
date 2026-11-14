@@ -1,6 +1,6 @@
 # Opt-in disposable hosted macOS identity check
 
-This is a **prepared, not yet executed** validation fixture. It is independent of release workflows, helper installation, production capability gates and the owner's Mac. Never run browser mode on a personal machine or a self-hosted runner.
+This is an **opt-in validation fixture, not a released feature**. The initial hosted run reached preflight but did not launch a browser. It is independent of release workflows, helper installation, production capability gates and the owner's Mac. Never run browser mode on a personal machine or a self-hosted runner.
 
 ## Scope and safety
 
@@ -11,6 +11,12 @@ Browser mode is guarded by the hosted-runner environment, ARM64/macOS, expected 
 Every browser gets a fresh private profile and sanitized HOME/TMPDIR. The sole page is `about:blank`; CDP connections use loopback and a validated endpoint from that profile. Browser-owned background networking may still occur under normal browser defaults. No user-agent/fingerprint tuning, protection flags, Gatekeeper changes, quarantine removal, bundle rewriting, app installation, default-browser changes or process-name/PID signals are used.
 
 Code signatures and `spctl` execution policy are checked without modification. This establishes integrity and system policy, **not an independently pinned Google publisher identity**; the report says so. Trust in the preinstalled artifacts is scoped to the documented GitHub image. Exact browser version/image and signature provenance should be pinned before using this to approve a production browser replacement.
+
+## Read-only preflight diagnostics
+
+Every available bundle is checked independently with both `codesign --verify --deep --strict` and `spctl --assess --type execute`, even when an earlier probe fails. All four checks must succeed before browser launch. A separate read-only `spctl --status` probe must also return affirmative `assessments enabled`; an empty or unavailable status is unproven. Metadata reports contain only the fixed browser/probe labels, numeric exit status, bounded elapsed time and an allowlisted category: signature missing/invalid/unclassified, policy rejected, assessment unavailable/unclassified, tool-start failure or timeout. Raw tool output is capped at 8 KiB in memory and is never printed, persisted or uploaded. Incomplete or truncated capture is unproven even when a tool exits zero. An unclassified nonzero result is not automatically called a corrupt signature.
+
+A separately obtained official artifact would need an independently reviewed exact version/source and digest, then the same unmodified signature and system-policy checks in a new disposable runner. That is not part of this workflow, and merely redownloading is not evidence of a fix. Do not remove quarantine, re-sign a browser, disable assessment or skip a failing check. An unavailable assessment environment calls for a supported environment, not a weaker pass condition.
 
 ## What a pass means
 
@@ -34,9 +40,9 @@ actionlint .github/workflows/owned-browser-identity.yml
 
 ## Safe trigger after review and authorization
 
-Nothing has been pushed or dispatched as part of preparing this fixture. Review the workflow and fixture at the exact branch commit first. [GitHub requires a dispatchable workflow file on the default branch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), so the new dedicated workflow cannot yet be dispatched by name.
+The validation branch was reviewed, published and explicitly dispatched for the initial run described below. Review the exact branch commit and authorization before any further dispatch. [GitHub requires a dispatchable workflow file on the default branch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow), so the new dedicated workflow cannot yet be dispatched by name.
 
-The validation branch therefore adds a default-off input to the **already registered CI workflow**. With that explicit input, it skips ordinary CI jobs and calls the local reusable identity workflow from the same reviewed commit. No experimental runtime or workflow needs to be merged into main just to use this route. The branch must first be reviewed and published; publication and dispatch require authorization and have **not** happened.
+The validation branch therefore adds a default-off input to the **already registered CI workflow**. With that explicit input, it skips ordinary CI jobs and calls the local reusable identity workflow from the same reviewed commit. No experimental runtime or workflow needs to be merged into main just to use this route. Publication and each deliberately scoped validation run require authorization. The initial run verified this branch-only dispatch route without a main-branch change.
 
 After that review/authorization, use the registered workflow with the reviewed validation ref:
 
@@ -46,9 +52,13 @@ gh workflow run ci.yml --repo amxv/slingring \
   -f approve_disposable_browser_test=true
 ```
 
-The direct `owned-browser-identity.yml` dispatch route becomes available only if that manual workflow is separately registered on the default branch. The reusable call path has been statically checked locally, not exercised against the GitHub dispatch API yet.
+The direct `owned-browser-identity.yml` dispatch route becomes available only if that manual workflow is separately registered on the default branch. The reusable call path was exercised successfully by the initial run; that is workflow wiring evidence, not a browser identity pass.
 
 Check that GitHub resolves the intended SHA before trusting the run. There are two bounded hosted jobs, so normal repository Actions usage charges may apply. Read both metadata artifacts and treat either `unproven`, missing report, failed step or unavailable runner as incomplete validation. Do not retry by relaxing protection or identity checks.
+
+## Recorded hosted evidence
+
+The [initial run 43535946917](https://github.com/amxv/slingring/actions/runs/43535946917) used reviewed commit `74ed2e5c3172e989399e66ed5542bcd024181f61` on GitHub-hosted image `macos-15-arm64` version `20261104.0514.1`. Both headed and headless jobs passed hosted-context, compile and pure guard checks, then failed closed at the original combined signature/policy preflight. No fixture browser/profile was launched, and the uploaded reports had empty native and cleanup evidence. The old combined code did not identify which browser/probe returned nonzero; the independent diagnostics above address that evidence gap without changing the pass condition or system policy.
 
 ## Still not issue #4 closure or production validation
 
