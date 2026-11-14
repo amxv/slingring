@@ -28,3 +28,4 @@ tmp/
 /relay/node_modules/
 /relay/dist/
 /relay/.wrangler/
+.agents/gg/queue.md
