@@ -69,12 +69,18 @@ fn no_descendants(budget: Duration) -> io::Result<()> {
 }
 
 pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
-    let [root, socket, profile] = arguments else {
+    let [root, socket, profile, home, mode] = arguments else {
         return Err(io::Error::other("invalid private guardian bootstrap"));
     };
     let root = std::path::Path::new(root);
     let socket = std::path::Path::new(socket);
     let profile = std::path::Path::new(profile);
+    let home = std::path::Path::new(home);
+    let headed = match mode.to_str() {
+        Some("headed") => true,
+        Some("headless") => false,
+        _ => return Err(io::Error::other("invalid stock browser visibility")),
+    };
     // This is a dedicated process. No other children or competing waits.
     setsid()?;
     set_child_subreaper(Pid::from_raw(1))?;
@@ -92,6 +98,7 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
     let generation = initial[1..].try_into().unwrap();
     super::require_private(root)?;
     super::require_private(profile)?;
+    super::require_private(home)?;
     let ownership = root.join("stock-chrome-generation");
     receipt::verify_pending_profile(&ownership, generation, profile)?;
     let channel = std::os::unix::net::UnixStream::connect(socket)?;
@@ -116,7 +123,6 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
         ])
         .arg(chrome)
         .args([
-            "--headless",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-background-networking",
@@ -126,14 +132,29 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
         .arg("about:blank")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", cwd.join("home"))
-        .env("XDG_CONFIG_HOME", cwd.join("home/.config"))
-        .env("XDG_CACHE_HOME", cwd.join("home/.cache"))
-        .env("XDG_DATA_HOME", cwd.join("home/.local/share"))
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
         .current_dir(cwd)
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(cdp_in)))
         .stdout(Stdio::from(std::os::fd::OwnedFd::from(cdp_out)))
         .stderr(Stdio::null());
+    if !headed {
+        command.arg("--headless");
+    } else {
+        for name in [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
     let mut lease = GroupLease::spawn(&mut command)?;
     let root = lease.id();
     send(&mut output, STARTED, generation, root)?;

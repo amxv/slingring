@@ -6,13 +6,13 @@ use std::{
     ffi::OsString,
     fs,
     io::Read,
-    os::unix::{
-        ffi::OsStringExt,
-        fs::{DirBuilderExt, MetadataExt},
-    },
+    os::unix::{ffi::OsStringExt, fs::MetadataExt},
     path::{Path, PathBuf},
     sync::OnceLock,
 };
+
+#[cfg(test)]
+use std::os::unix::fs::DirBuilderExt;
 
 pub(crate) const CHROME: &str = "/opt/google/chrome/chrome";
 
@@ -29,8 +29,7 @@ fn sandbox_host(uid: u32, ci: bool, container_file: bool, cgroups: &str) -> Resu
     Ok(())
 }
 
-/// Refuse the exact environments in which the pinned helper automatically adds
-/// --no-sandbox. Never change policy or override that safety check with flags.
+/// Only use a regular user session. There is no sandbox-off retry.
 pub(crate) fn preflight() -> Result<()> {
     let cgroups = String::from_utf8(bounded(Path::new("/proc/1/cgroup"))?)?;
     sandbox_host(
@@ -62,6 +61,7 @@ fn uid() -> Result<u32> {
     Ok(fs::metadata("/proc/self")?.uid())
 }
 
+#[cfg(test)]
 fn private_directory(path: &Path, create: bool) -> Result<()> {
     if create {
         match fs::DirBuilder::new().mode(0o700).create(path) {
@@ -96,6 +96,7 @@ pub(crate) fn runtime_root(root: &Path) -> Result<PathBuf> {
     )))
 }
 
+#[cfg(test)]
 pub(crate) fn prepare(root: &Path, command: &mut tokio::process::Command) -> Result<()> {
     let directory = runtime_root(root)?;
     private_directory(&directory, true)?;
@@ -114,6 +115,7 @@ pub(crate) fn prepare(root: &Path, command: &mut tokio::process::Command) -> Res
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_profile(root: &Path, profile: &Path) -> Result<PathBuf> {
     let runtime = runtime_root(root)?;
     private_directory(&runtime, false)?;
@@ -232,17 +234,22 @@ fn profile_from_arguments(bytes: &[u8], expected: &Identity, headed: bool) -> Re
     Ok(PathBuf::from(OsString::from_vec(profiles[0].to_vec())))
 }
 
-pub(crate) fn owned_profile(pid: u32, headed: bool, root: &Path) -> Result<PathBuf> {
+pub(crate) fn verify_stock(pid: u32, headed: bool, expected_profile: &Path) -> Result<()> {
     ensure!(pid > 0, "invalid browser PID");
     inspect(
         &Path::new("/proc").join(pid.to_string()),
         headed,
-        root,
+        expected_profile,
         &expected_executable()?,
     )
 }
 
-fn inspect(directory: &Path, headed: bool, root: &Path, executable: &Path) -> Result<PathBuf> {
+fn inspect(
+    directory: &Path,
+    headed: bool,
+    expected_profile: &Path,
+    executable: &Path,
+) -> Result<()> {
     let before = identity(directory)?;
     ensure!(
         before.uid == uid()?,
@@ -254,12 +261,27 @@ fn inspect(directory: &Path, headed: bool, root: &Path, executable: &Path) -> Re
     );
     let args = bounded(&directory.join("cmdline"))?;
     let profile = profile_from_arguments(&args, &before, headed)?;
-    let profile = validate_profile(root, &profile)?;
+    ensure!(
+        profile == expected_profile,
+        "stock Chrome profile does not match the admitted owner"
+    );
+    ensure!(
+        args[..args.len() - 1]
+            .split(|byte| *byte == 0)
+            .filter(|arg| *arg == b"--remote-debugging-pipe")
+            .count()
+            == 1
+            && args[..args.len() - 1]
+                .split(|byte| *byte == 0)
+                .all(|arg| !arg.starts_with(b"--remote-debugging-port")
+                    && arg != b"--enable-unsafe-extension-debugging"),
+        "stock Chrome requires only private pipe debugging",
+    );
     ensure!(
         identity(directory)? == before,
         "Linux browser identity changed during inspection"
     );
-    Ok(profile)
+    Ok(())
 }
 
 #[cfg(test)]

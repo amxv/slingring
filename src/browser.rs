@@ -7,18 +7,21 @@ use crate::{
     native,
 };
 use anyhow::{Context, Result, ensure};
+#[cfg(any(not(target_os = "linux"), test))]
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
     time::Duration,
 };
-use tokio::net::{TcpStream, UnixListener, UnixStream};
+use tokio::net::{UnixListener, UnixStream};
+#[cfg(any(not(target_os = "linux"), test))]
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+#[cfg(any(not(target_os = "linux"), test))]
+use {std::process::Stdio, tokio::net::TcpStream};
 
 pub fn install_extension(root: &Path) -> Result<PathBuf> {
     native::assets(root)
@@ -27,17 +30,22 @@ pub fn session(root: &Path) -> String {
     let digest = format!("{:x}", Sha256::digest(root.to_string_lossy().as_bytes()));
     format!("slingring-{}", &digest[..12])
 }
+#[cfg(any(not(target_os = "linux"), test))]
 #[derive(Debug)]
 struct RunnerProblem(&'static str);
+#[cfg(any(not(target_os = "linux"), test))]
 impl std::fmt::Display for RunnerProblem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
 }
+#[cfg(any(not(target_os = "linux"), test))]
 impl std::error::Error for RunnerProblem {}
+#[cfg(any(not(target_os = "linux"), test))]
 fn problem(kind: &'static str) -> anyhow::Error {
     RunnerProblem(kind).into()
 }
+#[cfg(any(not(target_os = "linux"), test))]
 fn launch_stage(error: &anyhow::Error, retry: bool) -> &'static str {
     match (retry, error.downcast_ref::<RunnerProblem>().map(|e| e.0)) {
         (false, Some("timeout")) => "browser_launch_timeout",
@@ -54,13 +62,11 @@ fn launch_stage(error: &anyhow::Error, retry: bool) -> &'static str {
         (true, _) => "browser_retry_other_error",
     }
 }
+#[cfg(not(target_os = "linux"))]
 async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
-    #[cfg(target_os = "linux")]
-    let executable = Some(Path::new(crate::browser_linux::CHROME));
-    #[cfg(not(target_os = "linux"))]
-    let executable = None;
-    agent_at(&config::root()?, config, args, executable).await
+    agent_at(&config::root()?, config, args, None).await
 }
+#[cfg(any(not(target_os = "linux"), test))]
 async fn agent_at(
     root: &Path,
     config: &Config,
@@ -162,7 +168,11 @@ async fn agent_at(
 }
 
 struct Cdp {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    #[cfg(any(not(target_os = "linux"), test))]
+    socket: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    #[cfg(target_os = "linux")]
+    pipe: Option<Arc<tokio::sync::Mutex<crate::browser_stock::Pipe>>>,
+    #[cfg(any(not(target_os = "linux"), test))]
     id: u64,
 }
 #[derive(Clone, Debug)]
@@ -196,6 +206,7 @@ fn owned_profile_from_command(command: &str, headed: bool) -> Result<PathBuf> {
     Ok(directory)
 }
 impl Cdp {
+    #[cfg(not(target_os = "linux"))]
     async fn owned_profile(&mut self, headed: bool) -> Result<PathBuf> {
         let info = self
             .call("SystemInfo.getProcessInfo", json!({}), None)
@@ -231,6 +242,7 @@ impl Cdp {
             owned_profile_from_command(&command, headed)
         }
     }
+    #[cfg(any(not(target_os = "linux"), test))]
     async fn connect(endpoint: &str) -> Result<Self> {
         let url = url::Url::parse(endpoint)?;
         ensure!(
@@ -240,42 +252,57 @@ impl Cdp {
             "unexpected browser endpoint"
         );
         let (socket, _) = connect_async(endpoint).await?;
-        Ok(Self { socket, id: 0 })
+        Ok(Self {
+            socket: Some(socket),
+            id: 0,
+            #[cfg(target_os = "linux")]
+            pipe: None,
+        })
     }
     async fn call(&mut self, method: &str, params: Value, session: Option<&str>) -> Result<Value> {
-        self.id += 1;
-        let mut request = json!({"id":self.id,"method":method,"params":params});
-        if let Some(session) = session {
-            request["sessionId"] = json!(session);
+        #[cfg(target_os = "linux")]
+        if let Some(pipe) = self.pipe.as_ref() {
+            return pipe.lock().await.call(method, params, session).await;
         }
-        self.socket
-            .send(Message::Text(request.to_string().into()))
-            .await?;
-        tokio::time::timeout(Duration::from_secs(20), async {
-            while let Some(message) = self.socket.next().await {
-                match message? {
-                    Message::Text(text) => {
-                        ensure!(
-                            text.len() <= 4 * 1024 * 1024,
-                            "browser protocol response too large"
-                        );
-                        let value: Value = serde_json::from_str(&text)?;
-                        if value["id"] != self.id {
-                            continue;
-                        }
-                        ensure!(
-                            value.get("error").is_none(),
-                            "browser operation {method} was rejected"
-                        );
-                        return Ok(value["result"].clone());
-                    }
-                    Message::Ping(p) => self.socket.send(Message::Pong(p)).await?,
-                    _ => {}
-                }
+        #[cfg(all(target_os = "linux", not(test)))]
+        anyhow::bail!("missing owned stock Chrome pipe");
+        #[cfg(any(not(target_os = "linux"), test))]
+        {
+            let socket = self.socket.as_mut().context("missing browser socket")?;
+            self.id += 1;
+            let mut request = json!({"id":self.id,"method":method,"params":params});
+            if let Some(session) = session {
+                request["sessionId"] = json!(session);
             }
-            anyhow::bail!("browser protocol disconnected")
-        })
-        .await?
+            socket
+                .send(Message::Text(request.to_string().into()))
+                .await?;
+            tokio::time::timeout(Duration::from_secs(20), async {
+                while let Some(message) = socket.next().await {
+                    match message? {
+                        Message::Text(text) => {
+                            ensure!(
+                                text.len() <= 4 * 1024 * 1024,
+                                "browser protocol response too large"
+                            );
+                            let value: Value = serde_json::from_str(&text)?;
+                            if value["id"] != self.id {
+                                continue;
+                            }
+                            ensure!(
+                                value.get("error").is_none(),
+                                "browser operation {method} was rejected"
+                            );
+                            return Ok(value["result"].clone());
+                        }
+                        Message::Ping(p) => socket.send(Message::Pong(p)).await?,
+                        _ => {}
+                    }
+                }
+                anyhow::bail!("browser protocol disconnected")
+            })
+            .await?
+        }
     }
     async fn bind_tab(&mut self, bootstrap: &str, url: &str) -> Result<ChatTarget> {
         let targets = self.call("Target.getTargets", json!({}), None).await?;
@@ -478,45 +505,67 @@ pub async fn run_authorized(
     let deadline =
         started_at + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
-    #[cfg(target_os = "linux")]
-    crate::browser_linux::preflight()
-        .map_err(|_| failure("linux_browser_environment_unsupported", false, None))?;
     let extension = native::assets(&root)?;
-    if let Err(error) = agent(config, &["open", "about:blank"]).await {
-        // This is strictly before extension installation and before ChatGPT is
-        // opened. A stale runner/socket may be recreated once without any risk
-        // of replaying a prompt. No submission or UI action is retried here.
-        progress(launch_stage(&error, false));
-        trace("retry_blank_browser_launch");
-        progress("browser_retry_cleanup");
-        let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
-        progress("browser_retry");
+    #[cfg(target_os = "linux")]
+    let (mut cdp, browser_data) = {
+        ensure!(
+            config.profile == crate::browser_stock::PROFILE
+                && config.browser_binary == crate::browser_stock::PROVIDER,
+            "Linux uses only the explicitly selected dedicated stock Chrome backend; run setup"
+        );
+        let (pipe, profile) = crate::browser_stock::open_task(&root, config.browser_headed)
+            .await
+            .map_err(|_| failure("linux_stock_browser_unavailable", false, None))?;
+        (
+            Cdp {
+                pipe: Some(pipe),
+                #[cfg(test)]
+                socket: None,
+                #[cfg(test)]
+                id: 0,
+            },
+            profile,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (mut cdp, browser_data) = {
         if let Err(error) = agent(config, &["open", "about:blank"]).await {
-            progress(launch_stage(&error, true));
-            return Err(failure("browser_start_failed", false, None));
+            // This is strictly before extension installation and before ChatGPT is
+            // opened. A stale runner/socket may be recreated once without any risk
+            // of replaying a prompt. No submission or UI action is retried here.
+            progress(launch_stage(&error, false));
+            trace("retry_blank_browser_launch");
+            progress("browser_retry_cleanup");
+            let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
+            progress("browser_retry");
+            if let Err(error) = agent(config, &["open", "about:blank"]).await {
+                progress(launch_stage(&error, true));
+                return Err(failure("browser_start_failed", false, None));
+            }
         }
-    }
-    progress("browser_endpoint");
-    let endpoint = agent(config, &["get", "cdp-url"])
-        .await
-        .map_err(|_| failure("browser_endpoint_unavailable", false, None))?;
-    let mut cdp = Cdp::connect(
-        endpoint["cdpUrl"]
-            .as_str()
-            .context("browser endpoint missing")?,
-    )
-    .await?;
-    progress("browser_profile_validation");
-    if std::env::var_os("SLINGRING_TRACE").is_some() {
-        config::atomic(
-            &root.join("debug-browser.json"),
-            &serde_json::to_vec(&endpoint)?,
-        )?;
-    }
-    let browser_data = cdp
-        .owned_profile(config.browser_headed)
-        .await
-        .map_err(|_| failure("isolated_profile_unverified", false, None))?;
+        progress("browser_endpoint");
+        let endpoint = agent(config, &["get", "cdp-url"])
+            .await
+            .map_err(|_| failure("browser_endpoint_unavailable", false, None))?;
+        let mut cdp = Cdp::connect(
+            endpoint["cdpUrl"]
+                .as_str()
+                .context("browser endpoint missing")?,
+        )
+        .await?;
+        progress("browser_profile_validation");
+        if std::env::var_os("SLINGRING_TRACE").is_some() {
+            config::atomic(
+                &root.join("debug-browser.json"),
+                &serde_json::to_vec(&endpoint)?,
+            )?;
+        }
+        let browser_data = cdp
+            .owned_profile(config.browser_headed)
+            .await
+            .map_err(|_| failure("isolated_profile_unverified", false, None))?;
+        (cdp, browser_data)
+    };
     progress("native_registration");
     native::register(&root, &browser_data)
         .map_err(|_| failure("native_registration_failed", false, None))?;
@@ -783,6 +832,12 @@ pub async fn close(config: &Config) -> Result<()> {
     if let Ok(root) = config::root() {
         let _ = std::fs::remove_file(root.join("debug-browser.json"));
     }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = config;
+        crate::browser_stock::close_task().await
+    }
+    #[cfg(not(target_os = "linux"))]
     agent(config, &["close"]).await.map(|_| ())
 }
 

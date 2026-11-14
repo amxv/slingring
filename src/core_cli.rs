@@ -215,12 +215,15 @@ pub async fn run(command: Command) -> Result<()> {
             profile,
             default_effort,
         } => {
+            #[cfg(not(target_os = "linux"))]
             let existed = root.join("config.json").is_file();
             let mut config = Config::load(&root)?;
-            if let Some(profile) = profile {
+            if let Some(profile) = profile.as_ref() {
                 let rows = crate::profiles::list(&root, &config).await?;
-                config.profile = crate::profiles::select(&rows, &profile)?.directory.clone();
-            } else if !existed {
+                config.profile = crate::profiles::select(&rows, profile)?.directory.clone();
+            }
+            #[cfg(not(target_os = "linux"))]
+            if !existed && profile.is_none() {
                 let rows = crate::profiles::list(&root, &config).await?;
                 ensure!(
                     rows.len() == 1,
@@ -232,14 +235,27 @@ pub async fn run(command: Command) -> Result<()> {
                 config.default_effort = Some(crate::model::effort(&effort)?);
                 config.check_effort(config.default_effort.as_deref().unwrap())?;
             }
-            config.browser_binary = crate::dependencies::resolve(&root, &config.browser_binary)?
-                .to_string_lossy()
-                .into_owned();
+            #[cfg(not(target_os = "linux"))]
+            {
+                config.browser_binary =
+                    crate::dependencies::resolve(&root, &config.browser_binary)?
+                        .to_string_lossy()
+                        .into_owned();
+            }
+            #[cfg(target_os = "linux")]
+            {
+                config.browser_binary = crate::browser_stock::PROVIDER.into();
+                config.profile = crate::browser_stock::PROFILE.into();
+            }
             config.save(&root)?;
             let extension = crate::browser::install_extension(&root)?;
             reload(&root).await?;
+            #[cfg(not(target_os = "linux"))]
+            let ready = true;
+            #[cfg(target_os = "linux")]
+            let ready = crate::browser_stock::profile_prepared(&root);
             output(
-                json!({"ready":true,"home":root,"profile":config.profile,"default_effort":config.default_effort,
+                json!({"ready":ready,"home":root,"profile":config.profile,"default_effort":config.default_effort,
                 "extension":extension,"browser_binary":config.browser_binary}),
             )
         }
@@ -262,6 +278,16 @@ pub async fn run(command: Command) -> Result<()> {
                         Ok(())
                     }
                 }
+                #[cfg(target_os = "linux")]
+                ProfileAction::Open => {
+                    ensure!(
+                        config.profile == crate::browser_stock::PROFILE
+                            && config.browser_binary == crate::browser_stock::PROVIDER,
+                        "run slingring setup before opening the dedicated profile"
+                    );
+                    crate::browser_stock::manual_profile(&root).await?;
+                    output(json!({"configured":true,"profile":crate::browser_stock::PROFILE}))
+                }
                 ProfileAction::Use { profile } => {
                     let selected = crate::profiles::select(&rows, &profile)?;
                     ensure!(
@@ -269,10 +295,13 @@ pub async fn run(command: Command) -> Result<()> {
                         "Wait for queued tasks to finish before changing the Chrome profile"
                     );
                     config.profile = selected.directory.clone();
-                    config.browser_binary =
-                        crate::dependencies::resolve(&root, &config.browser_binary)?
-                            .to_string_lossy()
-                            .into_owned();
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        config.browser_binary =
+                            crate::dependencies::resolve(&root, &config.browser_binary)?
+                                .to_string_lossy()
+                                .into_owned();
+                    }
                     config.save(&root)?;
                     crate::browser::install_extension(&root)?;
                     reload(&root).await?;
@@ -321,8 +350,22 @@ pub async fn run(command: Command) -> Result<()> {
                             reload(&root).await?;
                             return output(json!({"saved":true,"config":config.redacted()}));
                         }
-                        "profile" | "chrome-profile" => config.profile = value,
-                        "browser-binary" => config.browser_binary = value,
+                        "profile" | "chrome-profile" => {
+                            #[cfg(target_os = "linux")]
+                            ensure!(
+                                value == crate::browser_stock::PROFILE,
+                                "Linux uses a single dedicated Slingring profile; run slingring profile open"
+                            );
+                            config.profile = value;
+                        }
+                        "browser-binary" => {
+                            #[cfg(target_os = "linux")]
+                            ensure!(
+                                value == crate::browser_stock::PROVIDER,
+                                "Linux uses stock Chrome Stable; no alternate binary is accepted"
+                            );
+                            config.browser_binary = value;
+                        }
                         "browser-mode" => {
                             config.browser_headed = match value.as_str() {
                                 "headed" => true,

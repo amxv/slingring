@@ -37,6 +37,21 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 pub fn register(root: &Path, browser_data: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    let data = crate::browser_stock::validate_registration(root, browser_data)?;
+    #[cfg(not(target_os = "linux"))]
+    let data = browser_data.canonicalize()?;
+    #[cfg(not(target_os = "linux"))]
+    ensure!(
+        data.starts_with(std::env::temp_dir().canonicalize()?)
+            && data
+                .file_name()
+                .is_some_and(|v| v.to_string_lossy().starts_with("agent-browser-profile-")),
+        "native host registration requires an isolated agent-browser profile copy"
+    );
+    register_checked(root, &data)
+}
+fn register_checked(root: &Path, data: &Path) -> Result<()> {
     ensure!(root.is_absolute(), "state directory must be absolute");
     config::private_dir(root)?;
     assets(root)?;
@@ -48,21 +63,6 @@ pub fn register(root: &Path, browser_data: &Path) -> Result<()> {
     );
     config::atomic(&wrapper, text.as_bytes())?;
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
-    // A copied profile uses its own NativeMessagingHosts directory. Register
-    // ONLY there, never alter the user's everyday Chrome installation.
-    #[cfg(target_os = "linux")]
-    let data = crate::browser_linux::validate_profile(root, browser_data)?;
-    #[cfg(not(target_os = "linux"))]
-    let data = browser_data.canonicalize()?;
-    #[cfg(not(target_os = "linux"))]
-    ensure!(
-        data.starts_with(std::env::temp_dir().canonicalize()?)
-            && data
-                .file_name()
-                .and_then(|v| v.to_str())
-                .is_some_and(|v| v.starts_with("agent-browser-profile-")),
-        "native host registration requires an isolated agent-browser profile copy"
-    );
     let hosts = data.join("NativeMessagingHosts");
     config::private_dir(&hosts)?;
     let manifest = json!({"name":HOST,"description":"Slingring task bridge","path":wrapper,

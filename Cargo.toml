@@ -20,6 +20,9 @@ dist = true
 name = "slingring"
 path = "src/main.rs"
 
+[features]
+stock-browser-fixture = []
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }

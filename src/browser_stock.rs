@@ -11,14 +11,19 @@ use std::{
     fs, io,
     os::unix::fs::{DirBuilderExt, MetadataExt},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
+    sync::Mutex,
 };
 
+pub(crate) const PROFILE: &str = "Slingring";
+pub(crate) const PROVIDER: &str = "stock-chrome-stable";
 const MAX_FRAME: usize = 4 * 1024 * 1024;
+#[cfg(feature = "stock-browser-fixture")]
 const STOCK_SMOKE: &str = "--private-slingring-stock-chrome-smoke";
 
 pub(super) fn require_private(path: &Path) -> io::Result<()> {
@@ -49,6 +54,16 @@ pub(super) fn chrome_executable() -> io::Result<PathBuf> {
     Ok(path)
 }
 
+pub(crate) fn validate_registration(root: &Path, profile: &Path) -> Result<PathBuf> {
+    require_private(root)?;
+    require_private(profile)?;
+    ensure!(
+        profile == root.join("stock-chrome-profile"),
+        "native host target is not the exact dedicated Slingring profile"
+    );
+    Ok(profile.to_path_buf())
+}
+
 fn create_private(path: &Path) -> io::Result<()> {
     fs::DirBuilder::new().mode(0o700).create(path)?;
     require_private(path)
@@ -58,6 +73,7 @@ pub(crate) fn maybe_run_guardian() -> Option<Result<()>> {
     let mut args = std::env::args_os().skip(1);
     match args.next()?.to_str()? {
         guardian::MODE => Some(guardian::child_mode(&args.collect::<Vec<_>>()).map_err(Into::into)),
+        #[cfg(feature = "stock-browser-fixture")]
         STOCK_SMOKE => Some((|| {
             let root = PathBuf::from(args.next().context("missing dedicated fixture state")?);
             ensure!(args.next().is_none(), "unexpected fixture argument");
@@ -72,21 +88,30 @@ pub(crate) fn maybe_run_guardian() -> Option<Result<()>> {
 
 /// Chromium's NUL-delimited browser pipe. An abandoned/partial call poisons the
 /// connection; a response from a previous turn can never authorize a new close.
-struct Pipe {
+pub(crate) struct Pipe {
     channel: BufReader<UnixStream>,
     next_id: u64,
     usable: bool,
 }
 impl Pipe {
-    async fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) async fn call(
+        &mut self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+    ) -> Result<Value> {
         ensure!(self.usable, "private browser channel unverified");
         self.usable = false;
         self.next_id = self.next_id.checked_add(1).context("CDP ID exhausted")?;
         let id = self.next_id;
-        let mut bytes = serde_json::to_vec(&json!({"id":id,"method":method,"params":params}))?;
+        let mut request = json!({"id":id,"method":method,"params":params});
+        if let Some(session) = session {
+            request["sessionId"] = json!(session);
+        }
+        let mut bytes = serde_json::to_vec(&request)?;
         ensure!(bytes.len() < MAX_FRAME, "CDP command size exceeds limit");
         bytes.push(0);
-        let result = tokio::time::timeout(Duration::from_secs(8), async {
+        let result: Value = tokio::time::timeout(Duration::from_secs(8), async {
             self.channel.write_all(&bytes).await?;
             self.channel.flush().await?;
             loop {
@@ -104,16 +129,20 @@ impl Pipe {
                     continue;
                 }
                 ensure!(reply["id"].as_u64() == Some(id), "CDP response ID mismatch");
-                ensure!(
-                    reply.get("error").is_none(),
-                    "stock Chrome rejected {method}"
-                );
-                return reply.get("result").cloned().context("missing CDP result");
+                return Ok::<Value, anyhow::Error>(reply);
             }
         })
         .await??;
+        ensure!(
+            result.get("result").is_some() != result.get("error").is_some(),
+            "invalid browser result"
+        );
         self.usable = true;
-        Ok(result)
+        ensure!(
+            result.get("error").is_none(),
+            "stock Chrome rejected {method}"
+        );
+        result.get("result").cloned().context("missing CDP result")
     }
 }
 
@@ -127,13 +156,14 @@ impl Drop for Socket {
 }
 
 struct Browser {
-    pipe: Pipe,
+    pipe: Arc<Mutex<Pipe>>,
     guardian: GuardedChild,
     evidence: receipt::Generation,
     profile: PathBuf,
+    headed: bool,
 }
 impl Browser {
-    async fn open(root: &Path) -> Result<Self> {
+    async fn open(root: &Path, headed: bool) -> Result<Self> {
         crate::browser_linux::preflight()?;
         require_private(root)?;
         ensure!(
@@ -149,14 +179,19 @@ impl Browser {
         }
         let attempt = runtime.join(format!("a-{}", uuid::Uuid::new_v4().simple()));
         create_private(&attempt)?;
-        // Keep the permissions and exact profile name contract native expects.
-        let profile = runtime.join(format!(
-            "agent-browser-profile-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        create_private(&profile)?;
-        // The home belongs to this runtime only; never inherit the user profile.
-        let home = runtime.join("home");
+        let profile = root.join("stock-chrome-profile");
+        match create_private(&profile) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                require_private(&profile)?
+            }
+            result => result?,
+        }
+        ensure!(
+            fs::symlink_metadata(profile.join("SingletonLock"))
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound),
+            "dedicated Slingring browser profile already in use or unverified",
+        );
+        let home = root.join("stock-chrome-home");
         match create_private(&home) {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => require_private(&home)?,
             result => result?,
@@ -170,7 +205,13 @@ impl Browser {
         let evidence = receipt::begin(&root.join("stock-chrome-generation"), &profile)?;
         let nonce = evidence.nonce();
         let current = std::env::current_exe()?;
-        let paths = [root.to_owned(), socket.0.clone(), profile.clone()];
+        let paths = [
+            root.to_owned(),
+            socket.0.clone(),
+            profile.clone(),
+            home,
+            PathBuf::from(if headed { "headed" } else { "headless" }),
+        ];
         let guard = tokio::task::spawn_blocking(move || {
             let argv = paths.each_ref().map(PathBuf::as_path);
             let mut child = GuardedChild::spawn(&current, &argv, nonce)?;
@@ -196,14 +237,15 @@ impl Browser {
         drop(server);
         drop(socket);
         let mut this = Self {
-            pipe: Pipe {
+            pipe: Arc::new(Mutex::new(Pipe {
                 channel: BufReader::new(channel),
                 next_id: 0,
                 usable: true,
-            },
+            })),
             guardian,
             evidence,
             profile,
+            headed,
         };
         this.verify_root().await?;
         Ok(this)
@@ -212,7 +254,9 @@ impl Browser {
     async fn verify_root(&mut self) -> Result<()> {
         let info = self
             .pipe
-            .call("SystemInfo.getProcessInfo", json!({}))
+            .lock()
+            .await
+            .call("SystemInfo.getProcessInfo", json!({}), None)
             .await?;
         let roots: Vec<_> = info["processInfo"]
             .as_array()
@@ -224,18 +268,19 @@ impl Browser {
             roots.len() == 1 && roots[0]["id"].as_u64() == Some(u64::from(self.guardian.root())),
             "private endpoint does not identify our exact browser"
         );
-        let exe = fs::read_link(format!("/proc/{}/exe", self.guardian.root()))?;
-        ensure!(
-            exe == chrome_executable()?,
-            "owned root did not exec stock Chrome"
-        );
-        Ok(())
+        crate::browser_linux::verify_stock(self.guardian.root(), self.headed, &self.profile)
     }
 
     async fn close(mut self) -> Result<()> {
         self.verify_root().await?;
-        self.guardian.arm()?;
-        self.pipe.call("Browser.close", json!({})).await?;
+        let mut guard = self.guardian;
+        let guardian = tokio::task::spawn_blocking(move || guard.arm().map(|()| guard)).await??;
+        self.pipe
+            .lock()
+            .await
+            .call("Browser.close", json!({}), None)
+            .await?;
+        self.guardian = guardian;
         let Self {
             mut guardian,
             evidence,
@@ -249,6 +294,73 @@ impl Browser {
     }
 }
 
+static ACTIVE: Mutex<Option<Browser>> = Mutex::const_new(None);
+pub(crate) fn profile_prepared(root: &Path) -> bool {
+    require_private(root).is_ok()
+        && crate::config::read_private(&root.join("stock-chrome-configured"), 32)
+            .is_ok_and(|marker| marker == b"dedicated-stock-v1\n")
+}
+pub(crate) async fn open_task(root: &Path, headed: bool) -> Result<(Arc<Mutex<Pipe>>, PathBuf)> {
+    require_private(root)?;
+    let mut active = ACTIVE.lock().await;
+    if let Some(current) = active.as_mut() {
+        ensure!(
+            current.headed == headed && current.profile == root.join("stock-chrome-profile"),
+            "existing browser ownership or visibility differs"
+        );
+        current.verify_root().await?;
+        return Ok((current.pipe.clone(), current.profile.clone()));
+    }
+    // No implicit change of backend, reuse of personal data, or anonymous
+    // task submission without the owner's explicit initial profile setup.
+    ensure!(
+        profile_prepared(root),
+        "run slingring profile open on this Linux desktop to prepare the dedicated profile"
+    );
+    let browser = Browser::open(root, headed).await?;
+    let result = (browser.pipe.clone(), browser.profile.clone());
+    *active = Some(browser);
+    Ok(result)
+}
+pub(crate) async fn close_task() -> Result<()> {
+    let mut active = ACTIVE.lock().await;
+    if let Some(browser) = active.take() {
+        browser.close().await?;
+    }
+    Ok(())
+}
+pub(crate) async fn manual_profile(root: &Path) -> Result<()> {
+    use std::io::IsTerminal;
+    ensure!(
+        io::stdin().is_terminal(),
+        "profile open needs an interactive Linux terminal"
+    );
+    ensure!(
+        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some(),
+        "profile open needs an interactive Linux desktop"
+    );
+    ensure!(
+        !crate::daemon::running(root).await,
+        "stop the local Slingring service before manual profile setup"
+    );
+    let browser = Browser::open(root, true).await?;
+    eprintln!(
+        "A dedicated Chrome window is open on this Linux desktop. Sign in manually there. When done, leave Chrome open and press Enter here to close it cleanly."
+    );
+    let confirmation = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)
+    })
+    .await??;
+    ensure!(confirmation > 0, "manual profile setup was interrupted");
+    browser.close().await?;
+    crate::config::atomic(
+        &root.join("stock-chrome-configured"),
+        b"dedicated-stock-v1\n",
+    )
+}
+
+#[cfg(feature = "stock-browser-fixture")]
 async fn smoke(root: &Path) -> Result<()> {
     // Exact candidate process proof only. No task, website, account, profile
     // import, service changes, helper download, or third-party interaction.
@@ -262,13 +374,23 @@ async fn smoke(root: &Path) -> Result<()> {
             && fs::read_dir(root)?.next().is_none(),
         "smoke requires a newly created empty private /tmp/sl-stock-rust-* path"
     );
+    ensure!(
+        open_task(root, false).await.is_err(),
+        "unprovisioned profile unexpectedly usable"
+    );
+    crate::config::atomic(
+        &root.join("stock-chrome-configured"),
+        b"dedicated-stock-v1\n",
+    )?;
+    ensure!(profile_prepared(root), "fixture setup marker unreadable");
     for _ in 0..2 {
-        let mut browser = Browser::open(root).await?;
+        let (pipe, profile) = open_task(root, false).await?;
         let extension = crate::native::assets(root)?;
-        crate::native::register(root, &browser.profile)?;
-        let loaded = browser
-            .pipe
-            .call("Extensions.loadUnpacked", json!({"path":extension}))
+        crate::native::register(root, &profile)?;
+        let loaded = pipe
+            .lock()
+            .await
+            .call("Extensions.loadUnpacked", json!({"path":extension}), None)
             .await?;
         ensure!(
             loaded["id"] == crate::native::EXTENSION_ID,
@@ -283,9 +405,9 @@ async fn smoke(root: &Path) -> Result<()> {
             "chrome-extension://{}/bridge.html#token={nonce}&job={job}",
             crate::native::EXTENSION_ID
         );
-        browser
-            .pipe
-            .call("Target.createTarget", json!({"url":url}))
+        pipe.lock()
+            .await
+            .call("Target.createTarget", json!({"url":url}), None)
             .await?;
         let (mut conn, _) = tokio::time::timeout(Duration::from_secs(6), native.accept()).await??;
         ensure!(
@@ -323,18 +445,20 @@ async fn smoke(root: &Path) -> Result<()> {
             stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: 29\r\n\r\n<title>stock-fixture</title>\n").await?;
             Ok::<_, anyhow::Error>(())
         });
-        browser
-            .pipe
+        pipe.lock()
+            .await
             .call(
                 "Target.createTarget",
                 json!({"url":format!("http://{endpoint}/fixture")}),
+                None,
             )
             .await?;
         local_server.await??;
 
-        let info = browser
-            .pipe
-            .call("SystemInfo.getProcessInfo", json!({}))
+        let info = pipe
+            .lock()
+            .await
+            .call("SystemInfo.getProcessInfo", json!({}), None)
             .await?;
         ensure!(
             info["processInfo"]
@@ -350,10 +474,103 @@ async fn smoke(root: &Path) -> Result<()> {
                         .is_some_and(|mode| mode.trim() == "2")))),
             "no sandboxed renderer observed"
         );
-        browser.close().await?;
+        close_task().await?;
     }
     println!(
         "stock Chrome: two owned sandbox-default launches, exact embedded extension ID and native HELLO, sandboxed loopback renderer, acknowledged Browser.close, two root-reap/ECHILD/EOF proofs, durable generation rotation"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    fn pair() -> (Pipe, UnixStream) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        (
+            Pipe {
+                channel: BufReader::new(ours),
+                next_id: 0,
+                usable: true,
+            },
+            theirs,
+        )
+    }
+
+    #[tokio::test]
+    async fn unrelated_response_poison_cannot_send_a_second_command() {
+        let (mut pipe, mut peer) = pair();
+        let task = tokio::spawn(async move {
+            let mut request = [0_u8; 256];
+            assert!(peer.read(&mut request).await.unwrap() > 0);
+            peer.write_all(b"{\"id\":980,\"result\":{}}\0")
+                .await
+                .unwrap();
+            let outcome =
+                tokio::time::timeout(Duration::from_millis(30), peer.read(&mut request)).await;
+            assert!(outcome.is_err());
+        });
+        assert!(
+            pipe.call("Browser.getVersion", json!({}), None)
+                .await
+                .is_err()
+        );
+        assert!(pipe.call("Browser.close", json!({}), None).await.is_err());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn matched_capability_refusal_can_be_followed_by_verified_cleanup() {
+        let (mut pipe, peer) = pair();
+        let task = tokio::spawn(async move {
+            let mut peer = BufReader::new(peer);
+            let mut frame = Vec::new();
+            peer.read_until(0, &mut frame).await.unwrap();
+            assert!(frame.starts_with(b"{\"id\":1,"));
+            peer.write_all(b"{\"id\":1,\"error\":{\"code\":-32601,\"message\":\"unavailable\"}}\0")
+                .await
+                .unwrap();
+            frame.clear();
+            peer.read_until(0, &mut frame).await.unwrap();
+            assert!(frame.starts_with(b"{\"id\":2,"));
+            peer.write_all(b"{\"id\":2,\"result\":{}}\0").await.unwrap();
+        });
+        assert!(
+            pipe.call("Extensions.loadUnpacked", json!({}), None)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            pipe.call("Browser.close", json!({}), None).await.unwrap(),
+            json!({})
+        );
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn registration_rejects_aliases_and_only_accepts_dedicated_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let unrelated = root.join("regular-profile");
+        create_private(&unrelated).unwrap();
+        let dedicated = root.join("stock-chrome-profile");
+        symlink(&unrelated, &dedicated).unwrap();
+        assert!(validate_registration(&root, &dedicated).is_err());
+        assert!(validate_registration(&root, &unrelated).is_err());
+        fs::remove_file(&dedicated).unwrap();
+        create_private(&dedicated).unwrap();
+        assert_eq!(validate_registration(&root, &dedicated).unwrap(), dedicated);
+        let ownership = root.join("stock-chrome-generation");
+        assert!(!receipt::fenced(&ownership).unwrap());
+        let generation = receipt::begin(&ownership, &dedicated).unwrap();
+        receipt::verify_pending_profile(&ownership, generation.nonce(), &dedicated).unwrap();
+        assert!(
+            receipt::verify_pending_profile(&ownership, generation.nonce(), &unrelated).is_err()
+        );
+        assert!(receipt::fenced(&ownership).unwrap());
+        assert!(receipt::begin(&ownership, &dedicated).is_err());
+    }
 }

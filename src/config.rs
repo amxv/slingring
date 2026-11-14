@@ -53,9 +53,15 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            #[cfg(not(target_os = "linux"))]
             browser_binary: "agent-browser-browse".into(),
+            #[cfg(target_os = "linux")]
+            browser_binary: crate::browser_stock::PROVIDER.into(),
             browser_headed: false,
+            #[cfg(not(target_os = "linux"))]
             profile: "Default".into(),
+            #[cfg(target_os = "linux")]
+            profile: crate::browser_stock::PROFILE.into(),
             default_effort: Some("High".into()),
             subscription: Subscription::Plus,
             start_timeout_secs: 180,

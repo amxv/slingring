@@ -15,7 +15,7 @@ You need **Apple Silicon macOS** or **x86_64 Linux with glibc 2.39+**, Google Ch
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-One installer sets up the CLI, companion extension, and verified browser helper. macOS also gets the menu bar app; Linux has no tray app. There is no separate agent-browser, Node, or Homebrew installation step. Chrome itself and signing into your account remain yours to set up.
+The installer sets up the CLI. macOS also gets the menu bar app and verified browser helper; Linux uses the separately installed stock Chrome Stable and has no tray app. Neither platform requires a separate agent-browser, Node, or Homebrew installation. Install Chrome yourself before installing Slingring.
 
 On macOS the app opens in your menu bar. On both platforms the `slingring` command lives in `~/.local/bin`. If your shell cannot find it, use `~/.local/bin/slingring` in the commands below, or add that directory to your PATH.
 
@@ -25,9 +25,9 @@ Linux installation does not register or enable a service. Local calls can start 
 
 ## 2. Choose your Chrome profile
 
-On macOS, open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched. On Linux, use the terminal commands below.
+On macOS, open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched.
 
-Prefer the terminal?
+Prefer the terminal on macOS?
 
 ```bash
 slingring profile list
@@ -35,6 +35,8 @@ slingring profile use "Profile 6"
 ```
 
 Replace `Profile 6` with a directory or unique name from your own list. Slingring does not choose among multiple accounts for you.
+
+On a Linux desktop, run `slingring setup` and then `slingring profile open` in an interactive terminal. A dedicated Chrome window opens with its own empty profile. Sign in manually, leave that window open, and press Enter in the terminal so Slingring can verify the browser shuts down cleanly. This prepares the same private profile for future local or remote jobs. It never copies your regular Chrome data. An SSH-only or headless server without a usable desktop session cannot perform this initial interactive setup.
 
 Select Plus or Pro to match your account using **Configure → Subscription** on macOS or `slingring config set subscription plus` (or `pro`) on either platform. Fresh installs use Plus with High reasoning; saved defaults are preserved. Plus supports Instant, Medium, and High; Pro also supports Extra High and Pro. Use ChatGPT Setting retains the site's selection.
 

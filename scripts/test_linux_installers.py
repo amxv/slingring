@@ -4,7 +4,6 @@ import hashlib
 import io
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tarfile
@@ -12,11 +11,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-HELPER = "agent-browser-browse-linux-x86_64.tar.gz"
 CLI_PREFIX = "slingring-x86_64-unknown-linux-gnu"
 CLI = CLI_PREFIX + ".tar.xz"
-UPSTREAM = "1cc19526f3641c8543d55aa6700e7c55b37ac356"
-PATCH = "0e7adc3309844070a846fa6985880189007ba5fcb9ac230e5f3e5c50ed42111b"
 
 # A shell stub supplies CLI output; the fixture compiler supplies genuine ELF
 # so architecture checks exercise real bytes. It only executes the stub.
@@ -138,29 +134,6 @@ cp "$FIXTURES/${url##*/}" "$out"
         digest = self.archive(self.fixtures / CLI, "w:xz", entries)
         (self.fixtures / (CLI + ".sha256")).write_text((digest if good_hash else "0" * 64) + "\n")
 
-    def helper_fixture(self, *, extra=(), upstream=UPSTREAM, correct_pin=True):
-        helper = self.elf()
-        version = self.base / "helper-version"
-        self.write_executable(version, '#!/bin/sh\n[ "$1" = --version ]\necho version-check >> "$EVENT_LOG"\necho "agent-browser 0.43.0"\n')
-        self.env["CLI_FIXTURE"] = str(version)
-        entries = [
-            ("agent-browser-browse-native", helper), ("LICENSE.upstream", b"fixture"),
-            ("UPSTREAM_VERSION", b"0.43.0\n"), ("UPSTREAM_COMMIT", (upstream + "\n").encode()),
-            ("PATCH_SHA256", (PATCH + "\n").encode()),
-        ]
-        digest = self.archive(self.fixtures / HELPER, "w:gz", entries + list(extra))
-        (self.fixtures / "SHA256SUMS").write_text(f"{digest}  {HELPER}\n")
-        script = (ROOT / "scripts/install-browser.sh").read_text()
-        # Replace only immutable fixture pins in this disposable script, never
-        # provide a production environment/command-line pin override.
-        if correct_pin:
-            script = re.sub(r"(?m)^    archive_sha=[a-f0-9]+$", "    archive_sha=" + digest, script)
-            script = re.sub(r"(?m)^    native_sha=[a-f0-9]+$",
-                            "    native_sha=" + hashlib.sha256(helper).hexdigest(), script)
-        local = self.base / "fixture-install-browser.sh"
-        local.write_text(script)
-        return local
-
     def run_script(self, script, arg):
         return subprocess.run(["/bin/sh", str(script), arg], env=self.env, text=True,
                               capture_output=True, timeout=30)
@@ -182,7 +155,6 @@ cp "$FIXTURES/${url##*/}" "$out"
                 for result in (
                     self.run_cli(),
                     self.run_cli("--check"),
-                    self.run_script(ROOT / "scripts/install-browser.sh", str(self.state)),
                 ):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("requires glibc 2.39 or newer", result.stderr)
@@ -317,51 +289,12 @@ esac
                 self.assertNotIn("browser-install", self.log.read_text())
                 self.assertNotIn("unexpected-old-cli-call", self.log.read_text())
 
-    def test_linux_helper_pin_provenance_and_repeat(self):
-        script = self.helper_fixture()
-        result = self.run_script(script, str(self.state))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        wrapper = self.state / "browser/agent-browser-browse"
-        self.assertIn("/0.43.0/agent-browser-browse-native", wrapper.read_text())
-        self.assertIn("AGENT_BROWSER_NAMESPACE=slingring", wrapper.read_text())
-        self.assertIn("umask 077", wrapper.read_text())
-        recorded = self.log.read_text()
-        self.assertIn("/v0.43.0/" + HELPER, recorded)
-        result = self.run_script(script, str(self.state))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.log.read_text(), recorded + "version-check\n")
-        native = self.state / "browser/0.43.0/agent-browser-browse-native"
-        recorded = self.log.read_text()
-        native.write_bytes(b"untrusted")
-        result = self.run_script(script, str(self.state))
+    def test_standalone_patched_helper_installer_cannot_install_on_linux(self):
+        result = self.run_script(ROOT / "scripts/install-browser.sh", str(self.state))
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(native.read_bytes(), b"untrusted")
-        self.assertEqual(self.log.read_text(), recorded)
-
-    def test_linux_helper_rejects_matching_but_unpinned_checksum_pair(self):
-        script = self.helper_fixture(correct_pin=False)
-        result = self.run_script(script, str(self.state))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("reviewed release pin", result.stderr)
-        self.assertFalse((self.state / "browser/0.43.0").exists())
-
-    def test_linux_helper_rejects_duplicate_and_unsafe_member(self):
-        for extra in (
-            [("UPSTREAM_VERSION", b"0.43.0\n")],
-            [("../escape", b"bad")],
-            [("some-link", "/bin/true")],
-        ):
-            with self.subTest(extra=extra):
-                script = self.helper_fixture(extra=extra)
-                result = self.run_script(script, str(self.state))
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((self.state / "browser/0.43.0").exists())
-
-    def test_linux_helper_provenance_mismatch_rejected(self):
-        script = self.helper_fixture(upstream="0" * 40)
-        result = self.run_script(script, str(self.state))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.state / "browser/0.43.0").exists())
+        self.assertIn("Apple Silicon Macs only", result.stderr)
+        self.assertFalse(self.log.exists())
+        self.assertFalse(self.state.exists())
 
 
 if __name__ == "__main__":
