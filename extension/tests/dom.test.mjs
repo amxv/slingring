@@ -118,6 +118,38 @@ test('Work mode is never considered Chat, including an ambiguous switch',()=>{
   p.document.querySelector('#chat').removeAttribute('aria-pressed');
   assert.equal(p.api.chatVerified(),false);p.close();
 });
+test('signed-out public ChatGPT homepage fails with a login-specific error and no clicks',async()=>{
+  const html='<button>Log in</button><button>Sign up for free</button>'+
+    '<textarea id="mobile-composer-prompt" aria-label="Chat with ChatGPT"></textarea>';
+  const p=page(html,'https://chatgpt.com/');
+  let clicks=0;
+  for(const button of p.document.querySelectorAll('button'))button.addEventListener('click',()=>clicks++);
+  assert.equal(p.api.chatVerified(),false);
+  assert.equal(p.api.signedOutHome(),true);
+  await assert.rejects(p.api.ensureChat(Date.now()+8000),/chat_login_required/);
+  assert.equal(clicks,0);
+  assert.equal(p.document.querySelector('textarea').value,'');
+  p.close();
+});
+test('temporary public homepage during authenticated hydration is not mistaken for signed out',async()=>{
+  const p=page('<button>Log in</button><button>Sign up for free</button>'+
+    '<textarea id="mobile-composer-prompt" aria-label="Chat with ChatGPT"></textarea>',
+  'https://chatgpt.com/');
+  p.window.setTimeout(()=>{p.document.querySelector('main').innerHTML=controls;},100);
+  await p.api.ensureChat(Date.now()+8000);
+  assert.equal(p.api.signedOutHome(),false);
+  assert.equal(p.api.chatVerified(),true);
+  p.close();
+});
+test('login CTA without the exact public editor does not prove a signed-out session',()=>{
+  for(const html of ['<button>Log in</button><button>Sign up for free</button>'+
+      '<div contenteditable="true" aria-label="Ask ChatGPT"></div>',
+    '<button>Log in</button><textarea id="mobile-composer-prompt" aria-label="Chat with ChatGPT"></textarea>',
+    '<button>Sign up for free</button><textarea id="mobile-composer-prompt" aria-label="Chat with ChatGPT"></textarea>']) {
+    const p=page(html,'https://chatgpt.com/');
+    assert.equal(p.api.signedOutHome(),false);p.close();
+  }
+});
 test('an existing thread with only the known Ask ChatGPT editor is positively recognized',()=>{
   const p=page('<div contenteditable="true" aria-label="Ask ChatGPT"></div>');
   assert.equal(p.document.querySelector('#prompt-textarea'),null);

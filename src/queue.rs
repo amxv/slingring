@@ -190,6 +190,9 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         "chat_mode_unverified" => {
             "Chat mode could not be positively verified. Confirm the configured Chrome account opens Chat (not Work), check session/profile readiness, and use the recorded outcome to assess submission. Inspect events.log for the stage and elapsed time."
         }
+        "chat_login_required" => {
+            "The selected Chrome profile opened the signed-out ChatGPT homepage. No message was submitted. Select a profile already signed in to ChatGPT with 'slingring profile list' and 'slingring profile use NAME'; do not manually export cookies."
+        }
         "browser_start_failed" => {
             "The isolated browser failed to start twice. Inspect events.log for safe launch/retry categories (timeout, spawn, exit, invalid JSON or unsuccessful response); verify the pinned browser helper with slingring browser status and agent-browser-browse doctor."
         }

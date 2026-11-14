@@ -96,6 +96,17 @@
     // Recognize only known Chat editors; unrelated editable controls fail closed.
     return [...document.querySelectorAll('#prompt-textarea,[contenteditable="true"][aria-label="Ask ChatGPT"]')].some(visible);
   }
+  function signedOutHome() {
+    // The public homepage has a writable guest composer, but it is not a
+    // signed-in Chat session. Do not interpret it as a Chat composer or click
+    // any login control. Require the exact public editor and both auth CTAs.
+    if (location.origin !== 'https://chatgpt.com' || location.pathname !== '/') return false;
+    const editors=[...document.querySelectorAll('textarea#mobile-composer-prompt')].filter(visible);
+    if (editors.length!==1 || normal(editors[0].getAttribute('aria-label'))!=='Chat with ChatGPT') return false;
+    const controls=[...document.querySelectorAll('button,a')].filter(visible);
+    return controls.some(e=>/^log in$/i.test(normal(e.textContent))) &&
+      controls.some(e=>/^sign up(?: for free)?$/i.test(normal(e.textContent)));
+  }
   function waitFor(predicate, timeout = 30000, code = "ui_timeout", throttleMs = 0) {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -161,10 +172,18 @@
       if(deadline-Date.now()<5000)throw Error('deadline_before_submission');
       const state = await waitFor(() => {
         if (chatVerified()) return {ready:true};
+        if (signedOutHome()) return {signedOut:true};
         const m=modes();
         return m.chat && m.work && !m.ambiguous && !m.chat.disabled && m.chat.getAttribute('aria-disabled')!=='true'
           ? {button:m.chat} : null;
       }, budget(30000), "chat_mode_unverified");
+      if (state.signedOut) {
+        // A React bootstrap may briefly show the public shell before the
+        // signed-in session hydrates. Only fail after it remains signed out.
+        await new Promise(resolve=>setTimeout(resolve,2500));
+        if (signedOutHome()) throw Error('chat_login_required');
+        continue;
+      }
       if(hasDraft())throw Error('unrelated_draft_present');
       if(state.button) {
         const workEditors=[...document.querySelectorAll('[contenteditable][aria-label],textarea[aria-label]')]
@@ -605,7 +624,7 @@
     if(users.length!==previousCount+1)return null;
     return startEvidence(expectedPrompt,null);
   }
-  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,composerState,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,waitFor,ensureChat,
+  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,composerState,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,signedOutHome,waitFor,ensureChat,
     currentEffort,effortState,powerState,setEffort,ensureEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
     pauseObservation,pauseTask,followupReady,followupIdle,noAttachments,turnBaseline,conversationLoadFailure,ensureConversationLoaded,messageSendError,recoveredEvidence};
 })();
