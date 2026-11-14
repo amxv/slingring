@@ -146,6 +146,57 @@ impl Pipe {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct Channel {
+    pipe: Arc<Mutex<Pipe>>,
+    release: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<bool>>>>,
+}
+impl Channel {
+    pub(crate) async fn call(
+        &self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+    ) -> Result<Value> {
+        self.pipe.lock().await.call(method, params, session).await
+    }
+
+    /// A proved task result returns immediately, independent of cleanup.
+    /// Only the original private native socket is touched here, never CDP.
+    /// A missing release demands an orderly browser generation retirement
+    /// before queue reuse, without resending the submitted task.
+    pub(crate) fn acknowledge(&self, mut socket: UnixStream, job: String) {
+        let child = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                crate::native::write(&mut socket, &json!({"type":"ack"})).await?;
+                let release = crate::native::read(&mut socket).await?;
+                Ok::<_, anyhow::Error>(release["type"] == "released" && release["job"] == job)
+            })
+            .await
+            .is_ok_and(|ret| ret.is_ok_and(|released| released))
+        });
+        // Queue serialization permits exactly one result handoff before
+        // the next begin/close consumes the previous cleanup handle.
+        let mut guard = self.release.lock().expect("native release lock");
+        if guard.is_some() {
+            child.abort();
+            if let Some(prior) = guard.as_ref() {
+                prior.abort(); // Unexpected overlap forces retirement.
+            }
+        } else {
+            *guard = Some(child);
+        }
+    }
+
+    async fn released_or_absent(&self) -> bool {
+        let found = self.release.lock().expect("native release lock").take();
+        match found {
+            Some(child) => child.await.unwrap_or(false),
+            None => true,
+        }
+    }
+}
+
 /// A bound local handoff path exists only until launch has been authenticated.
 /// Chrome never binds any port; receives anonymous inherited 3/4.
 struct Socket(PathBuf);
@@ -156,7 +207,7 @@ impl Drop for Socket {
 }
 
 struct Browser {
-    pipe: Arc<Mutex<Pipe>>,
+    channel: Channel,
     guardian: GuardedChild,
     evidence: receipt::Generation,
     profile: PathBuf,
@@ -237,11 +288,14 @@ impl Browser {
         drop(server);
         drop(socket);
         let mut this = Self {
-            pipe: Arc::new(Mutex::new(Pipe {
-                channel: BufReader::new(channel),
-                next_id: 0,
-                usable: true,
-            })),
+            channel: Channel {
+                pipe: Arc::new(Mutex::new(Pipe {
+                    channel: BufReader::new(channel),
+                    next_id: 0,
+                    usable: true,
+                })),
+                release: Arc::new(std::sync::Mutex::new(None)),
+            },
             guardian,
             evidence,
             profile,
@@ -253,9 +307,7 @@ impl Browser {
 
     async fn verify_root(&mut self) -> Result<()> {
         let info = self
-            .pipe
-            .lock()
-            .await
+            .channel
             .call("SystemInfo.getProcessInfo", json!({}), None)
             .await?;
         let roots: Vec<_> = info["processInfo"]
@@ -272,14 +324,11 @@ impl Browser {
     }
 
     async fn close(mut self) -> Result<()> {
+        let _ = self.channel.released_or_absent().await;
         self.verify_root().await?;
         let mut guard = self.guardian;
         let guardian = tokio::task::spawn_blocking(move || guard.arm().map(|()| guard)).await??;
-        self.pipe
-            .lock()
-            .await
-            .call("Browser.close", json!({}), None)
-            .await?;
+        self.channel.call("Browser.close", json!({}), None).await?;
         self.guardian = guardian;
         let Self {
             mut guardian,
@@ -300,7 +349,7 @@ pub(crate) fn profile_prepared(root: &Path) -> bool {
         && crate::config::read_private(&root.join("stock-chrome-configured"), 32)
             .is_ok_and(|marker| marker == b"dedicated-stock-v1\n")
 }
-pub(crate) async fn open_task(root: &Path, headed: bool) -> Result<(Arc<Mutex<Pipe>>, PathBuf)> {
+pub(crate) async fn open_task(root: &Path, headed: bool) -> Result<(Channel, PathBuf)> {
     require_private(root)?;
     let mut active = ACTIVE.lock().await;
     if let Some(current) = active.as_mut() {
@@ -308,8 +357,18 @@ pub(crate) async fn open_task(root: &Path, headed: bool) -> Result<(Arc<Mutex<Pi
             current.headed == headed && current.profile == root.join("stock-chrome-profile"),
             "existing browser ownership or visibility differs"
         );
-        current.verify_root().await?;
-        return Ok((current.pipe.clone(), current.profile.clone()));
+        if current.channel.released_or_absent().await {
+            current.verify_root().await?;
+            return Ok((current.channel.clone(), current.profile.clone()));
+        }
+        // An old controller may still own a tab. Don't touch it through a
+        // detached CDP call; instead retire the exact browser, prove cleanup,
+        // and admit the next queued job only on a fresh owned generation.
+        active
+            .take()
+            .context("active browser disappeared")?
+            .close()
+            .await?;
     }
     // No implicit change of backend, reuse of personal data, or anonymous
     // task submission without the owner's explicit initial profile setup.
@@ -318,7 +377,7 @@ pub(crate) async fn open_task(root: &Path, headed: bool) -> Result<(Arc<Mutex<Pi
         "run slingring profile open on this Linux desktop to prepare the dedicated profile"
     );
     let browser = Browser::open(root, headed).await?;
-    let result = (browser.pipe.clone(), browser.profile.clone());
+    let result = (browser.channel.clone(), browser.profile.clone());
     *active = Some(browser);
     Ok(result)
 }
@@ -388,8 +447,6 @@ async fn smoke(root: &Path) -> Result<()> {
         let extension = crate::native::assets(root)?;
         crate::native::register(root, &profile)?;
         let loaded = pipe
-            .lock()
-            .await
             .call("Extensions.loadUnpacked", json!({"path":extension}), None)
             .await?;
         ensure!(
@@ -405,9 +462,7 @@ async fn smoke(root: &Path) -> Result<()> {
             "chrome-extension://{}/bridge.html#token={nonce}&job={job}",
             crate::native::EXTENSION_ID
         );
-        pipe.lock()
-            .await
-            .call("Target.createTarget", json!({"url":url}), None)
+        pipe.call("Target.createTarget", json!({"url":url}), None)
             .await?;
         let (mut conn, _) = tokio::time::timeout(Duration::from_secs(6), native.accept()).await??;
         ensure!(
@@ -445,19 +500,15 @@ async fn smoke(root: &Path) -> Result<()> {
             stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: 29\r\n\r\n<title>stock-fixture</title>\n").await?;
             Ok::<_, anyhow::Error>(())
         });
-        pipe.lock()
-            .await
-            .call(
-                "Target.createTarget",
-                json!({"url":format!("http://{endpoint}/fixture")}),
-                None,
-            )
-            .await?;
+        pipe.call(
+            "Target.createTarget",
+            json!({"url":format!("http://{endpoint}/fixture")}),
+            None,
+        )
+        .await?;
         local_server.await??;
 
         let info = pipe
-            .lock()
-            .await
             .call("SystemInfo.getProcessInfo", json!({}), None)
             .await?;
         ensure!(
@@ -476,6 +527,44 @@ async fn smoke(root: &Path) -> Result<()> {
         );
         close_task().await?;
     }
+    // Exercise the same Linux result-ack state used by the task driver.
+    // A healthy native release preserves the still-owned CDP generation.
+    let (first, _) = open_task(root, false).await?;
+    let (owner, mut peer) = UnixStream::pair()?;
+    first.acknowledge(owner, "account-free-result".into());
+    ensure!(
+        crate::native::read(&mut peer).await?["type"] == "ack",
+        "wrong native result ack"
+    );
+    crate::native::write(
+        &mut peer,
+        &json!({"type":"released","job":"account-free-result"}),
+    )
+    .await?;
+    let (reused, _) = open_task(root, false).await?;
+    ensure!(
+        Arc::ptr_eq(&first.pipe, &reused.pipe),
+        "affirmative release did not preserve the generation"
+    );
+
+    // Retain the original peer but never send released. Retire the old
+    // browser before admitting a new generation, without poisoning CDP.
+    let (owner, mut stalled_peer) = UnixStream::pair()?;
+    reused.acknowledge(owner, "account-free-stalled-result".into());
+    ensure!(
+        crate::native::read(&mut stalled_peer).await?["type"] == "ack",
+        "stalled peer did not receive ack"
+    );
+    let since = tokio::time::Instant::now();
+    let (fresh, _) = open_task(root, false).await?;
+    ensure!(
+        !Arc::ptr_eq(&first.pipe, &fresh.pipe) && since.elapsed() >= Duration::from_millis(900),
+        "unreleased task did not retire its exact browser"
+    );
+    close_task().await?;
+    println!(
+        "healthy native result release reuses exact browser; stalled release retires it and admits a fresh, verified generation"
+    );
     println!(
         "stock Chrome: two owned sandbox-default launches, exact embedded extension ID and native HELLO, sandboxed loopback renderer, acknowledged Browser.close, two root-reap/ECHILD/EOF proofs, durable generation rotation"
     );

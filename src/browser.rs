@@ -171,7 +171,7 @@ struct Cdp {
     #[cfg(any(not(target_os = "linux"), test))]
     socket: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     #[cfg(target_os = "linux")]
-    pipe: Option<Arc<tokio::sync::Mutex<crate::browser_stock::Pipe>>>,
+    pipe: Option<crate::browser_stock::Channel>,
     #[cfg(any(not(target_os = "linux"), test))]
     id: u64,
 }
@@ -262,7 +262,7 @@ impl Cdp {
     async fn call(&mut self, method: &str, params: Value, session: Option<&str>) -> Result<Value> {
         #[cfg(target_os = "linux")]
         if let Some(pipe) = self.pipe.as_ref() {
-            return pipe.lock().await.call(method, params, session).await;
+            return pipe.call(method, params, session).await;
         }
         #[cfg(all(target_os = "linux", not(test)))]
         anyhow::bail!("missing owned stock Chrome pipe");
@@ -465,31 +465,45 @@ fn safe_effort_observation(event: &Value) -> Option<(&'static str, String)> {
 
 fn handoff_started(
     result: TaskResult,
-    mut socket: UnixStream,
-    mut cdp: Cdp,
+    socket: UnixStream,
+    cdp: Cdp,
     controller_id: String,
 ) -> TaskResult {
-    // Activity is already validated. Cleanup must not turn proven submission
-    // into uncertainty if the native channel, CDP, or outer deadline expires.
-    // This task owns only the old accepted stream/connection/controller ID. It
-    // never removes the shared socket path or closes the named browser session.
-    let _cleanup = tokio::spawn(async move {
-        let _ = tokio::time::timeout(Duration::from_secs(1), async {
-            native::write(&mut socket, &json!({"type":"ack"})).await?;
-            native::read(&mut socket).await
-        })
-        .await;
-        let _ = tokio::time::timeout(
-            Duration::from_secs(1),
-            cdp.call(
-                "Target.closeTarget",
-                json!({"targetId":controller_id}),
-                None,
-            ),
-        )
-        .await;
-    });
-    result
+    #[cfg(target_os = "linux")]
+    if let Some(channel) = cdp.pipe.as_ref() {
+        channel.acknowledge(socket, result.job_id.clone());
+        return result;
+    }
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        let _ = (socket, controller_id);
+        return result;
+    }
+    #[cfg(any(not(target_os = "linux"), test))]
+    {
+        // Activity is already validated. Cleanup must not turn proven submission
+        // into uncertainty if the native channel, CDP, or outer deadline expires.
+        // This task owns only the old accepted stream/connection/controller ID. It
+        // never removes the shared socket path or closes the named browser session.
+        let _cleanup = tokio::spawn(async move {
+            let (mut socket, mut cdp) = (socket, cdp);
+            let _ = tokio::time::timeout(Duration::from_secs(1), async {
+                native::write(&mut socket, &json!({"type":"ack"})).await?;
+                native::read(&mut socket).await
+            })
+            .await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                cdp.call(
+                    "Target.closeTarget",
+                    json!({"targetId":controller_id}),
+                    None,
+                ),
+            )
+            .await;
+        });
+        result
+    }
 }
 
 pub async fn run_authorized(
