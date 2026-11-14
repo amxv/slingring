@@ -9,21 +9,23 @@ Slingring lets local and remote agents delegate tasks to your ChatGPT account. I
 
 ## 1. Install
 
-You need an **Apple Silicon Mac**, Google Chrome, and a ChatGPT account signed into Chrome. Public releases install without GitHub authentication.
+You need **Apple Silicon macOS** or **x86_64 Linux with glibc 2.39+**, Google Chrome, and a ChatGPT account signed into Chrome. Public releases install without GitHub authentication. Linux currently requires system-installed Google Chrome Stable at `/opt/google/chrome/chrome` and a regular user session where Chrome's sandbox works. Root, CI and container browser execution is refused rather than disabling the sandbox.
 
 ```bash
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-One installer sets up the CLI, menu bar app, companion extension, and verified browser helper. There is no separate agent-browser, Node, or Homebrew installation step. Chrome itself and signing into your account remain yours to set up.
+One installer sets up the CLI, companion extension, and verified browser helper. macOS also gets the menu bar app; Linux has no tray app. There is no separate agent-browser, Node, or Homebrew installation step. Chrome itself and signing into your account remain yours to set up.
 
-The app opens in your menu bar. The `slingring` command lives in `~/.local/bin`. If your shell cannot find it, use `~/.local/bin/slingring` in the commands below, or add that directory to your PATH.
+On macOS the app opens in your menu bar. On both platforms the `slingring` command lives in `~/.local/bin`. If your shell cannot find it, use `~/.local/bin/slingring` in the commands below, or add that directory to your PATH.
 
-Both **Configure → Open Menu Bar at Login** and **Configure → Start Slingring Service at Login** are enabled on first install. They are independent: you can hide the UI at future logins without disabling the service, or turn off service autostart without stopping a daemon that's already running. The same controls are available through `slingring login menu-bar on|off|status` and `slingring login service on|off|status`.
+On macOS, both **Configure → Open Menu Bar at Login** and **Configure → Start Slingring Service at Login** are enabled on first install. They are independent: you can hide the UI at future logins without disabling the service, or turn off service autostart without stopping a daemon that's already running. The same controls are available through `slingring login menu-bar on|off|status` and `slingring login service on|off|status`.
+
+Linux installation does not register or enable a service. Local calls can start a private daemon directly. For an always-on user session, explicitly run `slingring service install`, `slingring login service on`, then `slingring service start`. This requires a working systemd user manager; it does not enable lingering or change system services. Without that manager, use `slingring daemon` in your own supervisor. Linux updates are manual with `slingring upgrade`; no automatic update timer is installed.
 
 ## 2. Choose your Chrome profile
 
-Open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched.
+On macOS, open **Slingring → Configure → Chrome Profile**, then select the profile where you are signed into ChatGPT. Profiles appear by name, not just a number. Your everyday Chrome windows stay untouched. On Linux, use the terminal commands below.
 
 Prefer the terminal?
 
@@ -34,7 +36,7 @@ slingring profile use "Profile 6"
 
 Replace `Profile 6` with a directory or unique name from your own list. Slingring does not choose among multiple accounts for you.
 
-Under **Configure → Subscription**, select Plus or Pro to match your account. Fresh installs use Plus with High reasoning; saved defaults are preserved. **Configure → Default Reasoning** shows levels for that tier: Plus supports Instant, Medium, and High; Pro also supports Extra High and Pro. Use ChatGPT Setting retains the site's selection.
+Select Plus or Pro to match your account using **Configure → Subscription** on macOS or `slingring config set subscription plus` (or `pro`) on either platform. Fresh installs use Plus with High reasoning; saved defaults are preserved. Plus supports Instant, Medium, and High; Pro also supports Extra High and Pro. Use ChatGPT Setting retains the site's selection.
 
 ## 3. Send your first task
 

@@ -1,4 +1,6 @@
 pub mod browser;
+#[cfg(target_os = "linux")]
+mod browser_linux;
 pub mod cli;
 pub mod commands;
 pub mod config;

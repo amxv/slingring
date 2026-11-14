@@ -382,6 +382,7 @@ pub async fn run(command: Command) -> Result<()> {
                     service::start(&root, false).await?;
                 }
                 ServiceAction::Install => {
+                    #[cfg(target_os = "macos")]
                     service::stop(&root).await?;
                     service::install(&root)?;
                 }

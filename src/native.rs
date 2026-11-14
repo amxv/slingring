@@ -50,7 +50,11 @@ pub fn register(root: &Path, browser_data: &Path) -> Result<()> {
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700))?;
     // A copied profile uses its own NativeMessagingHosts directory. Register
     // ONLY there, never alter the user's everyday Chrome installation.
+    #[cfg(target_os = "linux")]
+    let data = crate::browser_linux::validate_profile(root, browser_data)?;
+    #[cfg(not(target_os = "linux"))]
     let data = browser_data.canonicalize()?;
+    #[cfg(not(target_os = "linux"))]
     ensure!(
         data.starts_with(std::env::temp_dir().canonicalize()?)
             && data

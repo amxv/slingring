@@ -55,20 +55,47 @@ fn launch_stage(error: &anyhow::Error, retry: bool) -> &'static str {
     }
 }
 async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
+    #[cfg(target_os = "linux")]
+    let executable = Some(Path::new(crate::browser_linux::CHROME));
+    #[cfg(not(target_os = "linux"))]
+    let executable = None;
+    agent_at(&config::root()?, config, args, executable).await
+}
+async fn agent_at(
+    root: &Path,
+    config: &Config,
+    args: &[&str],
+    executable: Option<&Path>,
+) -> Result<Value> {
     ensure!(
         Path::new(&config.browser_binary)
             .file_name()
             .is_none_or(|name| name != "agent-browser"),
         "upstream agent-browser is not an allowed fallback"
     );
-    let name = session(&config::root()?);
+    let name = session(root);
     let idle = format!(
         "{}s",
         config
             .browser_idle_secs
             .unwrap_or_else(|| config.start_timeout_secs.saturating_add(60))
     );
+    #[cfg(not(target_os = "linux"))]
     let mut command = tokio::process::Command::new(&config.browser_binary);
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        // Positional arguments, not interpolated shell text. The private umask
+        // is in place before the helper creates or copies any profile files.
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "umask 077; exec \"$@\"",
+            "slingring-browser",
+            &config.browser_binary,
+        ]);
+        crate::browser_linux::prepare(root, &mut command)?;
+        command
+    };
     // The persisted application setting owns visibility, not a daemon's
     // inherited shell environment. Fork defaults retain fingerprint settings.
     command.env_remove("AGENT_BROWSER_HEADED");
@@ -76,6 +103,9 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     command.env_remove("AGENT_BROWSER_NO_WEBMCP");
     if config.browser_headed {
         command.arg("--headed");
+    }
+    if let Some(executable) = executable {
+        command.arg("--executable-path").arg(executable);
     }
     command
         .args([
@@ -140,6 +170,7 @@ struct ChatTarget {
     id: String,
     url: String,
 }
+#[cfg(any(target_os = "macos", test))]
 fn owned_profile_from_command(command: &str, headed: bool) -> Result<PathBuf> {
     let headless = command
         .split_whitespace()
@@ -169,26 +200,36 @@ impl Cdp {
         let info = self
             .call("SystemInfo.getProcessInfo", json!({}), None)
             .await?;
-        let pid = info["processInfo"]
+        let candidates: Vec<_> = info["processInfo"]
             .as_array()
             .context("browser process metadata missing")?
             .iter()
-            .find(|entry| entry["type"] == "browser")
-            .and_then(|entry| entry["id"].as_u64())
+            .filter(|entry| entry["type"] == "browser")
+            .collect();
+        ensure!(candidates.len() == 1, "browser PID missing or ambiguous");
+        let pid = candidates[0]["id"]
+            .as_u64()
             .filter(|pid| *pid > 0 && *pid <= u32::MAX as u64)
             .context("browser PID missing")?;
         trace(&format!("browser_pid={pid}"));
-        let output = tokio::process::Command::new("/bin/ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .stdin(Stdio::null())
-            .output()
-            .await?;
-        ensure!(
-            output.status.success(),
-            "could not inspect owned browser process"
-        );
-        let command = String::from_utf8(output.stdout)?;
-        owned_profile_from_command(&command, headed)
+        #[cfg(target_os = "linux")]
+        {
+            crate::browser_linux::owned_profile(pid as u32, headed, &config::root()?)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let output = tokio::process::Command::new("/bin/ps")
+                .args(["-p", &pid.to_string(), "-o", "command="])
+                .stdin(Stdio::null())
+                .output()
+                .await?;
+            ensure!(
+                output.status.success(),
+                "could not inspect owned browser process"
+            );
+            let command = String::from_utf8(output.stdout)?;
+            owned_profile_from_command(&command, headed)
+        }
     }
     async fn connect(endpoint: &str) -> Result<Self> {
         let url = url::Url::parse(endpoint)?;
@@ -437,6 +478,9 @@ pub async fn run_authorized(
     let deadline =
         started_at + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
+    #[cfg(target_os = "linux")]
+    crate::browser_linux::preflight()
+        .map_err(|_| failure("linux_browser_environment_unsupported", false, None))?;
     let extension = native::assets(&root)?;
     if let Err(error) = agent(config, &["open", "about:blank"]).await {
         // This is strictly before extension installation and before ChatGPT is

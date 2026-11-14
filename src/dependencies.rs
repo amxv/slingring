@@ -9,6 +9,9 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[cfg(target_os = "linux")]
+pub const VERSION: &str = "0.43.0";
+#[cfg(not(target_os = "linux"))]
 pub const VERSION: &str = "0.41.1";
 const INSTALLER: &str = include_str!("../scripts/install-browser.sh");
 

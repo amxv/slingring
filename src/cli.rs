@@ -203,9 +203,9 @@ pub enum ServiceAction {
     Stop,
     /// Stop and start the local process now; does not replay interrupted jobs.
     Restart,
-    /// Install the launchd service, stopping the existing process first.
+    /// Register the service (macOS LaunchAgent; optional Linux user unit without starting it).
     Install,
-    /// Stop and remove the launchd service registration.
+    /// Stop and remove this user's Slingring service registration.
     Uninstall,
     /// Print process/remote status as JSON without starting a browser.
     Status,

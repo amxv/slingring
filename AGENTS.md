@@ -1,6 +1,6 @@
 # Slingring
 
-Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversations and returns their URLs after real assistant activity begins. Do not extract generated answers. Do not use local Codex to delegate this project unless the user explicitly changes that instruction.
+Rust CLI/service for Apple Silicon macOS and x86_64 Linux that starts or follows up on ChatGPT Chat conversations and returns their URLs after real assistant activity begins. Do not extract generated answers. Do not use local Codex to delegate this project unless the user explicitly changes that instruction.
 
 ## Invariants
 
@@ -19,6 +19,7 @@ Mac-only Rust CLI/service that starts or follows up on ChatGPT Chat conversation
 - Track safe startup stages and elapsed time in bounded private logs. Never log prompts, URLs, tokens, cookies, generated answers, raw browser output or user-controlled error strings. A missing/evicted journal entry is *unknown*, not evidence of no submission.
 - No idle browser, polling daemon, Redis, or `cloudflared`. Remote mode has one Rust runtime thread and outbound WSS; local-only mode exits at idle.
 - Menu bar commands wrap the CLI. No independent configuration, network service, timer polling, or embedded browser.
+- Linux has no menu/tray app or automatic update scheduler. Optional systemd user service registration is explicit; installer and tests must not change a real user's service settings. Linux requires glibc 2.39 or newer and keeps its verified helper pin separate from macOS. Do not weaken Chrome's sandbox for CI, containers or root execution.
 
 ## Source map
 
@@ -33,6 +34,8 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 bash apps/menubar/test.sh
+# On Linux instead of the macOS-only Swift check:
+python3 scripts/test_linux_installers.py
 (cd extension && bun install --frozen-lockfile && bun run check && bun run test)
 (cd relay && bun install --frozen-lockfile && bun run check && bun run test)
 just docs-test
@@ -45,7 +48,7 @@ Keep Rust files below 1,000 lines. Use the pinned Rust 1.99.1 toolchain. `unsafe
 
 ## Deployment and release
 
-Direct installers and upgrade checks must support authenticated `gh` downloads while the repository is private and anonymous public-release downloads when public. Current releases support macOS ARM64 only; do not promise Intel until that distribution is shipped. No npm or crates.io publication. Regenerate `.github/workflows/release.yml` with pinned cargo-dist 0.32.0, never manually edit it. Read `.agents/skills/release/SKILL.md` for releases. Keep CLI and optional ad-hoc-signed app adjacent. Never disable Gatekeeper or strip quarantine. The public relay Wrangler template must not contain an account ID, zone ID, or maintainer hostname; production deployment requires explicit GitHub Actions secrets for the existing account, zone and hostname, while preserving Worker identity, custom domain and other credentials.
+Direct installers and upgrade checks must support authenticated `gh` downloads while the repository is private and anonymous public-release downloads when public. Release targets are macOS ARM64 and Linux x86_64 GNU (glibc 2.39+); do not promise Intel macOS, Linux ARM64 or Windows. No npm or crates.io publication. Regenerate `.github/workflows/release.yml` with pinned cargo-dist 0.32.0, never manually edit it. Read `.agents/skills/release/SKILL.md` for releases. Keep the macOS CLI and optional ad-hoc-signed app adjacent. Never disable Gatekeeper or strip quarantine. The public relay Wrangler template must not contain an account ID, zone ID, or maintainer hostname; production deployment requires explicit GitHub Actions secrets for the existing account, zone and hostname, while preserving Worker identity, custom domain and other credentials.
 
 Docs remain Astro/ZueDocs. Vercel root is `docs`; Git automatic deployments stay disabled. The docs-only GitHub Action builds in `docs`, copies the prebuilt bundle to repository-root `.vercel/output`, then deploys from root. Validate with Astro check locally, not redundant production builds.
 
