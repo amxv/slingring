@@ -292,3 +292,38 @@ async fn cleanup_never_overwrites_a_different_durable_generation() -> Result<()>
     assert_eq!(current.state, State::Authorized);
     Ok(())
 }
+
+#[tokio::test]
+async fn invalid_live_evidence_stays_terminal_even_if_a_later_report_looks_valid() -> Result<()> {
+    for invalid in [Some(99), None] {
+        let fixture = Fixture::new()?;
+        let pending = fixture.pending()?;
+        let client = tokio::spawn(peer(pending.socket_path(), fixture.fields(&pending)));
+        let mut lease = pending.authorize().await?;
+        let mut socket = client.await??;
+        assert_eq!(socket.read_u8().await?, 1);
+        if let Some(byte) = invalid {
+            socket.write_all(&[byte]).await?;
+        } else {
+            socket.shutdown().await?;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while lease.check_live().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        if invalid.is_some() {
+            socket.write_all(&[2]).await?;
+        }
+        assert!(lease.check_live().is_err());
+        assert!(lease.close().await.is_err());
+        assert_eq!(
+            coordinator::read_receipt(fixture.root.path())?
+                .unwrap()
+                .state,
+            State::Authorized
+        );
+    }
+    Ok(())
+}

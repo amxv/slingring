@@ -331,3 +331,43 @@ async fn stop_and_deadline_keep_submission_outcome_separate_from_limited_cleanup
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn closing_during_authorization_cannot_restore_active_or_approve_a_waiting_peer() -> Result<()>
+{
+    let root = tempfile::tempdir()?;
+    let session = Session::prepare(
+        root.path(),
+        GuardConfig {
+            guard_executable: std::env::current_exe()?,
+            browser_executable: "/fixture/no-browser".into(),
+        },
+    )?;
+    let env = session.environment();
+    let socket = &env
+        .iter()
+        .find(|(k, _)| *k == "SLINGRING_PRIVATE_LAUNCH_SOCKET")
+        .unwrap()
+        .1;
+    let mut peer = UnixStream::connect(socket).await?;
+    peer.write_u32(32).await?; // Hold the handshake before any approval barrier.
+    let authorizing = session.clone();
+    let task = tokio::spawn(async move {
+        authorizing
+            .authorize(tokio::time::Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(session.close().await.is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await??
+            .is_err()
+    );
+    assert!(!session.is_active());
+    assert!(session.close().await.is_err());
+    assert!(session.check_command(true).is_err());
+    assert!(peer.read_u8().await.is_err());
+    assert!(launch_coordinator::read_receipt(root.path())?.is_none());
+    Ok(())
+}

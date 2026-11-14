@@ -88,6 +88,7 @@ pub struct LaunchLease {
     _lock: File,
     root: PathBuf,
     receipt: Receipt,
+    uncertain: bool,
 }
 fn absolute_clean(path: &Path) -> bool {
     path.is_absolute()
@@ -359,12 +360,14 @@ impl PendingLaunch {
             _lock: self.lock,
             root: self.root,
             receipt,
+            uncertain: false,
         })
     }
 }
 impl LaunchLease {
     /// A guardian report or EOF ends reuse. This never signals or infers tree exit.
     pub fn check_live(&mut self) -> Result<()> {
+        ensure!(!self.uncertain, "guardian lease evidence already invalid");
         ensure!(
             self.receipt.state == State::Authorized,
             "owned browser root already ended; tree remains unverified"
@@ -373,10 +376,16 @@ impl LaunchLease {
         match self.stream.try_read(&mut byte) {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
             Ok(1) if byte == [2] => {
-                self.persist_root_reaped()?;
+                if let Err(error) = self.persist_root_reaped() {
+                    self.uncertain = true;
+                    return Err(error);
+                }
                 anyhow::bail!("owned browser root ended; tree remains unverified")
             }
-            _ => anyhow::bail!("guardian lease ended or reported invalid evidence"),
+            _ => {
+                self.uncertain = true;
+                anyhow::bail!("guardian lease ended or reported invalid evidence")
+            }
         }
     }
     fn persist_root_reaped(&mut self) -> Result<()> {
@@ -398,6 +407,9 @@ impl LaunchLease {
     /// Report scope is only the directly owned browser root. Retain the receipt
     /// and refuse automatic replacement: this is not a tree-exit assertion.
     pub async fn close(mut self) -> Result<Receipt> {
+        // Drop closes the lease, but later bytes cannot rehabilitate invalid
+        // evidence or upgrade the durable outcome.
+        ensure!(!self.uncertain, "guardian cleanup evidence already invalid");
         if self.receipt.state == State::RootReapedTreeUnverified {
             self.persist_root_reaped()?;
             return Ok(self.receipt.clone());

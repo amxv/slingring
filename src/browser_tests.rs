@@ -211,6 +211,10 @@ async fn launcher_passes_persisted_headed_setting_and_fixed_background_flags() {
 case "$1" in --headed) mode=headed;; *) mode=headless;; esac
 if [ "${AGENT_BROWSER_HEADED+x}" = x ]; then inherited=present; else inherited=absent; fi
 if [ "${AGENT_BROWSER_ARGS+x}" = x ]; then inherited=present; fi
+if [ "${SLINGRING_PRIVATE_LAUNCH_GUARD+x}" = x ]; then inherited=present; fi
+if [ "${SLINGRING_PRIVATE_LAUNCH_SOCKET+x}" = x ]; then inherited=present; fi
+if [ "${SLINGRING_PRIVATE_LAUNCH_GENERATION+x}" = x ]; then inherited=present; fi
+if [ "${SLINGRING_PRIVATE_LAUNCH_SESSION+x}" = x ]; then inherited=present; fi
 pinned=false
 webmcp=false
 features=false

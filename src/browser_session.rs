@@ -10,12 +10,14 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use tokio::sync::watch;
 use tokio::time::Instant;
 
 enum Phase {
     Pending(PendingLaunch),
     Authorizing,
     Active(LaunchLease),
+    ClosingUnverified,
     Closed,
 }
 pub struct Session {
@@ -23,6 +25,7 @@ pub struct Session {
     name: String,
     environment: Vec<(&'static str, String)>,
     phase: Mutex<Phase>,
+    cancelled: watch::Sender<bool>,
 }
 impl Session {
     /// Integration seam for an explicitly approved artifact pair. The CLI does
@@ -58,6 +61,7 @@ impl Session {
             name,
             environment,
             phase: Mutex::new(Phase::Pending(pending)),
+            cancelled: watch::channel(false).0,
         }))
     }
     pub fn name(&self) -> &str {
@@ -90,8 +94,18 @@ impl Session {
                 }
             }
         };
-        let lease = pending.authorize_before(deadline).await?;
-        *self.phase.lock().expect("session lock") = Phase::Active(lease);
+        let mut cancelled = self.cancelled.subscribe();
+        let lease = tokio::select! {
+            biased;
+            _ = cancelled.wait_for(|value| *value) => anyhow::bail!("browser authorization cancelled"),
+            lease = pending.authorize_before(deadline) => lease?,
+        };
+        let mut phase = self.phase.lock().expect("session lock");
+        ensure!(
+            matches!(*phase, Phase::Authorizing) && !*cancelled.borrow(),
+            "browser authorization closed before activation"
+        );
+        *phase = Phase::Active(lease);
         Ok(())
     }
     pub fn verify_profile(&self, profile: &Path) -> Result<()> {
@@ -107,6 +121,7 @@ impl Session {
         Ok(())
     }
     pub async fn close(&self) -> Result<()> {
+        self.cancelled.send_replace(true);
         let phase = std::mem::replace(
             &mut *self.phase.lock().expect("session lock"),
             Phase::Closed,
@@ -120,7 +135,14 @@ impl Session {
                 drop(pending);
                 Ok(())
             }
-            Phase::Authorizing | Phase::Closed => {
+            // A concurrent authorization may already have crossed its durable
+            // approval barrier. Cancel it, never restore Active, and do not
+            // assert no launch while that future can still be unwinding.
+            Phase::Authorizing | Phase::ClosingUnverified => {
+                *self.phase.lock().expect("session lock") = Phase::ClosingUnverified;
+                anyhow::bail!("browser authorization cancellation remains unverified")
+            }
+            Phase::Closed => {
                 ensure!(
                     launch_coordinator::read_receipt(&self.root)?.is_none(),
                     "prior launch cleanup remains unverified"

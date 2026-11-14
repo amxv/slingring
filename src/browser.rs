@@ -81,6 +81,14 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     command.env_remove("AGENT_BROWSER_HEADED");
     command.env_remove("AGENT_BROWSER_ARGS");
     command.env_remove("AGENT_BROWSER_NO_WEBMCP");
+    for key in [
+        "SLINGRING_PRIVATE_LAUNCH_GUARD",
+        "SLINGRING_PRIVATE_LAUNCH_SOCKET",
+        "SLINGRING_PRIVATE_LAUNCH_GENERATION",
+        "SLINGRING_PRIVATE_LAUNCH_SESSION",
+    ] {
+        command.env_remove(key);
+    }
     if let Some(lease) = &config.browser_session {
         command.envs(lease.environment());
     }
