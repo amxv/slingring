@@ -20,6 +20,11 @@ dist = true
 name = "slingring"
 path = "src/main.rs"
 
+[features]
+default = []
+# Fail-closed integration candidate. No guarded helper artifact is approved yet.
+owned-launch-candidate = []
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }

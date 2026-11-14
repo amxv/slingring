@@ -245,3 +245,50 @@ async fn stalled_peer_is_bounded_without_authorization_or_a_persistent_fence() -
     assert!(fixture.pending().is_ok());
     Ok(())
 }
+
+#[tokio::test]
+async fn root_exit_report_permanently_ends_reuse_and_preserves_its_limited_scope() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let pending = fixture.pending()?;
+    let client = tokio::spawn(peer(pending.socket_path(), fixture.fields(&pending)));
+    let mut lease = pending.authorize().await?;
+    let mut socket = client.await??;
+    assert_eq!(socket.read_u8().await?, 1);
+    socket.write_all(&[2]).await?;
+    // Wait for readiness without treating a scheduler delay as lifecycle proof.
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while lease.check_live().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert!(
+        lease.check_live().is_err(),
+        "consumed report must not restore reuse"
+    );
+    assert_eq!(lease.close().await?.state, State::RootReapedTreeUnverified);
+    assert!(slingring::browser_session::ensure_reconciled(fixture.root.path()).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cleanup_never_overwrites_a_different_durable_generation() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let pending = fixture.pending()?;
+    let client = tokio::spawn(peer(pending.socket_path(), fixture.fields(&pending)));
+    let lease = pending.authorize().await?;
+    let mut socket = client.await??;
+    assert_eq!(socket.read_u8().await?, 1);
+    let mut replacement = lease.receipt().clone();
+    replacement.generation = uuid::Uuid::new_v4().to_string();
+    slingring::config::atomic(
+        &fixture.root.path().join("launch-receipt.json"),
+        &serde_json::to_vec(&replacement)?,
+    )?;
+    socket.write_all(&[2]).await?;
+    assert!(lease.close().await.is_err());
+    let current = coordinator::read_receipt(fixture.root.path())?.unwrap();
+    assert_eq!(current.generation, replacement.generation);
+    assert_eq!(current.state, State::Authorized);
+    Ok(())
+}

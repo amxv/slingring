@@ -27,6 +27,10 @@ use tokio::{
 pub type BrowserFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 pub type SubmissionGate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 pub trait Backend: Send + Sync + 'static {
+    fn configure_session(&self, _root: &Path, _config: &mut Config) -> Result<()> {
+        Ok(())
+    }
+
     fn run<'a>(
         &'a self,
         config: &'a Config,
@@ -65,6 +69,14 @@ pub trait Backend: Send + Sync + 'static {
 }
 pub struct Browser;
 impl Backend for Browser {
+    fn configure_session(&self, root: &Path, _config: &mut Config) -> Result<()> {
+        crate::browser_session::ensure_reconciled(root)?;
+        #[cfg(feature = "owned-launch-candidate")]
+        return crate::browser_session::configure_supported_release(root, _config);
+        #[cfg(not(feature = "owned-launch-candidate"))]
+        Ok(())
+    }
+
     fn run<'a>(
         &'a self,
         _c: &'a Config,
@@ -666,6 +678,8 @@ impl Queue {
         retained: bool,
     ) -> Result<oneshot::Receiver<Result<TaskResult>>> {
         ensure!(valid_job_id(&id), "invalid request ID");
+        let mut config = config;
+        config.browser_session = None;
         let task = task.resolve(&config)?;
         let fingerprint = task.fingerprint(&config.profile)?;
         let (tx, rx) = oneshot::channel();
@@ -736,6 +750,7 @@ async fn work(
     backend: Arc<dyn Backend>,
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
+    let root = queue.state.lock().expect("queue lock").root.clone();
     let mut open_config: Option<Config> = None;
     let outcome = async {
         loop {
@@ -761,7 +776,7 @@ async fn work(
             };
             if skipped {
                 if rx.is_empty() {
-                    if let Some(config) = open_config.take() { close_bounded(backend.as_ref(), &config).await; }
+                    if let Some(config) = open_config.take() { close_bounded(&root, backend.as_ref(), &config).await?; }
                     queue.busy.store(false, Ordering::Release);
                 }
                 continue;
@@ -772,13 +787,13 @@ async fn work(
                     || previous.browser_headed != config.browser_headed
             }) {
                 let previous = open_config.take().expect("open browser configuration");
-                close_bounded(backend.as_ref(), &previous).await;
+                close_bounded(&root, backend.as_ref(), &previous).await?;
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 queue.state.lock().expect("queue lock").finish(&id,
                     Err(anyhow::anyhow!("request expired before browser launch; nothing was submitted")), if task.is_pause() { "pause_not_attempted" } else { "failed" })?;
                 if rx.is_empty() {
-                    if let Some(config) = open_config.take() { close_bounded(backend.as_ref(), &config).await; }
+                    if let Some(config) = open_config.take() { close_bounded(&root, backend.as_ref(), &config).await?; }
                     queue.busy.store(false, Ordering::Release);
                 }
                 continue;
@@ -787,6 +802,13 @@ async fn work(
             let own_deadline = Instant::now() + Duration::from_secs(config.start_timeout_secs);
             let deadline = deadline.map_or(own_deadline, |external| external.min(own_deadline));
             config.start_timeout_secs = deadline.saturating_duration_since(Instant::now()).as_secs().max(1);
+            if let Some(previous) = &open_config {
+                config.browser_session = previous.browser_session.clone();
+            } else if let Err(error) = backend.configure_session(&root, &mut config) {
+                queue.state.lock().expect("queue lock").finish(&id, Err(error),
+                    if task.is_pause() { "pause_not_attempted" } else { "failed" })?;
+                anyhow::bail!("browser session setup refused; further launches stopped");
+            }
             open_config = Some(config.clone());
             let state = queue.state.clone();
             let progress_id = id.clone();
@@ -838,8 +860,9 @@ async fn work(
             // slow browser cleanup. The worker still serializes subsequent jobs.
             let finished = queue.state.lock().expect("queue lock").finish(&id, result, status);
             if !success || rx.is_empty() || *stop.borrow() {
-                close_bounded(backend.as_ref(), &config).await;
+                let closed = close_bounded(&root, backend.as_ref(), &config).await;
                 open_config = None;
+                closed?;
                 queue.busy.store(false, Ordering::Release);
             }
             finished?;
@@ -849,7 +872,7 @@ async fn work(
     }.await;
     rx.close();
     if let Some(config) = open_config {
-        close_bounded(backend.as_ref(), &config).await;
+        let _ = close_bounded(&root, backend.as_ref(), &config).await;
     }
     queue.busy.store(false, Ordering::Release);
     let mut state = queue.state.lock().expect("queue lock");
@@ -888,6 +911,26 @@ async fn work(
     state.owner.take();
     outcome
 }
-async fn close_bounded(backend: &dyn Backend, config: &Config) {
-    let _ = tokio::time::timeout(Duration::from_secs(20), backend.close(config)).await;
+async fn close_bounded(root: &Path, backend: &dyn Backend, config: &Config) -> Result<()> {
+    let started = Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(20), backend.close(config)).await;
+    let success = matches!(result, Ok(Ok(())));
+    let (stage, detail) = match result {
+        Ok(Ok(())) => ("browser_cleanup_finished", "backend_ack"),
+        Ok(Err(_)) => ("browser_cleanup_unverified", "close_failed"),
+        Err(_) => ("browser_cleanup_unverified", "timeout"),
+    };
+    crate::diagnostics::event(
+        root,
+        "browser",
+        stage,
+        "cleanup",
+        detail,
+        started.elapsed().as_millis() as u64,
+    );
+    ensure!(
+        success,
+        "browser cleanup unverified; further launches stopped"
+    );
+    Ok(())
 }

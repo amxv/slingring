@@ -49,6 +49,9 @@ pub struct Config {
     /// request deadline but must not change fork flags between queued jobs.
     #[serde(skip)]
     pub browser_idle_secs: Option<u64>,
+    /// Queue-owned runtime lease, never accepted from or saved to config JSON.
+    #[serde(skip)]
+    pub browser_session: Option<std::sync::Arc<crate::browser_session::Session>>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -65,6 +68,7 @@ impl Default for Config {
             remote_enabled: false,
             heartbeat_secs: 60,
             browser_idle_secs: None,
+            browser_session: None,
         }
     }
 }

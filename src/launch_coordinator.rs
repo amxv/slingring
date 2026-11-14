@@ -1,4 +1,4 @@
-//! Experimental pre-exec launch authorization. Not wired to the pinned helper.
+//! Experimental pre-exec launch authorization. Released helper admission is gated.
 //! No PID signaling: only the helper's retained child capability may terminate
 //! its child. A root-exit report is deliberately NOT a process-tree guarantee.
 use crate::{config, diagnostics};
@@ -64,6 +64,7 @@ impl Drop for SocketDirectory {
         if fs::symlink_metadata(&socket).is_ok_and(|m| m.file_type().is_socket()) {
             let _ = fs::remove_file(socket);
         }
+        let _ = fs::remove_dir(self.0.join("h")); // Only our empty helper directory.
         let _ = fs::remove_dir(&self.0); // Never recursively delete peer paths.
     }
 }
@@ -201,14 +202,10 @@ impl PendingLaunch {
             ..config
         };
         let generation = uuid::Uuid::new_v4().to_string();
-        let session = format!(
-            "{}-{}",
-            crate::browser::session(root),
-            generation.replace('-', "")
-        );
+        let session = format!("s-{}", &generation.replace('-', "")[..16]);
         // Root can be longer than macOS sun_path. Use a newly created private,
         // unpredictable short directory instead of unlinking a guessed socket.
-        let directory = PathBuf::from("/tmp").join(format!("slingring-lease-{generation}"));
+        let directory = PathBuf::from("/tmp").join(format!("slg-{}", generation.replace('-', "")));
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
         let socket_directory = SocketDirectory(directory);
         let listener = UnixListener::bind(socket_directory.0.join("s"))?;
@@ -366,12 +363,45 @@ impl PendingLaunch {
     }
 }
 impl LaunchLease {
+    /// A guardian report or EOF ends reuse. This never signals or infers tree exit.
+    pub fn check_live(&mut self) -> Result<()> {
+        ensure!(
+            self.receipt.state == State::Authorized,
+            "owned browser root already ended; tree remains unverified"
+        );
+        let mut byte = [0];
+        match self.stream.try_read(&mut byte) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+            Ok(1) if byte == [2] => {
+                self.persist_root_reaped()?;
+                anyhow::bail!("owned browser root ended; tree remains unverified")
+            }
+            _ => anyhow::bail!("guardian lease ended or reported invalid evidence"),
+        }
+    }
+    fn persist_root_reaped(&mut self) -> Result<()> {
+        let current = read_receipt(&self.root)?.context("launch receipt missing")?;
+        ensure!(
+            current.generation == self.receipt.generation
+                && current.guardian == self.receipt.guardian,
+            "launch ownership generation changed"
+        );
+        self.receipt.state = State::RootReapedTreeUnverified;
+        config::atomic(
+            &self.root.join(RECEIPT),
+            &serde_json::to_vec(&self.receipt)?,
+        )
+    }
     pub fn receipt(&self) -> &Receipt {
         &self.receipt
     }
     /// Report scope is only the directly owned browser root. Retain the receipt
     /// and refuse automatic replacement: this is not a tree-exit assertion.
     pub async fn close(mut self) -> Result<Receipt> {
+        if self.receipt.state == State::RootReapedTreeUnverified {
+            self.persist_root_reaped()?;
+            return Ok(self.receipt.clone());
+        }
         event(&self.root, "browser_close_requested", "guardian_lease_eof");
         let result = tokio::time::timeout(CLEANUP_TIMEOUT, async {
             self.stream.shutdown().await?;
@@ -379,17 +409,7 @@ impl LaunchLease {
                 self.stream.read_u8().await? == 2,
                 "unverified guardian cleanup report"
             );
-            let current = read_receipt(&self.root)?.context("launch receipt missing")?;
-            ensure!(
-                current.generation == self.receipt.generation
-                    && current.guardian == self.receipt.guardian,
-                "launch ownership generation changed"
-            );
-            self.receipt.state = State::RootReapedTreeUnverified;
-            config::atomic(
-                &self.root.join(RECEIPT),
-                &serde_json::to_vec(&self.receipt)?,
-            )?;
+            self.persist_root_reaped()?;
             Ok::<_, anyhow::Error>(self.receipt.clone())
         })
         .await;

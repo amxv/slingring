@@ -2,7 +2,10 @@
 //! the reviewed pinned-helper test binary. Never launches Chrome or a website.
 #![cfg(target_os = "macos")]
 use anyhow::{Context, Result, ensure};
-use slingring::launch_coordinator::{GuardConfig, PendingLaunch, State};
+use slingring::{
+    browser_session::Session,
+    launch_coordinator::{self, GuardConfig, PendingLaunch, State},
+};
 use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -43,14 +46,14 @@ exec /bin/sleep 60
 "#,
     )?;
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700))?;
-    let pending = PendingLaunch::prepare(
+    let session = Session::prepare(
         root.path(),
         GuardConfig {
             guard_executable: guardian.clone(),
             browser_executable: fake.clone(),
         },
     )?;
-    let expected_session = pending.session().to_owned();
+    let expected_session = session.name().to_owned();
     let mut child = Command::new(helper)
         .args([
             "native::cdp::chrome::tests::test_private_launch_guard_path_with_external_coordinator",
@@ -59,7 +62,7 @@ exec /bin/sleep 60
             "--nocapture",
             "--test-threads=1",
         ])
-        .envs(pending.environment())
+        .envs(session.environment())
         .env("OWNED_LAUNCH_FAKE_BROWSER", &fake)
         .env("OWNED_LAUNCH_FAKE_PROFILE", profile.path())
         .stdin(Stdio::null())
@@ -67,19 +70,21 @@ exec /bin/sleep 60
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()?;
-    let lease = pending
-        .authorize_before(Instant::now() + Duration::from_secs(10))
+    session
+        .authorize(Instant::now() + Duration::from_secs(10))
         .await?;
+    session.verify_profile(profile.path())?;
+    let receipt = launch_coordinator::read_receipt(root.path())?.context("receipt missing")?;
     ensure!(
-        lease.receipt().guardian.executable == guardian,
+        receipt.guardian.executable == guardian,
         "wrong guardian authenticated"
     );
     ensure!(
-        lease.receipt().session == expected_session,
+        receipt.session == expected_session,
         "wrong generation session"
     );
     ensure!(
-        lease.receipt().profile == profile.path().canonicalize()?,
+        receipt.profile == profile.path().canonicalize()?,
         "wrong fixture profile"
     );
     let stdout = child.stdout.take().context("fixture stdout missing")?;
@@ -100,7 +105,13 @@ exec /bin/sleep 60
         profile.path().join("fake-browser.pid").is_file(),
         "fixture never launched"
     );
-    let receipt = lease.close().await?;
+    // The queue/session wrapper rejects root-only cleanup as incomplete, but
+    // still persists the exact scope and retains the replacement fence.
+    ensure!(
+        session.close().await.is_err(),
+        "tree cleanup must remain unverified"
+    );
+    let receipt = launch_coordinator::read_receipt(root.path())?.context("receipt missing")?;
     ensure!(
         receipt.state == State::RootReapedTreeUnverified,
         "overstated cleanup scope"

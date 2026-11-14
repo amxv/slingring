@@ -5,7 +5,7 @@ order: 15
 category: Reference
 ---
 
-This is an **unreleased, unwired experiment** for [issue #4](https://github.com/amxv/slingring/issues/4). The installed helper, browser flags, Chrome profiles, application identity, and normal submission path are unchanged. It is not a claim of complete browser-process cleanup.
+This is an **unreleased, production-gated candidate** for [issue #4](https://github.com/amxv/slingring/issues/4). Queue/session integration is covered by fixtures, but the released helper has no approved packaged capability for this protocol. Enabling the `owned-launch-candidate` build feature therefore refuses browser execution with `guarded_helper_capability_unavailable`. Default builds do not opt into the experimental launch path. No installed helper, browser flags, Chrome profile, or application identity is changed. This is not a claim of complete browser-process cleanup.
 
 ## Authorization contract
 
@@ -32,17 +32,27 @@ The experimental guardian owns an unreaped direct child. Report byte `0x02` mean
 
 The coordinator retains a `root_reaped_tree_unverified` receipt after this report. Both that receipt and an authorized-but-unconfirmed receipt block automatic replacement. There is intentionally no automatic deletion, PID/name kill, broad profile scan or ambiguous restart recovery.
 
-Remaining work before production integration:
+## Queue integration and admission
+
+The queue creates a runtime-only session after admission, shares that exact lease across a queued batch, and drops it with the worker even when queue/backend handles remain alive. Config serialization cannot persist or inject a lease. The helper socket directory and restore-state namespace are generation-specific; all helper commands receive the same namespace, session and four coordinator environment values.
+
+The guarded path joins initial helper launch with coordinator authorization. It verifies the CDP-reported profile against the durable receipt and checks the lease before commands and before the durable Send barrier. A failed guarded launch is not retried. A consumed root-exit report permanently ends reuse.
+
+Cleanup is separate from submission outcome: confirmed results are persisted and delivered before cleanup, while cancellation before versus after durable Send intent remains `not_submitted` versus `uncertain`. Any backend cleanup error or timeout stops the serial worker rather than launching another job. A legacy helper's successful close acknowledgment is logged as `backend_ack`, not verified process exit. Default builds also refuse a previously recorded unresolved launch receipt, so disabling the candidate cannot bypass its fence. Read-only job recovery remains available.
+
+The v1 session deliberately reports cleanup as incomplete even after root reaping. There is no reviewed policy allowing another generation after that limited report. The current gate is not a usable opt-in production feature: approved artifacts and a complete recovery policy are prerequisites, not checks inferred from helper filenames or a matching upstream version.
+
+Remaining work before enabling the production path:
 
 - Prove bounded ownership and cleanup of browser descendants, including detached processes, without a PID-reuse signal race.
 - Establish durable terminal evidence that remains trustworthy after coordinator or guardian death.
-- Integrate the exact generation lease into queue cancellation, timeout and service startup while preserving confirmed submission outcomes.
+- Validate the integrated lease through the actual packaged CLI/helper daemon discovery path, not only synthetic queue backends and the patched helper launch fixture. Define how an unresolved receipt is safely reconciled before any new generation, including after service restart.
 - Package, sign, version and checksum the guardian and patched helper; release those dependencies before changing Slingring's pin. Never silently replace the current helper with an experimental binary.
 - Evaluate a distinct macOS application identity separately. A temporary profile or guardian does not establish a separate Launch Services identity.
 
 ## Fixture verification
 
-`cargo test --locked --test launch_coordinator` uses synthetic Unix peers and temporary private state, not Chrome or ChatGPT. It covers peer authentication, bounded framing, durable approval, cancellation, generation exclusion and conservative cleanup reports. A separate opt-in cross-repository fixture is needed to validate the exact patched-helper launch path with a disposable fake browser. Neither test authorizes a real account submission or a production service restart.
+`cargo test --locked --test launch_coordinator` uses synthetic Unix peers and temporary private state, not Chrome or ChatGPT. It covers peer authentication, bounded framing, durable approval, cancellation, generation exclusion and conservative cleanup reports. The queue suite (`cargo test --locked --test queue_guarded_session`) covers reuse, configuration boundaries, worker abort, stop/deadline on both sides of the Send barrier, immutable submission outcomes and runtime-only lease configuration. The same suite with `--features owned-launch-candidate` additionally verifies refusal before unsupported helper execution. The opt-in cross-repository fixture validates the exact patched-helper launch path and the runtime session wrapper with a disposable fake browser. Neither test authorizes a real account submission or a production service restart.
 
 ### Joint pinned-helper fixture
 
@@ -54,9 +64,9 @@ SLINGRING_TEST_LAUNCH_GUARD=/absolute/path/to/owned-launch-guard \
 cargo test --locked --test helper_launch_coordinator -- --ignored --nocapture
 ```
 
-The test invokes only `native::cdp::chrome::tests::test_private_launch_guard_path_with_external_coordinator` in that helper test binary. It creates a private fake browser/profile, passes the coordinator's four lease environment values, authenticates the real guardian peer, and waits for the helper's `fake-browser-ready` marker. The coordinator then half-closes its lease, accepts only the root-reaped report, and confirms the helper test independently observed guardian/root exit. The root-only receipt still blocks another launch. The fake browser is a temporary shell script that writes a fake DevTools endpoint and becomes `sleep`; it never opens a port, website, Chrome profile or account.
+The test invokes only `native::cdp::chrome::tests::test_private_launch_guard_path_with_external_coordinator` in that helper test binary. It creates a private fake browser/profile, passes the session's four coordinator lease values and isolated helper namespace/socket directory, authenticates the real guardian peer, and waits for the helper's `fake-browser-ready` marker. The runtime session wrapper then half-closes its lease, persists only the root-reaped report, refuses to call that complete tree cleanup, and confirms the helper test independently observed guardian/root exit. The root-only receipt still blocks another launch. The fake browser is a temporary shell script that writes a fake DevTools endpoint and becomes `sleep`; it never opens a port, website, Chrome profile or account.
 
-The helper source under review is pinned to upstream `v0.41.1` (`5868f7c`), with a separate launch-only guardian patch. This fixture does not validate helper daemon discovery, installed packaging, crash recovery of a complete browser tree, or any macOS application identity.
+The helper source under review is pinned to upstream `v0.41.1` (`5868f7c`), with a separate launch-only guardian patch. The latest guardian additionally uses a private session/group and a retained, unreaped direct-child anchor for bounded same-group cleanup, but v1 still communicates only root reaping. An escaped process, dead guardian, or ambiguous snapshot is not proven absent. This fixture does not validate helper daemon discovery, installed packaging, crash recovery of a complete browser tree, or any macOS application identity. It does not justify closing issue #4 or releasing a helper substitution.
 
 ## Read-only application-identity assessment
 

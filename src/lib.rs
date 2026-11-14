@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod browser_session;
 pub mod cli;
 pub mod commands;
 pub mod config;

@@ -61,7 +61,14 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
             .is_none_or(|name| name != "agent-browser"),
         "upstream agent-browser is not an allowed fallback"
     );
-    let name = session(&config::root()?);
+    if let Some(lease) = &config.browser_session {
+        lease.check_command(args.first() == Some(&"open"))?;
+    }
+    let name = if let Some(lease) = &config.browser_session {
+        lease.name().to_owned()
+    } else {
+        session(&config::root()?)
+    };
     let idle = format!(
         "{}s",
         config
@@ -74,6 +81,9 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
     command.env_remove("AGENT_BROWSER_HEADED");
     command.env_remove("AGENT_BROWSER_ARGS");
     command.env_remove("AGENT_BROWSER_NO_WEBMCP");
+    if let Some(lease) = &config.browser_session {
+        command.envs(lease.environment());
+    }
     if config.browser_headed {
         command.arg("--headed");
     }
@@ -112,9 +122,11 @@ async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let output = match tokio::time::timeout(Duration::from_secs(65), command.output()).await {
+    let child = command.spawn().map_err(|_| problem("spawn"))?;
+    let output = match tokio::time::timeout(Duration::from_secs(65), child.wait_with_output()).await
+    {
         Err(_) => return Err(problem("timeout")),
-        Ok(Err(_)) => return Err(problem("spawn")),
+        Ok(Err(_)) => return Err(problem("io")),
         Ok(Ok(output)) => output,
     };
     ensure!(
@@ -438,11 +450,25 @@ pub async fn run_authorized(
         started_at + Duration::from_secs(config.start_timeout_secs.saturating_sub(5).max(1));
     let root = config::root()?;
     let extension = native::assets(&root)?;
-    if let Err(error) = agent(config, &["open", "about:blank"]).await {
+    let launched = if let Some(lease) = &config.browser_session {
+        tokio::try_join!(
+            lease.authorize(deadline),
+            agent(config, &["open", "about:blank"])
+        )
+        .map(|(_, response)| response)
+    } else {
+        agent(config, &["open", "about:blank"]).await
+    };
+    if let Err(error) = launched {
         // This is strictly before extension installation and before ChatGPT is
         // opened. A stale runner/socket may be recreated once without any risk
         // of replaying a prompt. No submission or UI action is retried here.
         progress(launch_stage(&error, false));
+        if config.browser_session.is_some() {
+            // Never reopen a guarded generation after a failed or cancelled
+            // handshake. Queue cleanup records its limited evidence separately.
+            return Err(failure("guarded_browser_launch_unverified", false, None));
+        }
         trace("retry_blank_browser_launch");
         progress("browser_retry_cleanup");
         let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
@@ -473,6 +499,11 @@ pub async fn run_authorized(
         .owned_profile(config.browser_headed)
         .await
         .map_err(|_| failure("isolated_profile_unverified", false, None))?;
+    if let Some(lease) = &config.browser_session {
+        lease
+            .verify_profile(&browser_data)
+            .map_err(|_| failure("guarded_profile_unverified", false, None))?;
+    }
     progress("native_registration");
     native::register(&root, &browser_data)
         .map_err(|_| failure("native_registration_failed", false, None))?;
@@ -647,6 +678,11 @@ pub async fn run_authorized(
                 native::write(&mut socket, &json!({"type":"uploaded","ok":true})).await?;
             }
             Some("will_submit") if !submitted && !task.is_pause() => {
+                if let Some(lease) = &config.browser_session {
+                    lease.check_command(false).map_err(|_| {
+                        failure("browser_lease_lost", false, conversation_url.clone())
+                    })?;
+                }
                 let owned = target.as_ref().ok_or_else(|| {
                     failure("tab_binding_failed", false, conversation_url.clone())
                 })?;
@@ -738,6 +774,24 @@ pub async fn close(config: &Config) -> Result<()> {
     trace("close");
     if let Ok(root) = config::root() {
         let _ = std::fs::remove_file(root.join("debug-browser.json"));
+    }
+    if let Some(lease) = &config.browser_session {
+        if lease.is_active() {
+            let graceful =
+                tokio::time::timeout(Duration::from_secs(5), agent(config, &["close"])).await;
+            if !matches!(graceful, Ok(Ok(_))) {
+                crate::diagnostics::event(
+                    &config::root()?,
+                    "browser",
+                    "browser_close_timeout",
+                    "cleanup",
+                    "graceful_failed",
+                    0,
+                );
+            }
+        }
+        // A v1 root-only report never becomes an all-process exit guarantee.
+        return lease.close().await;
     }
     agent(config, &["close"]).await.map(|_| ())
 }
