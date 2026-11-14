@@ -159,7 +159,7 @@ impl Pipe {
 #[derive(Clone)]
 pub(crate) struct Channel {
     pipe: Arc<Mutex<Pipe>>,
-    release: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<bool>>>>,
+    release: Arc<std::sync::Mutex<Option<tokio::sync::watch::Receiver<Option<bool>>>>>,
 }
 impl Channel {
     pub(crate) async fn call(
@@ -176,34 +176,49 @@ impl Channel {
     /// A missing release demands an orderly browser generation retirement
     /// before queue reuse, without resending the submitted task.
     pub(crate) fn acknowledge(&self, mut socket: UnixStream, job: String) {
-        let child = tokio::spawn(async move {
-            tokio::time::timeout(Duration::from_secs(1), async {
+        let (result_tx, result_rx) = tokio::sync::watch::channel(None);
+        let mut guard = self.release.lock().expect("native release lock");
+        // Queue serialization should permit only one handoff. Unexpected
+        // overlap remains explicitly unverified, not an absent cleanup.
+        if guard.is_some() {
+            *guard = Some(tokio::sync::watch::channel(Some(false)).1);
+            return;
+        }
+        *guard = Some(result_rx);
+        drop(guard);
+        tokio::spawn(async move {
+            let released = tokio::time::timeout(Duration::from_secs(1), async {
                 crate::native::write(&mut socket, &json!({"type":"ack"})).await?;
                 let release = crate::native::read(&mut socket).await?;
                 Ok::<_, anyhow::Error>(release["type"] == "released" && release["job"] == job)
             })
             .await
-            .is_ok_and(|ret| ret.is_ok_and(|released| released))
+            .is_ok_and(|ret| ret.is_ok_and(|released| released));
+            let _ = result_tx.send(Some(released));
         });
-        // Queue serialization permits exactly one result handoff before
-        // the next begin/close consumes the previous cleanup handle.
-        let mut guard = self.release.lock().expect("native release lock");
-        if guard.is_some() {
-            child.abort();
-            if let Some(prior) = guard.as_ref() {
-                prior.abort(); // Unexpected overlap forces retirement.
-            }
-        } else {
-            *guard = Some(child);
-        }
     }
 
     async fn released_or_absent(&self) -> bool {
-        let found = self.release.lock().expect("native release lock").take();
-        match found {
-            Some(child) => child.await.unwrap_or(false),
-            None => true,
+        let found = self.release.lock().expect("native release lock").clone();
+        let Some(mut reply) = found else {
+            return true;
+        };
+        // A queue deadline can cancel this await. Keep the completion
+        // registered until we actually observe it so the next job cannot
+        // mistake an outstanding controller for absent cleanup.
+        let released = reply
+            .wait_for(Option::is_some)
+            .await
+            .is_ok_and(|v| *v == Some(true));
+        let mut slot = self.release.lock().expect("native release lock");
+        if slot
+            .as_ref()
+            .is_some_and(|original| original.same_channel(&reply))
+        {
+            slot.take();
+            return released;
         }
+        false
     }
 }
 
@@ -492,6 +507,51 @@ pub(crate) async fn manual_profile(root: &Path) -> Result<()> {
 }
 
 #[cfg(feature = "stock-browser-fixture")]
+async fn native_fixture(root: &Path, pipe: &Channel, profile: &Path) -> Result<()> {
+    let extension = crate::native::assets(root)?;
+    crate::native::register(root, profile)?;
+    let loaded = pipe
+        .call("Extensions.loadUnpacked", json!({"path":extension}), None)
+        .await?;
+    ensure!(
+        loaded["id"] == crate::native::EXTENSION_ID,
+        "stock Chrome cannot load the exact embedded extension"
+    );
+
+    let state_socket = Socket(root.join("browser.sock"));
+    let native = UnixListener::bind(&state_socket.0)?;
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let job = uuid::Uuid::new_v4().to_string();
+    let url = format!(
+        "chrome-extension://{}/bridge.html#token={nonce}&job={job}",
+        crate::native::EXTENSION_ID
+    );
+    pipe.call("Target.createTarget", json!({"url":url}), None)
+        .await?;
+    let (mut conn, _) = tokio::time::timeout(Duration::from_secs(10), native.accept())
+        .await
+        .context("waiting for fixture native-host connection")??;
+    ensure!(
+        conn.peer_cred()?.uid() == rustix::process::geteuid().as_raw(),
+        "unexpected native peer"
+    );
+    let hello = tokio::time::timeout(Duration::from_secs(3), crate::native::read(&mut conn))
+        .await
+        .context("waiting for fixture native hello")??;
+    ensure!(
+        hello["type"] == "hello" && hello["token"] == nonce && hello["job"] == job,
+        "native identity mismatch"
+    );
+    // Deliberately send no task, no files, no account credentials and no
+    // authorization. Chrome never navigates a page outside our fixture.
+    drop(conn);
+    drop(native);
+    drop(state_socket);
+
+    Ok(())
+}
+
+#[cfg(feature = "stock-browser-fixture")]
 async fn smoke(root: &Path) -> Result<()> {
     // Exact candidate process proof only. No task, website, account, profile
     // import, service changes, helper download, or third-party interaction.
@@ -516,45 +576,7 @@ async fn smoke(root: &Path) -> Result<()> {
     ensure!(profile_prepared(root), "fixture setup marker unreadable");
     for _ in 0..2 {
         let (pipe, profile) = open_task(root, false).await?;
-        let extension = crate::native::assets(root)?;
-        crate::native::register(root, &profile)?;
-        let loaded = pipe
-            .call("Extensions.loadUnpacked", json!({"path":extension}), None)
-            .await?;
-        ensure!(
-            loaded["id"] == crate::native::EXTENSION_ID,
-            "stock Chrome cannot load the exact embedded extension"
-        );
-
-        let state_socket = Socket(root.join("browser.sock"));
-        let native = UnixListener::bind(&state_socket.0)?;
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let job = "offline-native-hello";
-        let url = format!(
-            "chrome-extension://{}/bridge.html#token={nonce}&job={job}",
-            crate::native::EXTENSION_ID
-        );
-        pipe.call("Target.createTarget", json!({"url":url}), None)
-            .await?;
-        let (mut conn, _) = tokio::time::timeout(Duration::from_secs(10), native.accept())
-            .await
-            .context("waiting for fixture native-host connection")??;
-        ensure!(
-            conn.peer_cred()?.uid() == rustix::process::geteuid().as_raw(),
-            "unexpected native peer"
-        );
-        let hello = tokio::time::timeout(Duration::from_secs(3), crate::native::read(&mut conn))
-            .await
-            .context("waiting for fixture native hello")??;
-        ensure!(
-            hello["type"] == "hello" && hello["token"] == nonce && hello["job"] == job,
-            "native identity mismatch"
-        );
-        // Deliberately send no task, no files, no account credentials and no
-        // authorization. Chrome never navigates a page outside our fixture.
-        drop(conn);
-        drop(native);
-        drop(state_socket);
+        native_fixture(root, &pipe, &profile).await?;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = listener.local_addr()?;
@@ -602,7 +624,8 @@ async fn smoke(root: &Path) -> Result<()> {
     }
     // Exercise the same Linux result-ack state used by the task driver.
     // A healthy native release preserves the still-owned CDP generation.
-    let (first, _) = open_task(root, false).await?;
+    let (first, first_profile) = open_task(root, false).await?;
+    native_fixture(root, &first, &first_profile).await?;
     let (owner, mut peer) = UnixStream::pair()?;
     first.acknowledge(owner, "account-free-result".into());
     ensure!(
@@ -614,7 +637,8 @@ async fn smoke(root: &Path) -> Result<()> {
         &json!({"type":"released","job":"account-free-result"}),
     )
     .await?;
-    let (reused, _) = open_task(root, false).await?;
+    let (reused, reused_profile) = open_task(root, false).await?;
+    native_fixture(root, &reused, &reused_profile).await?;
     ensure!(
         Arc::ptr_eq(&first.pipe, &reused.pipe),
         "affirmative release did not preserve the generation"
@@ -628,10 +652,17 @@ async fn smoke(root: &Path) -> Result<()> {
         crate::native::read(&mut stalled_peer).await?["type"] == "ack",
         "stalled peer did not receive ack"
     );
-    let since = tokio::time::Instant::now();
+    // Simulate a next caller timing out before it can collect release.
+    // That timeout must not reset ownership evidence for the following one.
+    ensure!(
+        tokio::time::timeout(Duration::from_millis(25), open_task(root, false))
+            .await
+            .is_err(),
+        "stalled native release did not block the canceled next caller"
+    );
     let (fresh, _) = open_task(root, false).await?;
     ensure!(
-        !Arc::ptr_eq(&first.pipe, &fresh.pipe) && since.elapsed() >= Duration::from_millis(900),
+        !Arc::ptr_eq(&first.pipe, &fresh.pipe),
         "unreleased task did not retire its exact browser"
     );
     close_task().await?;
@@ -767,6 +798,35 @@ mod tests {
             json!({})
         );
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn canceled_wait_retains_uncollected_native_release() {
+        let (pipe, _chrome) = pair();
+        let channel = Channel {
+            pipe: Arc::new(Mutex::new(pipe)),
+            release: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let (owner, mut controller) = UnixStream::pair().unwrap();
+        channel.acknowledge(owner, "prior-job".into());
+        assert_eq!(
+            crate::native::read(&mut controller).await.unwrap()["type"],
+            "ack"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), channel.released_or_absent())
+                .await
+                .is_err()
+        );
+        assert!(channel.release.lock().unwrap().is_some());
+        crate::native::write(
+            &mut controller,
+            &json!({"type":"released","job":"prior-job"}),
+        )
+        .await
+        .unwrap();
+        assert!(channel.released_or_absent().await);
+        assert!(channel.release.lock().unwrap().is_none());
     }
 
     #[test]
