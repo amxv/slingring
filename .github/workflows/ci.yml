@@ -34,6 +34,12 @@ on:
       - "extension/**"
       - "apps/menubar/**"
   workflow_dispatch:
+    inputs:
+      approve_disposable_browser_test:
+        description: 'Run only the reviewed disposable-hosted browser identity fixture'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -44,6 +50,7 @@ concurrency:
 
 jobs:
   rust:
+    if: github.event_name != 'workflow_dispatch' || inputs.approve_disposable_browser_test != true
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -87,6 +94,7 @@ jobs:
           tmp/ci/Slingring.app/Contents/MacOS/slingring-menubar --check
 
   web-components:
+    if: github.event_name != 'workflow_dispatch' || inputs.approve_disposable_browser_test != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -102,3 +110,11 @@ jobs:
       - name: Relay type checking and transport tests
         working-directory: relay
         run: bun install --frozen-lockfile && bun run check && bun run test && bun run dry-run
+
+  owned-browser-identity:
+    if: github.event_name == 'workflow_dispatch' && inputs.approve_disposable_browser_test == true
+    uses: ./.github/workflows/owned-browser-identity.yml
+    with:
+      approve_disposable_browser_test: true
+    permissions:
+      contents: read

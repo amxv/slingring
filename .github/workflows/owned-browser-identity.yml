@@ -1,0 +1,71 @@
+name: Owned browser identity (disposable host)
+
+on:
+  workflow_call:
+    inputs:
+      approve_disposable_browser_test:
+        required: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      approve_disposable_browser_test:
+        description: 'Run preinstalled browsers with private temporary profiles on disposable hosted Macs only'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: owned-browser-identity-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    if: inputs.approve_disposable_browser_test == true
+    runs-on: macos-15
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [headless, headed]
+    steps:
+      - name: Check out reviewed fixture
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Enforce disposable hosted Apple Silicon context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_ACTIONS" = true
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$RUNNER_OS" = macOS
+          test "$RUNNER_ARCH" = ARM64
+          test "$(uname -m)" = arm64
+          test "$(id -un)" = runner
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REPOSITORY" = amxv/slingring
+      - name: Compile and run pure guard tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -warnings-as-errors tests/hosted/browser_identity.swift -o "$RUNNER_TEMP/browser-identity"
+          "$RUNNER_TEMP/browser-identity" --self-test
+      - name: Validate native identity and ordinary Chrome reopening
+        env:
+          SLINGRING_DISPOSABLE_BROWSER_TEST: explicitly-authorized
+          FIXTURE_MODE: ${{ matrix.mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/browser-identity" --run-hosted "$FIXTURE_MODE" "$RUNNER_TEMP/identity-report-$FIXTURE_MODE.json"
+      - name: Upload only bounded metadata report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-browser-identity-${{ matrix.mode }}
+          path: ${{ runner.temp }}/identity-report-${{ matrix.mode }}.json
+          if-no-files-found: error
+          retention-days: 7
