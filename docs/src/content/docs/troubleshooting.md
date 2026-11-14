@@ -21,6 +21,7 @@ These commands do not open a browser. Do not include credentials or private MCP 
 | Command not found | Run `~/.local/bin/slingring`, or add `~/.local/bin` to PATH. |
 | No Chrome profiles | Open Google Chrome once, create/select a profile, and sign into ChatGPT. Reopen Configure → Chrome Profile. |
 | Wrong account | Use Configure → Chrome Profile or `slingring profile use NAME`. Check the login in normal Chrome. |
+| `chat_login_required` | The chosen Chrome profile opened the signed-out ChatGPT homepage. Open `chatgpt.com` in **that exact Chrome profile** and sign in, or select a different already-signed-in profile with `slingring profile list` and `slingring profile use NAME`. Slingring does not transfer cookies between Chrome profiles. No prompt was submitted. |
 | Browser helper missing | Run `slingring browser install`, then `slingring setup --profile NAME`. Explicit `browser-binary` overrides must point to a valid fork. |
 | Extra High or Pro unavailable | Check Configure → Subscription matches your plan. Plus allows Instant/Medium/High; Pro also enables Extra High/Pro. The selected account must expose the requested level; new tasks never silently downgrade. |
 | Remote offline | Keep the Mac awake and online, start the service, and check the relay credentials. |
