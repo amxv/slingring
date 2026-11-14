@@ -40,6 +40,11 @@ on:
         type: boolean
         required: false
         default: false
+      approve_fresh_google_inspection:
+        description: 'Inspect official Stable/Beta artifacts on a disposable hosted Mac only; no browser launch; Google download terms apply'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -50,7 +55,7 @@ concurrency:
 
 jobs:
   rust:
-    if: github.event_name != 'workflow_dispatch' || inputs.approve_disposable_browser_test != true
+    if: github.event_name != 'workflow_dispatch' || (inputs.approve_disposable_browser_test != true && inputs.approve_fresh_google_inspection != true)
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -94,7 +99,7 @@ jobs:
           tmp/ci/Slingring.app/Contents/MacOS/slingring-menubar --check
 
   web-components:
-    if: github.event_name != 'workflow_dispatch' || inputs.approve_disposable_browser_test != true
+    if: github.event_name != 'workflow_dispatch' || (inputs.approve_disposable_browser_test != true && inputs.approve_fresh_google_inspection != true)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -112,9 +117,24 @@ jobs:
         run: bun install --frozen-lockfile && bun run check && bun run test && bun run dry-run
 
   owned-browser-identity:
-    if: github.event_name == 'workflow_dispatch' && inputs.approve_disposable_browser_test == true
+    if: github.event_name == 'workflow_dispatch' && inputs.approve_disposable_browser_test == true && inputs.approve_fresh_google_inspection != true
     uses: ./.github/workflows/owned-browser-identity.yml
     with:
       approve_disposable_browser_test: true
     permissions:
       contents: read
+
+  fresh-google-inspection:
+    if: github.event_name == 'workflow_dispatch' && inputs.approve_fresh_google_inspection == true && inputs.approve_disposable_browser_test != true
+    uses: ./.github/workflows/fresh-google-inspection.yml
+    with:
+      approve_fresh_google_inspection: true
+    permissions:
+      contents: read
+
+  reject-conflicting-validation:
+    if: github.event_name == 'workflow_dispatch' && inputs.approve_fresh_google_inspection == true && inputs.approve_disposable_browser_test == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse combined inspection and browser-launch modes
+        run: exit 2

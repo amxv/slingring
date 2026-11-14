@@ -375,6 +375,15 @@ class InspectionTests(unittest.TestCase):
         self.assertNotIn("--run-fresh-hosted", workflow)
         self.assertNotIn("browser_identity.swift", workflow)
 
+    def test_ci_routes_are_default_off_and_mutually_exclusive(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        self.assertIn("approve_fresh_google_inspection:\n", workflow)
+        self.assertIn("uses: ./.github/workflows/fresh-google-inspection.yml", workflow)
+        self.assertIn("inputs.approve_fresh_google_inspection == true && inputs.approve_disposable_browser_test != true", workflow)
+        self.assertIn("inputs.approve_disposable_browser_test == true && inputs.approve_fresh_google_inspection != true", workflow)
+        self.assertIn("reject-conflicting-validation:", workflow)
+        self.assertEqual(workflow.count("inputs.approve_disposable_browser_test != true && inputs.approve_fresh_google_inspection != true"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

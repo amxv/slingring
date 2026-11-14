@@ -8,7 +8,17 @@ This implements only stage 1 of the [reviewed plan](FRESH_GOOGLE_PLAN.md). It is
 
 The Python entry point checks the real OS/architecture/username, repository, manual event, hosted runner and explicit opt-in before creating output or invoking any inspection commands. It refuses local mode. Never spoof hosted context on a personal computer.
 
-The workflow pins checkout/upload action commits, grants only contents-read, persists no checkout credential and receives no secrets. Normal CI, the preinstalled-browser workflow, all production/helper pins and capability gates are unchanged. The new workflow is not registered on main; an authorized future publication needs a reviewed registered-workflow call path or registration before it can be dispatched. No registration or dispatch is part of this implementation.
+The workflow pins checkout/upload action commits, grants only contents-read, persists no checkout credential and receives no secrets. Normal CI, the preinstalled-browser workflow, all production/helper pins and capability gates are unchanged. This branch adds a default-off `approve_fresh_google_inspection` call route to the already registered CI workflow. Inspection and the preinstalled-browser launch mode are mutually exclusive; supplying both fails without running either. The call uses the same reviewed branch SHA and requires no main-branch changes.
+
+Only after exact-commit review, authorized publication and authorization for the inspection, the branch-local route is:
+
+```sh
+gh workflow run ci.yml --repo amxv/slingring \
+  --ref validation/fresh-google-browser-hosted \
+  -f approve_fresh_google_inspection=true
+```
+
+Verify the created run's exact branch/SHA, same-SHA reusable workflow and sole hosted inspection job before interpreting its metadata. Do not enable the browser-launch input or automatically retry a failed run.
 
 ## What it does
 
