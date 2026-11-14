@@ -42,14 +42,24 @@ pub(super) fn require_private(path: &Path) -> io::Result<()> {
 }
 
 pub(super) fn chrome_executable() -> io::Result<PathBuf> {
-    let path = Path::new(crate::browser_linux::CHROME).canonicalize()?;
+    let expected = Path::new(crate::browser_linux::CHROME);
+    let path = expected.canonicalize()?;
     let metadata = fs::metadata(&path)?;
-    if !metadata.is_file()
+    if path != expected
+        || !metadata.is_file()
         || metadata.uid() != 0
         || metadata.mode() & 0o022 != 0
         || metadata.mode() & 0o111 == 0
     {
         return Err(io::Error::other("system-owned Chrome Stable is required"));
+    }
+    for parent in path.ancestors().skip(1) {
+        let meta = fs::symlink_metadata(parent)?;
+        if !meta.is_dir() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+            return Err(io::Error::other(
+                "stock Chrome executable has an untrusted parent",
+            ));
+        }
     }
     Ok(path)
 }
@@ -214,7 +224,7 @@ struct Browser {
     headed: bool,
 }
 impl Browser {
-    async fn open(root: &Path, headed: bool) -> Result<Self> {
+    async fn open(root: &Path, headed: bool, manual: bool) -> Result<Self> {
         crate::browser_linux::preflight()?;
         require_private(root)?;
         ensure!(
@@ -261,7 +271,13 @@ impl Browser {
             socket.0.clone(),
             profile.clone(),
             home,
-            PathBuf::from(if headed { "headed" } else { "headless" }),
+            PathBuf::from(if manual {
+                "manual"
+            } else if headed {
+                "headed"
+            } else {
+                "headless"
+            }),
         ];
         let guard = tokio::task::spawn_blocking(move || {
             let argv = paths.each_ref().map(PathBuf::as_path);
@@ -323,23 +339,46 @@ impl Browser {
         crate::browser_linux::verify_stock(self.guardian.root(), self.headed, &self.profile)
     }
 
-    async fn close(mut self) -> Result<()> {
-        let _ = self.channel.released_or_absent().await;
-        self.verify_root().await?;
-        let mut guard = self.guardian;
-        let guardian = tokio::task::spawn_blocking(move || guard.arm().map(|()| guard)).await??;
-        self.channel.call("Browser.close", json!({}), None).await?;
-        self.guardian = guardian;
+    async fn arm(self) -> Result<Self> {
+        tokio::task::spawn_blocking(move || {
+            let mut browser = self;
+            browser.guardian.arm()?;
+            Ok(browser)
+        })
+        .await?
+    }
+
+    async fn terminal(self) -> Result<()> {
         let Self {
             mut guardian,
             evidence,
             ..
         } = self;
-        // Delay no other tasks after final command; the same live owner
+        // Delay no other tasks after final command. The same live owner
         // authenticates direct reap / ECHILD / EOF before durable terminal.
         let terminal = tokio::task::spawn_blocking(move || guardian.finish()).await??;
         evidence.complete(terminal)?;
         Ok(())
+    }
+
+    async fn close(mut self) -> Result<()> {
+        let _ = self.channel.released_or_absent().await;
+        self.verify_root().await?;
+        let browser = self.arm().await?;
+        browser
+            .channel
+            .call("Browser.close", json!({}), None)
+            .await?;
+        browser.terminal().await
+    }
+
+    async fn poll_manual(self) -> Result<(Self, bool)> {
+        tokio::task::spawn_blocking(move || {
+            let mut browser = self;
+            let ended = browser.guardian.manual_ended()?;
+            Ok((browser, ended))
+        })
+        .await?
     }
 }
 
@@ -376,7 +415,7 @@ pub(crate) async fn open_task(root: &Path, headed: bool) -> Result<(Channel, Pat
         profile_prepared(root),
         "run slingring profile open on this Linux desktop to prepare the dedicated profile"
     );
-    let browser = Browser::open(root, headed).await?;
+    let browser = Browser::open(root, headed, false).await?;
     let result = (browser.channel.clone(), browser.profile.clone());
     *active = Some(browser);
     Ok(result)
@@ -402,17 +441,50 @@ pub(crate) async fn manual_profile(root: &Path) -> Result<()> {
         !crate::daemon::running(root).await,
         "stop the local Slingring service before manual profile setup"
     );
-    let browser = Browser::open(root, true).await?;
+    let mut browser = Browser::open(root, true, true).await?.arm().await?;
     eprintln!(
-        "A dedicated Chrome window is open on this Linux desktop. Sign in manually there. When done, leave Chrome open and press Enter here to close it cleanly."
+        "A dedicated Chrome window is open on this Linux desktop. Sign in manually there. When done, close Chrome normally or press Enter here."
     );
-    let confirmation = tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)
-    })
-    .await??;
-    ensure!(confirmation > 0, "manual profile setup was interrupted");
-    browser.close().await?;
+    // A dedicated blocking input thread is not joined by Tokio after a
+    // normal window-X close. The owner never reads arbitrary-length input.
+    let (tx, mut confirmation) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("stock-profile-terminal".into())
+        .spawn(move || {
+            let _ = tx.send(std::io::Read::read(&mut io::stdin(), &mut [0; 1]));
+        })?;
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    let accepted = loop {
+        tokio::select! {
+            input = &mut confirmation => break input.is_ok_and(|input| input.is_ok_and(|n| n > 0)),
+            signal = &mut interrupt => { signal?; break false; },
+            _ = tokio::time::sleep(Duration::from_millis(120)) => {
+                let (still_owned, ended) = browser.poll_manual().await?;
+                browser = still_owned;
+                if ended {
+                    // Window-X counts only when the exact, previously
+                    // verified manual root exited successfully and every
+                    // descendant is gone. Never infer it from disconnected CDP.
+                    browser.terminal().await?;
+                    return crate::config::atomic(&root.join("stock-chrome-configured"), b"dedicated-stock-v1\n");
+                }
+            }
+        }
+    };
+    let close = browser.channel.call("Browser.close", json!({}), None).await;
+    if close.is_err() {
+        let (still_owned, ended) = browser.poll_manual().await?;
+        browser = still_owned;
+        if !ended {
+            return close.map(|_| ());
+        }
+    }
+    browser.terminal().await?;
+    ensure!(
+        accepted,
+        "manual profile setup canceled; browser closed cleanly"
+    );
     crate::config::atomic(
         &root.join("stock-chrome-configured"),
         b"dedicated-stock-v1\n",
@@ -464,13 +536,16 @@ async fn smoke(root: &Path) -> Result<()> {
         );
         pipe.call("Target.createTarget", json!({"url":url}), None)
             .await?;
-        let (mut conn, _) = tokio::time::timeout(Duration::from_secs(6), native.accept()).await??;
+        let (mut conn, _) = tokio::time::timeout(Duration::from_secs(10), native.accept())
+            .await
+            .context("waiting for fixture native-host connection")??;
         ensure!(
             conn.peer_cred()?.uid() == rustix::process::geteuid().as_raw(),
             "unexpected native peer"
         );
-        let hello =
-            tokio::time::timeout(Duration::from_secs(2), crate::native::read(&mut conn)).await??;
+        let hello = tokio::time::timeout(Duration::from_secs(3), crate::native::read(&mut conn))
+            .await
+            .context("waiting for fixture native hello")??;
         ensure!(
             hello["type"] == "hello" && hello["token"] == nonce && hello["job"] == job,
             "native identity mismatch"
@@ -484,21 +559,19 @@ async fn smoke(root: &Path) -> Result<()> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = listener.local_addr()?;
         let local_server = tokio::spawn(async move {
-            let (mut stream, address) =
-                tokio::time::timeout(Duration::from_secs(6), listener.accept()).await??;
-            ensure!(
-                address.ip().is_loopback(),
-                "unexpected non-loopback fixture request"
-            );
-            let mut request = [0; 2048];
-            let read =
-                tokio::time::timeout(Duration::from_secs(2), stream.read(&mut request)).await??;
-            ensure!(
-                read > 0 && request[..read].starts_with(b"GET /fixture HTTP/"),
-                "unexpected fixture request"
-            );
-            stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: 29\r\n\r\n<title>stock-fixture</title>\n").await?;
-            Ok::<_, anyhow::Error>(())
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let (mut stream, address) = listener.accept().await?;
+                    ensure!(address.ip().is_loopback(), "unexpected non-loopback fixture request");
+                    let mut request = [0; 2048];
+                    // Chrome can open a speculative connection before the
+                    // actual navigation. Never require the first socket.
+                    let Ok(Ok(read)) = tokio::time::timeout(Duration::from_millis(500), stream.read(&mut request)).await else { continue };
+                    if !request[..read].starts_with(b"GET /fixture HTTP/") { continue; }
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/html\r\nContent-Length: 29\r\n\r\n<title>stock-fixture</title>\n").await?;
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }).await.context("waiting for Chrome loopback fixture")?
         });
         pipe.call(
             "Target.createTarget",
@@ -565,9 +638,67 @@ async fn smoke(root: &Path) -> Result<()> {
     println!(
         "healthy native result release reuses exact browser; stalled release retires it and admits a fresh, verified generation"
     );
+    if std::env::var_os("DISPLAY").is_some() {
+        profile_cookie_fixture(root).await?;
+    }
     println!(
         "stock Chrome: two owned sandbox-default launches, exact embedded extension ID and native HELLO, sandboxed loopback renderer, acknowledged Browser.close, two root-reap/ECHILD/EOF proofs, durable generation rotation"
     );
+    Ok(())
+}
+
+#[cfg(feature = "stock-browser-fixture")]
+async fn profile_cookie_fixture(root: &Path) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = listener.local_addr()?;
+    for (headed, action) in [(true, "set"), (false, "check")] {
+        let (channel, _) = open_task(root, headed).await?;
+        let address = format!("http://{endpoint}/continuity-{action}");
+        channel
+            .call("Target.createTarget", json!({"url":address}), None)
+            .await?;
+        tokio::time::timeout(Duration::from_secs(6), async {
+            loop {
+                let (socket, peer) = listener.accept().await?;
+                ensure!(peer.ip().is_loopback(), "unexpected continuity fixture peer");
+                let mut socket = BufReader::new(socket);
+                let mut request = String::new();
+                let method = format!("GET /continuity-{action} HTTP/");
+                for _ in 0..40 {
+                    let mut line = String::new();
+                    let Ok(result) = tokio::time::timeout(Duration::from_millis(500), socket.read_line(&mut line)).await else { break; };
+                    result?;
+                    ensure!(request.len() < 8192, "continuity fixture request is oversized");
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    request.push_str(&line);
+                }
+                if request.is_empty() { continue; }
+                let requested_path = request.starts_with(&method);
+                let response = if requested_path && headed {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nSet-Cookie: slingring_fixture=continuity; Max-Age=600; Path=/; SameSite=Lax\r\nContent-Length: 0\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                };
+                if requested_path && !headed {
+                    ensure!(request.lines().find_map(|line| {
+                        let (name,value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("cookie").then_some(value)
+                    }).is_some_and(|value| value.contains("slingring_fixture=continuity")),
+                    "benign headed-browser cookie did not persist in headless mode");
+                }
+                socket.write_all(response.as_bytes()).await?;
+                socket.shutdown().await?;
+                if requested_path {
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+        }).await??;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        close_task().await?;
+    }
+    println!("headed-to-headless dedicated profile retained verified benign localhost cookie");
     Ok(())
 }
 

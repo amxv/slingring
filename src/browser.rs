@@ -477,7 +477,7 @@ fn handoff_started(
     #[cfg(all(target_os = "linux", not(test)))]
     {
         let _ = (socket, controller_id);
-        return result;
+        result
     }
     #[cfg(any(not(target_os = "linux"), test))]
     {

@@ -23,10 +23,13 @@ const START: u8 = 1;
 const POLL: u8 = 2;
 const ARM: u8 = 3;
 const FINISH: u8 = 4;
+const QUERY_MANUAL: u8 = 5;
 const STARTED: u8 = 11;
 const LIVE: u8 = 12;
 const ARMED: u8 = 13;
 const TERMINAL: u8 = 14;
+const MANUAL_LIVE: u8 = 15;
+const MANUAL_EXITED: u8 = 16;
 const FRAME: usize = 21;
 
 enum Reply {
@@ -76,9 +79,10 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
     let socket = std::path::Path::new(socket);
     let profile = std::path::Path::new(profile);
     let home = std::path::Path::new(home);
-    let headed = match mode.to_str() {
-        Some("headed") => true,
-        Some("headless") => false,
+    let (headed, manual) = match mode.to_str() {
+        Some("headed") => (true, false),
+        Some("headless") => (false, false),
+        Some("manual") => (true, true),
         _ => return Err(io::Error::other("invalid stock browser visibility")),
     };
     // This is a dedicated process. No other children or competing waits.
@@ -114,6 +118,8 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("invalid profile"))?;
     let chrome = super::chrome_executable()?;
+    let mut user_data_argument = OsString::from("--user-data-dir=");
+    user_data_argument.push(profile);
     let mut command = Command::new("/bin/sh");
     command
         .args([
@@ -128,7 +134,7 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
             "--disable-background-networking",
             "--remote-debugging-pipe",
         ])
-        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg(user_data_argument)
         .arg("about:blank")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -140,16 +146,24 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(cdp_in)))
         .stdout(Stdio::from(std::os::fd::OwnedFd::from(cdp_out)))
         .stderr(Stdio::null());
+    // Chrome can use the ordinary key storage for this user in both modes.
+    // No permissive password-store override or global setting change.
+    for name in [
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_CURRENT_DESKTOP",
+        "DESKTOP_SESSION",
+        "GNOME_DESKTOP_SESSION_ID",
+        "KDE_FULL_SESSION",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
     if !headed {
         command.arg("--headless");
     } else {
-        for name in [
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XAUTHORITY",
-            "XDG_RUNTIME_DIR",
-            "DBUS_SESSION_BUS_ADDRESS",
-        ] {
+        for name in ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY"] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
@@ -169,6 +183,14 @@ pub(super) fn child_mode(arguments: &[OsString]) -> io::Result<()> {
             ARM if !armed && lease.observe()?.is_none() => {
                 send(&mut output, ARMED, generation, root)?;
                 armed = true;
+            }
+            QUERY_MANUAL if manual && armed => {
+                let kind = if lease.observe()?.is_some() {
+                    MANUAL_EXITED
+                } else {
+                    MANUAL_LIVE
+                };
+                send(&mut output, kind, generation, root)?;
             }
             FINISH if armed => {
                 // A normal path has no forced signals before or after reap.
@@ -313,6 +335,33 @@ impl GuardedChild {
         self.armed = true;
         Ok(())
     }
+    pub fn manual_ended(&mut self) -> io::Result<bool> {
+        if !self.armed || self.poisoned {
+            return Err(io::Error::other("manual shutdown not armed"));
+        }
+        let result = (|| {
+            let pipe = self
+                .input
+                .as_mut()
+                .ok_or_else(|| io::Error::other("guardian pipe closed"))?;
+            pipe.write_all(&[QUERY_MANUAL])?;
+            pipe.flush()?;
+            let reply = self.receive()?;
+            if reply == frame(MANUAL_EXITED, self.generation, self.root) {
+                Ok(true)
+            } else if reply == frame(MANUAL_LIVE, self.generation, self.root) {
+                Ok(false)
+            } else {
+                Err(io::Error::other("invalid manual shutdown observation"))
+            }
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+            self.input.take();
+        }
+        result
+    }
+
     pub fn finish(&mut self) -> io::Result<Terminal> {
         if !self.armed || self.poisoned {
             return Err(io::Error::other("ordinary close not authorized"));
