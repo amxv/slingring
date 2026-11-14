@@ -68,6 +68,22 @@ The test invokes only `native::cdp::chrome::tests::test_private_launch_guard_pat
 
 The helper source under review is pinned to upstream `v0.41.1` (`5868f7c`), with a separate launch-only guardian patch. The latest guardian additionally uses a private session/group and a retained, unreaped direct-child anchor for bounded same-group cleanup, but v1 still communicates only root reaping. An escaped process, dead guardian, or ambiguous snapshot is not proven absent. This fixture does not validate helper daemon discovery, installed packaging, crash recovery of a complete browser tree, or any macOS application identity. It does not justify closing issue #4 or releasing a helper substitution.
 
+### Native daemon and runtime-session fixture
+
+A second ignored test uses the actual source-built native CLI and the actual Rust `Session` coordinator, not a test coordinator or helper libtest entry point. It requires exact fixture artifacts and an independently reviewed manifest digest:
+
+```sh
+SLINGRING_TEST_NATIVE_HELPER=/absolute/path/to/agent-browser-browse-native \
+SLINGRING_TEST_LAUNCH_GUARD=/absolute/path/to/slingring-owned-launch-guard \
+SLINGRING_TEST_CAPABILITY_MANIFEST=/absolute/path/to/SLINGRING_LAUNCH_CAPABILITIES.json \
+SLINGRING_TEST_CAPABILITY_SHA256=reviewed_manifest_sha256 \
+cargo test --locked --test native_helper_session -- --ignored --nocapture
+```
+
+This fixture verifies the manifest and both binary hashes before execution. It clears inherited environment, uses a new private HOME/TMPDIR/config, and explicitly selects `tests/fixtures/fake_chrome.py` as its only executable with a private profile. The fake implements a bounded, localhost-only CDP protocol; it is not Chrome and never visits a website. Native `open`, `get url` and `close` use the exact generation namespace/session. The test asserts authenticated guardian/profile binding, durable authorization, the same daemon and fake-child PID across commands, a root-only cleanup report, removal of that daemon's PID/socket files, and retention of the unresolved-tree fence.
+
+This closes the fake-daemon transport gap but does not establish equivalence with the supported fork, real Chrome process-tree exit, restart recovery after guardian death, or macOS app identity. The test remains opt-in because it executes separately reviewed local fixture artifacts. Its failure cleanup never signals arbitrary PIDs.
+
 ## Offline package validation
 
 `scripts/stage_owned_helper_candidate.py` is a separate **offline fixture stager**, not an installer or a supported-helper pin change. It never downloads or executes a binary and does not create a wrapper. It requires an independently reviewed pin containing exact archive and manifest SHA-256 digests plus expected source version, commits and patch/lock digests. Do not construct a trusted release pin from an archive's self-generated sidecars.
