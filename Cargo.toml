@@ -37,6 +37,10 @@ fs2 = "0.4"
 url = "2"
 rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-io"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.6", features = ["process", "fs"] }
+linux-raw-sys = { version = "0.12.1", features = ["general"] }
+
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2.0"
