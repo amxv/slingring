@@ -1,6 +1,6 @@
 [package]
 name = "slingring"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2024"
 rust-version = "1.99.1"
 description = "Launch ChatGPT tasks from local and remote agents, then get out of the way."

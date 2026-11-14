@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.6.7 · 14 November 2026
+
+Retry transient composer hydration failures during new-chat preparation within a bounded pre-send budget, while preserving positive Chat-mode and reasoning-effort checks and existing-draft protection. Readiness diagnostics distinguish missing, hidden, disabled, ambiguous, and ready editors without recording their contents.
+
+Persist submission intent before authorizing Send, and refuse to send if that durable save fails. Recovery distinguishes requests interrupted before authorization from uncertain submissions after authorization; interrupted legacy starting records remain conservative. No uncertain request is automatically replayed, and post-send recovery remains one read-only refresh of the exact conversation. Browser-process lifecycle and helper behavior are unchanged.
+
 ## 0.6.6 · 10 November 2026
 
 Fix subscription-aware MCP tool descriptions adding an invalid, unused reasoning-effort field to `pause_task` and `get_job_status`. These tools now advertise exactly their supported conversation URL or request ID argument. Reasoning choices remain filtered by subscription only on `new_task` and `send_message`. Runtime argument validation was already strict; no messages or pause actions are replayed by this correction.
