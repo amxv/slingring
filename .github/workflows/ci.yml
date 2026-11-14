@@ -70,6 +70,12 @@ jobs:
       - name: Test isolated installers
         run: python3 scripts/test_installers.py
 
+      - name: Test offline owned-helper package admission
+        run: python3 -W error scripts/test_owned_helper_candidate.py
+
+      - name: Test gated launch admission without a browser
+        run: cargo test --locked --features owned-launch-candidate --test launch_coordinator --test queue_guarded_session
+
       - name: Build the native menu bar companion
         run: |
           bash apps/menubar/test.sh

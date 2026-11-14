@@ -64,6 +64,9 @@ impl Backend for Synthetic {
         )?;
         let env = session.environment();
         let get = |name| env.iter().find(|(key, _)| *key == name).unwrap().1.clone();
+        assert_eq!(get("AGENT_BROWSER_NAMESPACE"), session.name());
+        assert_eq!(get("SLINGRING_PRIVATE_LAUNCH_SESSION"), session.name());
+        assert!(session.check_command(false).is_err());
         let socket = get("SLINGRING_PRIVATE_LAUNCH_SOCKET");
         let fields = vec![
             launch_coordinator::VERSION.as_bytes().to_vec(),

@@ -68,6 +68,34 @@ The test invokes only `native::cdp::chrome::tests::test_private_launch_guard_pat
 
 The helper source under review is pinned to upstream `v0.41.1` (`5868f7c`), with a separate launch-only guardian patch. The latest guardian additionally uses a private session/group and a retained, unreaped direct-child anchor for bounded same-group cleanup, but v1 still communicates only root reaping. An escaped process, dead guardian, or ambiguous snapshot is not proven absent. This fixture does not validate helper daemon discovery, installed packaging, crash recovery of a complete browser tree, or any macOS application identity. It does not justify closing issue #4 or releasing a helper substitution.
 
+## Offline package validation
+
+`scripts/stage_owned_helper_candidate.py` is a separate **offline fixture stager**, not an installer or a supported-helper pin change. It never downloads or executes a binary and does not create a wrapper. It requires an independently reviewed pin containing exact archive and manifest SHA-256 digests plus expected source version, commits and patch/lock digests. Do not construct a trusted release pin from an archive's self-generated sidecars.
+
+The fixed archive has seven regular root members: the native helper, guardian, `SLINGRING_LAUNCH_CAPABILITIES.json`, upstream license, version, commit and patch digest. The canonical manifest binds schema/protocol/platform, both executable hashes, source provenance, `artifact_scope: offline_fixture_candidate` and `cleanup_evidence: root_reaped_tree_unverified`. Unknown, duplicate, missing, linked, oversized or traversal members are rejected. Every source sidecar and binary hash must match. The stager accepts only a new destination under a canonical owner-private directory and writes **all files mode 0600**, including the two binaries, so staging does not make them executable.
+
+```sh
+python3 -W error scripts/test_owned_helper_candidate.py
+python3 scripts/stage_owned_helper_candidate.py \
+  --archive /absolute/path/to/reviewed-fixture.tar.gz \
+  --pin /absolute/path/to/independently-reviewed-fixture-pin.json \
+  --destination /canonical/private/temp/directory/new-stage
+```
+
+The package tests cover independently pinned checksums, source/version mismatch, missing or altered capability, tampering, malformed JSON, archive attacks, permission bounds and preserving an existing destination. Runtime tests separately reject missing/mismatched guardian claims, untrusted config injection and inherited lease environment. Only the queue-created generation supplies lease and namespace values; subsequent commands require the authenticated lease. Unknown or ended lease evidence cannot become live again.
+
+The current legacy installer remains unchanged. Its wrapper deliberately sets `AGENT_BROWSER_NAMESPACE=slingring`, and its archive allowlist has no guardian/manifest entries. It must not be used as-is for the candidate. Enabling the candidate will require a verified native artifact path or a revised, explicitly authenticated wrapper that preserves the exact generation namespace. An environment variable alone is not authentication.
+
+The helper's offline archive demonstrates the packaging contract only. It was built from exact upstream plus the lifecycle patch and has **not** established equivalence with all settings of the supported browse fork. Its signed-file hashes are useful fixture evidence, not approval to replace the released helper. The stager does not itself establish Mach-O architecture, signature trust, Gatekeeper acceptance, live daemon discovery, full descendant cleanup or application identity. Those remain separate checks before a production pin, capability gate or release can change.
+
+### Remaining delivery order
+
+1. Review the lifecycle patch against the exact supported fork without altering its browser/protection behavior. Freeze source and lockfile provenance and validate both role-specific no-browser capability probes.
+2. Settle the bounded cleanup/reconciliation policy for root-only or ambiguous receipts. No current v1 result authorizes automatic replacement.
+3. Prepare an immutable signed/checksummed helper-plus-guardian release and independently approved manifest pin, then extend installer validation and generation namespace handling. Preserve the legacy path and reject incomplete or mismatched upgrades. Do not republish or overwrite the existing helper tag.
+4. With explicit approval, validate the exact packaged native path in a disposable macOS environment using a fresh profile and trusted local fixture. Check cancellation/crash ownership and native application identity separately. A temporary directory in the interactive account does not guarantee isolation from user-level Launch Services effects.
+5. Only after those checks and coordinated dependency publication, change Slingring's supported pin and open the production capability gate. Rerun the full suite, release the patch, then verify the exact installed Mac version. Linux remains a separate later release.
+
 ## Read-only application-identity assessment
 
 Chrome for Testing is a candidate **for separate application identity only**, not an already validated replacement. Chromium's [Mac flavor documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/docs/mac/flavors_of_chrome.md) gives it bundle ID `com.google.chrome.for.testing`, distinct from normal Chrome's `com.google.Chrome`. However, the same document lists its default user-data directory as normal Chrome's location. An explicit, private throwaway profile is therefore mandatory; never launch it with an implicit profile.
