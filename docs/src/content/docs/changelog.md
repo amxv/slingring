@@ -6,6 +6,10 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.7.1 · 15 November 2026
+
+Report `chat_login_required` when the selected Chrome profile opens the signed-out ChatGPT homepage, instead of the generic `chat_mode_unverified`. Slingring allows a short window for authenticated hydration, never clicks login or transfers cookies, and submits nothing. Job status and troubleshooting docs explain how to sign in or select an already-signed-in profile. Thanks to arju-nk.
+
 ## 0.7.0 · 14 November 2026
 
 Add x86_64 Linux CLI, local/remote MCP, private Unix IPC, and explicit systemd user-service controls. Linux requires glibc 2.39 or newer and system-installed Google Chrome Stable with its sandbox enabled. Root, CI and container browser execution is refused instead of weakening browser protections. Linux has no menu/tray app or automatic update scheduler; installations do not change service or login settings.
