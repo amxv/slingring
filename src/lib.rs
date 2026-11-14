@@ -1,4 +1,8 @@
 pub mod browser;
+#[cfg(target_os = "linux")]
+mod browser_linux;
+#[cfg(target_os = "linux")]
+mod browser_stock;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -21,6 +25,10 @@ use clap::Parser;
 use cli::{Cli, Command};
 
 pub fn run() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = browser_stock::maybe_run_guardian() {
+        return result;
+    }
     run_with(Cli::parse())
 }
 

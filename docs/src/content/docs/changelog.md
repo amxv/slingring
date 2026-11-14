@@ -6,6 +6,14 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.7.0 · 14 November 2026
+
+Add x86_64 Linux CLI, local/remote MCP, private Unix IPC, and explicit systemd user-service controls. Linux requires glibc 2.39 or newer and system-installed Google Chrome Stable with its sandbox enabled. Root, CI and container browser execution is refused instead of weakening browser protections. Linux has no menu/tray app or automatic update scheduler; installations do not change service or login settings.
+
+Add a checksummed Linux installer and conservative in-place upgrades. Linux uses system Google Chrome Stable with an explicitly initialized dedicated profile, a private browser control pipe, and shutdown verification for the exact owned browser generation. It does not import regular Chrome profiles or use the browser fork. Existing macOS app, service behavior, signing support, and 0.41.1 helper pin are retained. macOS browser lifecycle issue #4 remains open.
+
+Preserve 0.6.7's durable pre-Send authorization, positive Chat/effort readiness, private diagnostics, and no-replay uncertainty semantics on both platforms. No Windows or Linux ARM64 distribution is included.
+
 ## 0.6.7 · 14 November 2026
 
 Retry transient composer hydration failures during new-chat preparation within a bounded pre-send budget, while preserving positive Chat-mode and reasoning-effort checks and existing-draft protection. Readiness diagnostics distinguish missing, hidden, disabled, ambiguous, and ready editors without recording their contents.

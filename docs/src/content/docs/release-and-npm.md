@@ -7,9 +7,9 @@ category: Reference
 
 ## Supported setup
 
-The release supports **Apple Silicon macOS only**. Neither Intel CLI nor menu bar archives are produced. Google Chrome must be installed and the chosen profile signed into ChatGPT.
+The release supports **Apple Silicon macOS** and **x86_64 Linux with glibc 2.39 or newer**, such as Ubuntu 24.04. There are no Intel macOS, Linux ARM64, Windows or Linux menu/tray archives. Google Chrome must be installed and the chosen profile signed into ChatGPT. Linux uses system-owned Google Chrome Stable at `/opt/google/chrome/chrome`, not an automatically downloaded browser fallback. It refuses root, CI and container environments where the helper would disable Chrome's sandbox; it never changes system policy to make a browser start.
 
-The installer downloads the paired Rust CLI and Swift app, verifies their checksum and signature, and invokes the embedded browser installer before replacing a working installation. The helper is pinned to `agent-browser-browse` 0.41.1 and verified by release checksum, architecture, signature, and reported version. It lives under `~/.config/slingring/browser`, separate from any globally installed agent-browser.
+On macOS, the installer downloads the paired Rust CLI and Swift app, verifies their checksum and signature, and invokes the embedded browser installer before replacing a working installation. The macOS helper remains pinned to `agent-browser-browse` 0.41.1 and verified by release checksum, architecture, signature, and reported version. Linux installs only the checksummed x86_64 CLI after checking for the separately installed system Chrome Stable. There is no Linux helper archive or fork. Linux uses a dedicated app-owned profile and a private inherited DevTools pipe. The macOS helper remains under `~/.config/slingring/browser`, separate from any global agent-browser installation.
 
 The companion extension is embedded in the Rust binary and loaded on demand. No manual unpacked-extension installation, Homebrew, npm, or separate upstream CLI is required.
 
@@ -21,21 +21,30 @@ The installer downloads public GitHub release assets anonymously over HTTPS. You
 curl -fsSL https://slingring.ashray.xyz/install.sh | sh
 ```
 
-The CLI and `Slingring.app` are installed beside each other in `~/.local/bin`. Set `CLI_INSTALL_DIR` to another absolute directory if required. `CLI_NO_LAUNCH=1` keeps the optional menu bar closed; `CLI_LAUNCH_MENU_BAR=0` disables automatic opening unless it was already running. Ad-hoc signing is not Developer ID notarization. No security settings are disabled and quarantine is not stripped.
+The CLI is installed in `~/.local/bin`, beside `Slingring.app` on macOS. Set `CLI_INSTALL_DIR` to another absolute directory if required. On macOS, `CLI_NO_LAUNCH=1` keeps the optional menu bar closed; `CLI_LAUNCH_MENU_BAR=0` disables automatic opening unless it was already running. Ad-hoc signing is not Developer ID notarization. No security settings are disabled and quarantine is not stripped.
 
-Both menu bar and background service login startup are enabled on fresh installs, independently configurable from Configure or `slingring login ...`. `CLI_NO_LAUNCH` affects only the immediate opening during installation, **not** future macOS login startup. A macOS Login Items denial may require explicit approval in System Settings; the installer reports registration errors without removing a verified installation.
+On macOS, both menu bar and background service login startup are enabled on fresh installs, independently configurable from Configure or `slingring login ...`. `CLI_NO_LAUNCH` affects only the immediate opening during installation, **not** future macOS login startup. A macOS Login Items denial may require explicit approval in System Settings; the installer reports registration errors without removing a verified installation.
+
+Linux installation never registers or starts a service. Optional `slingring service install` registers a systemd user unit for the default state directory. `slingring login service on|off` changes future login startup without stopping active work. `slingring service start|stop` controls the current process. Alternate `SLINGRING_HOME` instances use direct private daemons and never operate the default user unit. No root access, lingering, system service or desktop autostart entry is configured.
 
 ## Updates
 
 ```bash
 slingring upgrade --check
 slingring upgrade
+```
+
+Linux upgrades require `python3` to verify exact idle status before replacement. They preserve the helper's platform pin and resume a previously running service without changing login preferences. Avoid submitting new work while upgrading. Unknown or busy status refuses replacement; interrupted submissions are never replayed. Linux has no supported automatic update scheduler in this release.
+
+On macOS, automatic updates remain available:
+
+```bash
 slingring auto-update on
 slingring auto-update status
 slingring auto-update off
 ```
 
-Updates refuse to replace an installation while a task is active. They update the CLI and app together, restart a previously running service, and reopen a previously running menu bar. Automatic updates are opt-in and use a daily OS scheduler, not a polling app.
+macOS updates refuse to replace an installation while a task is active. They update the CLI and app together, restart a previously running service, and reopen a previously running menu bar. Automatic updates are opt-in and use a daily OS scheduler, not a polling app.
 
 The installer migrates legacy LaunchAgent presence as the service login preference (a missing old plist is treated as an opt-out), initializes the menu bar login item where possible, and preserves subsequent explicit opt-outs through updates. It never resets those choices during automatic updates.
 

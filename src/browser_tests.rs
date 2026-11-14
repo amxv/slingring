@@ -231,7 +231,9 @@ printf '{"success":true,"data":{"mode":"%s","headed_env":"%s","pinned":%s,"webmc
             browser_headed: headed,
             ..Config::default()
         };
-        let result = agent(&config, &["open", "about:blank"]).await.unwrap();
+        let result = agent_at(directory.path(), &config, &["open", "about:blank"], None)
+            .await
+            .unwrap();
         assert_eq!(result["mode"], if headed { "headed" } else { "headless" });
         assert_eq!(result["headed_env"], "absent");
         assert_eq!(result["pinned"], true);

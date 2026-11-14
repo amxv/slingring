@@ -1,10 +1,14 @@
 //! Profile discovery uses the browser fork's metadata-only command; no browser
 //! is launched and no cookies, passwords, or browsing history are read here.
-use crate::{config::Config, dependencies};
+use crate::config::Config;
+#[cfg(not(target_os = "linux"))]
+use crate::dependencies;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{path::Path, process::Stdio, time::Duration};
+use std::path::Path;
+#[cfg(not(target_os = "linux"))]
+use std::{process::Stdio, time::Duration};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Profile {
@@ -39,6 +43,7 @@ pub fn parse(value: Value, selected: &str) -> Result<Vec<Profile>> {
     Ok(profiles)
 }
 
+#[cfg(not(target_os = "linux"))]
 pub async fn list(root: &Path, config: &Config) -> Result<Vec<Profile>> {
     let binary = dependencies::resolve(root, &config.browser_binary)?;
     let output = tokio::time::timeout(
@@ -56,6 +61,16 @@ pub async fn list(root: &Path, config: &Config) -> Result<Vec<Profile>> {
         "could not list Chrome profiles; open Chrome once and try again"
     );
     parse(serde_json::from_slice(&output.stdout)?, &config.profile)
+}
+
+#[cfg(target_os = "linux")]
+pub async fn list(_root: &Path, config: &Config) -> Result<Vec<Profile>> {
+    let id = crate::browser_stock::PROFILE;
+    Ok(vec![Profile {
+        directory: id.into(),
+        name: "Dedicated Slingring profile".into(),
+        selected: config.profile == id,
+    }])
 }
 
 pub fn select<'a>(profiles: &'a [Profile], value: &str) -> Result<&'a Profile> {

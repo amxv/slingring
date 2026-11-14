@@ -10,25 +10,35 @@ app_exec='slingring-menubar'
 repo='https://github.com/amxv/slingring'
 action=${1:-install}
 case "$action" in install|upgrade|--check) ;; *) echo "Usage: install.sh [upgrade|--check]" >&2; exit 2 ;; esac
-case "$(uname -s)" in
-  Darwin) os=darwin; mac=1 ;;
-  *) echo 'Slingring currently supports macOS only.' >&2; exit 1 ;;
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64|Darwin:aarch64) mac=1; arch=arm64 ;;
+  Darwin:*) echo 'Slingring supports Apple Silicon Macs only.' >&2; exit 1 ;;
+  Linux:x86_64|Linux:amd64) mac=0; arch=x86_64 ;;
+  *) echo 'Slingring supports Apple Silicon macOS and x86_64 Linux only.' >&2; exit 1 ;;
 esac
-case "$(uname -m)" in
-  arm64|aarch64) arch=arm64 ;;
-  x86_64|amd64) echo 'Slingring supports Apple Silicon Macs only.' >&2; exit 1 ;;
-  *) echo 'Unsupported CPU architecture' >&2; exit 1 ;;
-esac
+if [ "$mac" = 0 ]; then
+  libc=$(getconf GNU_LIBC_VERSION 2>/dev/null) || libc=
+  if ! printf '%s\n' "$libc" | awk '
+    NF==2 && $1=="glibc" && $2~/^[0-9]+\.[0-9]+$/ {
+      split($2, version, ".")
+      supported=(version[1]>2 || (version[1]==2 && version[2]>=39))
+    }
+    END { exit !(NR==1 && supported) }
+  '; then
+    echo 'Slingring on Linux requires glibc 2.39 or newer (for example, Ubuntu 24.04).' >&2
+    exit 1
+  fi
+fi
 install_dir=${CLI_INSTALL_DIR:-"$HOME/.local/bin"}
 case "$install_dir" in /*) ;; *) echo 'CLI_INSTALL_DIR must be absolute' >&2; exit 1 ;; esac
 target=${CLI_UPGRADE_TARGET:-"$install_dir/$cli"}
 case "$target" in /*) ;; *) echo 'CLI_UPGRADE_TARGET must be absolute' >&2; exit 1 ;; esac
 install_dir=$(dirname "$target")
 app_dest="$install_dir/$app"
-if [ -L "$target" ] || [ -L "$app_dest" ]; then
+if [ -L "$target" ] || { [ "$mac" = 1 ] && [ -L "$app_dest" ]; }; then
   echo 'Refusing to replace a symlink installation' >&2; exit 1
 fi
-if [ "$action" = install ] && { [ -e "$target" ] || [ -e "$app_dest" ]; }; then
+if [ "$action" = install ] && { [ -e "$target" ] || { [ "$mac" = 1 ] && [ -e "$app_dest" ]; }; }; then
   echo "$cli is installed. Use '$cli upgrade' rather than reinstalling." >&2; exit 1
 fi
 if [ "$action" = upgrade ] && [ ! -f "$target" ]; then
@@ -79,7 +89,12 @@ download_asset() {
     }
   fi
 }
-asset="${binary}_darwin_${arch}.tar.gz"
+if [ "$mac" = 1 ]; then
+  asset="${binary}_darwin_${arch}.tar.gz"
+else
+  archive_prefix="${binary}-x86_64-unknown-linux-gnu"
+  asset="$archive_prefix.tar.xz"
+fi
 download_asset "$asset.sha256" "$stage/sums"
 download_asset "$asset" "$stage/$asset"
 expected=$(awk 'NF { n++; value=$1 } END { if (n == 1) print value }' "$stage/sums")
@@ -91,27 +106,171 @@ else
 fi
 [ "$actual" = "$expected" ] || { echo 'Checksum mismatch; installation unchanged' >&2; exit 1; }
 
-if [ "$mac" = 1 ]; then
-  mkdir "$stage/unpacked"
-  tar -tzf "$stage/$asset" | while IFS= read -r entry; do
-    case "$entry" in /*|../*|*/../*|*/..) echo 'Unsafe archive path' >&2; exit 1 ;; esac
-    case "$entry" in
-      "$cli"|"$app"|"$app/"|"$app/"*|LICENSE) ;;
-      *) echo "Unexpected or unsafe archive member: $entry" >&2; exit 1 ;;
-    esac
-  done
-  tar -xzf "$stage/$asset" -C "$stage/unpacked"
-  [ -z "$(find "$stage/unpacked" -type l -print -quit)" ] || { echo 'Archive symlinks are not allowed' >&2; exit 1; }
-  [ -x "$stage/unpacked/$cli" ] || { echo 'Archive is missing the CLI' >&2; exit 1; }
-  [ -x "$stage/unpacked/$app/Contents/MacOS/$app_exec" ] || { echo 'Archive is missing the menu bar app' >&2; exit 1; }
-  codesign --verify --strict "$stage/unpacked/$cli"
-  codesign --verify --deep --strict "$stage/unpacked/$app"
-  "$stage/unpacked/$app/Contents/MacOS/$app_exec" --check
-  source_cli="$stage/unpacked/$cli"
-else
-  source_cli="$stage/$asset"
-  chmod 755 "$source_cli"
+if [ "$mac" = 0 ]; then
+  # Validate every archive entry before extracting only the exact executable.
+  # cargo-dist may use its named root directory; reject mixed layouts.
+  tar --quoting-style=escape -tJf "$stage/$asset" > "$stage/members"
+  member=$(awk -v bare="$cli" -v nested="$archive_prefix/$cli" '
+    $0 == bare || $0 == nested { n++; selected=$0 }
+    END { if (n==1) print selected }
+  ' "$stage/members")
+  [ -n "$member" ] || { echo 'Missing or ambiguous Linux CLI archive member.' >&2; exit 1; }
+  prefix=${member%"$cli"}
+  awk -v prefix="$prefix" -v cli="$cli" '
+    {
+      if (++seen[$0]>1) bad=1
+      if (prefix!="" && $0==prefix) next
+      if ($0!=prefix cli && $0!=prefix "LICENSE" && $0!=prefix "README.md") bad=1
+    }
+    END { exit bad }
+  ' "$stage/members" || { echo 'Unsafe Linux CLI archive members.' >&2; exit 1; }
+  tar --quoting-style=escape -tvJf "$stage/$asset" > "$stage/types"
+  awk -v prefix="$prefix" -v cli="$cli" '
+    {
+      name=$NF; type=substr($0,1,1)
+      if (++seen[name]>1) bad=1
+      if (prefix!="" && name==prefix && type=="d") next
+      if (type!="-" || (name!=prefix cli && name!=prefix "LICENSE" && name!=prefix "README.md")) bad=1
+    }
+    END { exit bad || !seen[prefix cli] }
+  ' "$stage/types" || { echo 'Unsafe Linux CLI archive entries.' >&2; exit 1; }
+  mkdir -p "$install_dir"
+  install_lock="$install_dir/.$cli-install.lock"
+  mkdir "$install_lock" || { echo 'Another installation is running or was interrupted.' >&2; exit 1; }
+  staged=$(mktemp -d "$install_dir/.$cli-stage.XXXXXXXX") || { rmdir "$install_lock"; exit 1; }
+  running=0
+  committed=0
+  cleanup_linux() {
+    result=$?
+    trap - EXIT HUP INT TERM
+    if [ "$committed" = 0 ]; then
+      if [ "$action" = upgrade ] && [ -f "$staged/previous" ] && [ ! -e "$staged/$cli" ]; then
+        if ! mv -fT -- "$staged/previous" "$target"; then
+          printf 'Could not restore previous CLI; backup retained at %s/previous\n' "$staged" >&2
+          rm -rf "$stage"
+          rmdir "$install_lock"
+          exit 1
+        fi
+      elif [ "$action" = install ] && [ "$target" -ef "$staged/$cli" ]; then
+        rm -f -- "$target"
+      fi
+    fi
+    if [ "$running" = 1 ]; then
+      "$target" service start >/dev/null || {
+        echo 'The service did not restart. Run slingring service start.' >&2
+        result=1
+      }
+    fi
+    rm -rf "$stage" "$staged"
+    rmdir "$install_lock"
+    exit "$result"
+  }
+  trap cleanup_linux EXIT
+  trap 'exit 1' HUP INT TERM
+  [ ! -L "$target" ] || { echo 'Refusing to replace a symlink installation.' >&2; exit 1; }
+  tar -xOJf "$stage/$asset" -- "$member" > "$staged/$cli"
+  [ "$(od -An -t u1 -N 6 "$staged/$cli" | xargs)" = '127 69 76 70 2 1' ] &&
+    [ "$(od -An -t u1 -j 18 -N 2 "$staged/$cli" | xargs)" = '62 0' ] || {
+    echo 'Release CLI is not x86_64 ELF; installation unchanged.' >&2; exit 1
+  }
+  chmod 755 "$staged/$cli"
+  staged_version=$("$staged/$cli" --version)
+  printf '%s\n' "$staged_version" | grep -Eq '^slingring [0-9]+\.[0-9]+\.[0-9]+$' &&
+    { [ -z "$version" ] || [ "$staged_version" = "slingring $version" ]; } || {
+    echo 'Unexpected staged CLI version; installation unchanged.' >&2; exit 1
+  }
+  if [ "$action" = upgrade ]; then
+    command -v python3 >/dev/null 2>&1 || { echo 'python3 is required to verify upgrade readiness.' >&2; exit 1; }
+    # Do not infer idle from missing/unavailable status or from socket absence.
+    read_idle() {
+      "$target" status --json > "$stage/status.json" || return 1
+      python3 - "$stage/status.json" <<'PY_STATUS'
+import json
+import sys
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate status field")
+        result[key] = value
+    return result
+
+try:
+    with open(sys.argv[1], "rb") as source:
+        data = source.read(65537)
+    if len(data) > 65536:
+        raise ValueError
+    status = json.loads(data, object_pairs_hook=unique)
+    if status["status_available"] is not True or status["browser_busy"] is not False:
+        raise ValueError
+    for key in ("active_tasks", "queued_tasks", "starting_tasks"):
+        if type(status[key]) is not int or status[key] != 0:
+            raise ValueError
+    running = status["running"]
+    if running is True:
+        pid = status["pid"]
+        if type(pid) is not int or not 0 < pid <= 2147483647:
+            raise ValueError
+        print(pid)
+    elif running is False:
+        print(0)
+    else:
+        raise ValueError
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)
+PY_STATUS
+    }
+    pid=$(read_idle) || {
+      echo 'Service idle state could not be verified; installation unchanged.' >&2; exit 1
+    }
+    cp -p -- "$target" "$staged/previous"
+    if [ "$pid" != 0 ]; then
+      [ "/proc/$pid/exe" -ef "$target" ] || {
+        echo 'Running daemon does not match this installation; installation unchanged.' >&2; exit 1
+      }
+      running=1
+      "$target" service stop >/dev/null
+      attempt=0
+      while [ "/proc/$pid/exe" -ef "$target" ]; do
+        [ "$attempt" -lt 120 ] || { echo 'Daemon did not exit; installation unchanged.' >&2; exit 1; }
+        sleep 0.25
+        attempt=$((attempt + 1))
+      done
+    fi
+    [ "$(read_idle)" = 0 ] || { echo 'Service is not stopped; installation unchanged.' >&2; exit 1; }
+  fi
+  "$staged/$cli" browser install >/dev/null
+  if [ "$action" = upgrade ]; then
+    mv -fT -- "$staged/$cli" "$target"
+  else
+    # Refuse to overwrite an installation created while staging the release.
+    ln -T -- "$staged/$cli" "$target"
+  fi
+  [ "$("$target" --version)" = "$staged_version" ] || {
+    echo 'Installed CLI failed verification; restoring previous installation.' >&2; exit 1
+  }
+  committed=1
+  printf 'Installed %s at %s\n' "$cli" "$target"
+  exit 0
 fi
+
+mkdir "$stage/unpacked"
+tar -tzf "$stage/$asset" | while IFS= read -r entry; do
+  case "$entry" in /*|../*|*/../*|*/..) echo 'Unsafe archive path' >&2; exit 1 ;; esac
+  case "$entry" in
+    "$cli"|"$app"|"$app/"|"$app/"*|LICENSE) ;;
+    *) echo "Unexpected or unsafe archive member: $entry" >&2; exit 1 ;;
+  esac
+done
+tar -xzf "$stage/$asset" -C "$stage/unpacked"
+[ -z "$(find "$stage/unpacked" -type l -print -quit)" ] || { echo 'Archive symlinks are not allowed' >&2; exit 1; }
+[ -x "$stage/unpacked/$cli" ] || { echo 'Archive is missing the CLI' >&2; exit 1; }
+[ -x "$stage/unpacked/$app/Contents/MacOS/$app_exec" ] || { echo 'Archive is missing the menu bar app' >&2; exit 1; }
+codesign --verify --strict "$stage/unpacked/$cli"
+codesign --verify --deep --strict "$stage/unpacked/$app"
+"$stage/unpacked/$app/Contents/MacOS/$app_exec" --check
+source_cli="$stage/unpacked/$cli"
 # A certificate-backed local signature must survive an upgrade. Never silently
 # replace it with the release's ad-hoc identity or rotate to another certificate.
 # CLI_CODESIGN_IDENTITY is an explicit, unambiguous certificate SHA-1 fingerprint.

@@ -44,7 +44,11 @@ concurrency:
 
 jobs:
   rust:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -70,7 +74,12 @@ jobs:
       - name: Test isolated installers
         run: python3 scripts/test_installers.py
 
+      - name: Test Linux installers without installing services or browsers
+        if: runner.os == 'Linux'
+        run: python3 scripts/test_linux_installers.py
+
       - name: Build the native menu bar companion
+        if: runner.os == 'macOS'
         run: |
           bash apps/menubar/test.sh
           cargo build --locked

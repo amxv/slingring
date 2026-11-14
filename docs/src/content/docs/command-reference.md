@@ -5,7 +5,7 @@ order: 20
 category: Reference
 ---
 
-Slingring has two ways to submit messages to ChatGPT: a macOS command-line interface and four MCP tools for local or remote agents. Both use the same configured Chrome account and serial task queue.
+Slingring has two ways to submit messages to ChatGPT: a macOS/Linux command-line interface and four MCP tools for local or remote agents. Both use the same configured Chrome account and serial task queue.
 
 **A successful submission means ChatGPT has started thinking, working, or streaming a response.** Slingring returns the conversation URL, not the answer, and does not wait for generation to finish.
 
@@ -230,7 +230,9 @@ slingring login menu-bar on
 slingring login service on
 ```
 
-The menu bar command uses macOS `SMAppService` to register the installed `Slingring.app` (which must be next to the CLI). The service command uses the existing `xyz.ashray.slingring` LaunchAgent and macOS launchd's persistent enabled/disabled override. **Turning service autostart off does not stop a running daemon, remove the plist, or interrupt current tasks.** Use `slingring service stop` separately for that. Repeating on/off is safe. Status reflects macOS state rather than a saved checkbox value; a `requires_approval` menu bar state needs approval in System Settings → General → Login Items & Extensions.
+On Linux, `service install` explicitly registers a systemd user unit without enabling or starting it. `login service on|off` changes enablement without starting or stopping active work. A user manager is required for those controls; ordinary direct daemons and local MCP do not require systemd. Only the default state directory is eligible for a registered unit. Menu-bar status is `unsupported`, and menu-bar on/off refuse without changes. Linux has no supported automatic update timer; use `upgrade` manually.
+
+On macOS, the menu bar command uses `SMAppService` to register the installed `Slingring.app` (which must be next to the CLI). The service command uses the existing `xyz.ashray.slingring` LaunchAgent and macOS launchd's persistent enabled/disabled override. **Turning service autostart off does not stop a running daemon, remove the plist, or interrupt current tasks.** Use `slingring service stop` separately for that. Repeating on/off is safe. Status reflects macOS state rather than a saved checkbox value; a `requires_approval` menu bar state needs approval in System Settings → General → Login Items & Extensions.
 
 If launchd has just restarted or Slingring has just upgraded, `service start` may wait for macOS's 30-second restart throttle before declaring failure. The CLI reports a service startup problem only after a bounded readiness check and includes limited launchd diagnostics when available. This waiting does not submit a new ChatGPT task or restart a running service.
 

@@ -91,7 +91,7 @@ pub enum Command {
         #[command(subcommand)]
         action: ProfileAction,
     },
-    /// Install or inspect Slingring's managed browser helper.
+    /// Install or inspect the platform's browser dependency.
     Browser {
         #[command(subcommand)]
         action: BrowserAction,
@@ -203,9 +203,9 @@ pub enum ServiceAction {
     Stop,
     /// Stop and start the local process now; does not replay interrupted jobs.
     Restart,
-    /// Install the launchd service, stopping the existing process first.
+    /// Register the service (macOS LaunchAgent; optional Linux user unit without starting it).
     Install,
-    /// Stop and remove the launchd service registration.
+    /// Stop and remove this user's Slingring service registration.
     Uninstall,
     /// Print process/remote status as JSON without starting a browser.
     Status,
@@ -247,10 +247,13 @@ pub enum ProfileAction {
     },
     /// Select a profile by its directory or unique display name.
     Use { profile: String },
+    /// Open the dedicated profile in stock Chrome for manual sign-in.
+    #[cfg(target_os = "linux")]
+    Open,
 }
 #[derive(Debug, Subcommand)]
 pub enum BrowserAction {
-    /// Install the tested, checksummed fork. No Homebrew or Node required.
+    /// Install the verified macOS helper or check system Chrome on Linux.
     Install,
     /// Print helper paths without launching Chrome.
     Status,

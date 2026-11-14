@@ -1,23 +1,33 @@
 //! A private, version-pinned browser helper. Nothing runs between commands.
+#[cfg(not(target_os = "linux"))]
 use crate::config;
-use anyhow::{Context, Result, ensure};
+use anyhow::Result;
+#[cfg(not(target_os = "linux"))]
+use anyhow::{Context, ensure};
+use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "linux"))]
 use std::{
     fs::OpenOptions,
     io::Write,
     os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
+#[cfg(target_os = "linux")]
+pub const VERSION: &str = "system-chrome-stable";
+#[cfg(not(target_os = "linux"))]
 pub const VERSION: &str = "0.41.1";
+#[cfg(not(target_os = "linux"))]
 const INSTALLER: &str = include_str!("../scripts/install-browser.sh");
 
+#[cfg(not(target_os = "linux"))]
 pub fn managed(root: &Path) -> PathBuf {
     root.join("browser/agent-browser-browse")
 }
 
 /// Explicit absolute overrides remain authoritative; otherwise prefer the
 /// managed helper so a new installation never needs a second CLI in PATH.
+#[cfg(not(target_os = "linux"))]
 pub fn resolve(root: &Path, configured: &str) -> Result<PathBuf> {
     let path = PathBuf::from(configured);
     if path.is_absolute() {
@@ -37,6 +47,7 @@ pub fn resolve(root: &Path, configured: &str) -> Result<PathBuf> {
         .context("browser helper missing; run slingring browser install")
 }
 
+#[cfg(not(target_os = "linux"))]
 pub fn install(root: &Path) -> Result<PathBuf> {
     ensure!(root.is_absolute(), "Slingring home must be absolute");
     config::private_dir(root)?;
@@ -67,4 +78,13 @@ pub fn install(root: &Path) -> Result<PathBuf> {
         "browser helper installation failed; existing installation was preserved"
     );
     Ok(managed(root))
+}
+
+#[cfg(target_os = "linux")]
+pub fn managed(_root: &Path) -> PathBuf {
+    PathBuf::from(crate::browser_linux::CHROME)
+}
+#[cfg(target_os = "linux")]
+pub fn install(_root: &Path) -> Result<PathBuf> {
+    Ok(crate::browser_stock::chrome_executable()?)
 }
