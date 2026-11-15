@@ -288,3 +288,12 @@ test('new-chat readiness survives composer remount across an inner timeout and r
   });
   assert.equal(waits,2);assert(p.api.composer());p.close();
 });
+
+test('Cloudflare interstitial markers are detected without flagging ordinary bot-management scripts',()=>{
+  const challenge=page('<p id="challenge-error-text"></p><input type="hidden" name="cf-turnstile-response">'+
+    '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=x"></script>','https://chatgpt.com/');
+  assert.equal(challenge.api.cloudflareChallenge(),true);challenge.close();
+  const ordinary=page('<div id="prompt-textarea"></div><script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>',
+    'https://chatgpt.com/');
+  assert.equal(ordinary.api.cloudflareChallenge(),false);ordinary.close();
+});

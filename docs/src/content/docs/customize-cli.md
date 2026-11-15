@@ -37,4 +37,12 @@ An interrupted task is never silently replayed. A local queue wait does not cons
 
 Ownership locks distinguish a live queue from a journal left behind by a crash. When no owner remains, queued records are reported as definitely not submitted and starting records as uncertain, without launching a daemon or replaying content. A service that holds its lock but fails to answer status is reported as unavailable, not stopped or idle. The relay reserves bounded status/control capacity separately from writes so a saturated submission path does not block recovery.
 
-On Linux, Slingring uses system Chrome Stable, a dedicated Slingring-only profile, and a private inherited DevTools pipe. No alternate browser executable, profile import, attach-to-normal-Chrome, fingerprint setting, or sandbox-off fallback is supported.
+On Linux, Slingring uses system Chrome Stable, a dedicated Slingring-only profile, and a private inherited DevTools pipe by default. No profile import, attach-to-normal-Chrome, or sandbox-off fallback is supported.
+
+If ChatGPT's Cloudflare check never clears for stock Chrome (tasks fail with `chat_mode_unverified`), install `agent-browser-browse` yourself and select it explicitly:
+
+```bash
+slingring config set browser-binary agent-browser-browse
+```
+
+Slingring resolves it to an absolute path, so the service runs exactly that binary. The helper drives the same system Chrome Stable, with the sandbox enabled, on a private copy of the dedicated profile that is created for each browser session and deleted when the queue drains. The dedicated profile itself is only read. Run `slingring profile open` to sign in again; it always uses stock Chrome. Switch back with `slingring config set browser-binary stock-chrome-stable`. Both changes require an idle queue.

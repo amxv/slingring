@@ -1,5 +1,7 @@
 pub mod browser;
 #[cfg(target_os = "linux")]
+mod browser_helper;
+#[cfg(target_os = "linux")]
 mod browser_linux;
 #[cfg(target_os = "linux")]
 mod browser_stock;

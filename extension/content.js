@@ -202,5 +202,9 @@
     }).finally(()=>{if(message.action==='submit')dom.releaseAttachments?.(task?.attachments);});
     return true;
   });
-  chrome.runtime.sendMessage({kind:"slingring",event:"ready"}).catch(()=>{});
+  // A Cloudflare interstitial is replaced by a new document after it passes.
+  // That document's own content script reports readiness instead; preparing
+  // inside the interstitial would lose its message channel mid-action.
+  if(!dom.cloudflareChallenge?.())
+    chrome.runtime.sendMessage({kind:"slingring",event:"ready"}).catch(()=>{});
 })();

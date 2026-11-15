@@ -7,7 +7,6 @@ use crate::{
     native,
 };
 use anyhow::{Context, Result, ensure};
-#[cfg(any(not(target_os = "linux"), test))]
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -18,9 +17,7 @@ use std::{
     time::Duration,
 };
 use tokio::net::{UnixListener, UnixStream};
-#[cfg(any(not(target_os = "linux"), test))]
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
-#[cfg(any(not(target_os = "linux"), test))]
 use {std::process::Stdio, tokio::net::TcpStream};
 
 pub fn install_extension(root: &Path) -> Result<PathBuf> {
@@ -30,22 +27,17 @@ pub fn session(root: &Path) -> String {
     let digest = format!("{:x}", Sha256::digest(root.to_string_lossy().as_bytes()));
     format!("slingring-{}", &digest[..12])
 }
-#[cfg(any(not(target_os = "linux"), test))]
 #[derive(Debug)]
 struct RunnerProblem(&'static str);
-#[cfg(any(not(target_os = "linux"), test))]
 impl std::fmt::Display for RunnerProblem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
 }
-#[cfg(any(not(target_os = "linux"), test))]
 impl std::error::Error for RunnerProblem {}
-#[cfg(any(not(target_os = "linux"), test))]
 fn problem(kind: &'static str) -> anyhow::Error {
     RunnerProblem(kind).into()
 }
-#[cfg(any(not(target_os = "linux"), test))]
 fn launch_stage(error: &anyhow::Error, retry: bool) -> &'static str {
     match (retry, error.downcast_ref::<RunnerProblem>().map(|e| e.0)) {
         (false, Some("timeout")) => "browser_launch_timeout",
@@ -62,11 +54,15 @@ fn launch_stage(error: &anyhow::Error, retry: bool) -> &'static str {
         (true, _) => "browser_retry_other_error",
     }
 }
-#[cfg(not(target_os = "linux"))]
 async fn agent(config: &Config, args: &[&str]) -> Result<Value> {
-    agent_at(&config::root()?, config, args, None).await
+    // Linux pins system Chrome Stable and the private profile copy. The copy is
+    // created before the launching `open`; other commands ignore the profile.
+    #[cfg(target_os = "linux")]
+    let executable = Some(Path::new(crate::browser_linux::CHROME));
+    #[cfg(not(target_os = "linux"))]
+    let executable = None;
+    agent_at(&config::root()?, config, args, executable).await
 }
-#[cfg(any(not(target_os = "linux"), test))]
 async fn agent_at(
     root: &Path,
     config: &Config,
@@ -80,6 +76,12 @@ async fn agent_at(
         "upstream agent-browser is not an allowed fallback"
     );
     let name = session(root);
+    #[cfg(all(target_os = "linux", not(test)))]
+    let profile = crate::browser_helper::copy_path(root)?
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(any(not(target_os = "linux"), test))]
+    let profile = config.profile.clone();
     let idle = format!(
         "{}s",
         config
@@ -118,7 +120,7 @@ async fn agent_at(
             "--session",
             &name,
             "--profile",
-            &config.profile,
+            &profile,
             "--idle-timeout",
             &idle,
             // Keep the helper anchored to its initial blank tab. Otherwise its
@@ -168,11 +170,9 @@ async fn agent_at(
 }
 
 struct Cdp {
-    #[cfg(any(not(target_os = "linux"), test))]
     socket: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     #[cfg(target_os = "linux")]
     pipe: Option<crate::browser_stock::Channel>,
-    #[cfg(any(not(target_os = "linux"), test))]
     id: u64,
 }
 #[derive(Clone, Debug)]
@@ -206,7 +206,6 @@ fn owned_profile_from_command(command: &str, headed: bool) -> Result<PathBuf> {
     Ok(directory)
 }
 impl Cdp {
-    #[cfg(not(target_os = "linux"))]
     async fn owned_profile(&mut self, headed: bool) -> Result<PathBuf> {
         let info = self
             .call("SystemInfo.getProcessInfo", json!({}), None)
@@ -225,7 +224,7 @@ impl Cdp {
         trace(&format!("browser_pid={pid}"));
         #[cfg(target_os = "linux")]
         {
-            crate::browser_linux::owned_profile(pid as u32, headed, &config::root()?)
+            crate::browser_linux::verify_helper(pid as u32, headed, &config::root()?)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -242,7 +241,6 @@ impl Cdp {
             owned_profile_from_command(&command, headed)
         }
     }
-    #[cfg(any(not(target_os = "linux"), test))]
     async fn connect(endpoint: &str) -> Result<Self> {
         let url = url::Url::parse(endpoint)?;
         ensure!(
@@ -264,9 +262,6 @@ impl Cdp {
         if let Some(pipe) = self.pipe.as_ref() {
             return pipe.call(method, params, session).await;
         }
-        #[cfg(all(target_os = "linux", not(test)))]
-        anyhow::bail!("missing owned stock Chrome pipe");
-        #[cfg(any(not(target_os = "linux"), test))]
         {
             let socket = self.socket.as_mut().context("missing browser socket")?;
             self.id += 1;
@@ -474,12 +469,6 @@ fn handoff_started(
         channel.acknowledge(socket, result.job_id.clone());
         return result;
     }
-    #[cfg(all(target_os = "linux", not(test)))]
-    {
-        let _ = (socket, controller_id);
-        result
-    }
-    #[cfg(any(not(target_os = "linux"), test))]
     {
         // Activity is already validated. Cleanup must not turn proven submission
         // into uncertainty if the native channel, CDP, or outer deadline expires.
@@ -521,28 +510,39 @@ pub async fn run_authorized(
     let root = config::root()?;
     let extension = native::assets(&root)?;
     #[cfg(target_os = "linux")]
-    let (mut cdp, browser_data) = {
-        ensure!(
-            config.profile == crate::browser_stock::PROFILE
-                && config.browser_binary == crate::browser_stock::PROVIDER,
-            "Linux uses only the explicitly selected dedicated stock Chrome backend; run setup"
-        );
-        let (pipe, profile) = crate::browser_stock::open_task(&root, config.browser_headed)
-            .await
-            .map_err(|_| failure("linux_stock_browser_unavailable", false, None))?;
-        (
-            Cdp {
-                pipe: Some(pipe),
-                #[cfg(test)]
-                socket: None,
-                #[cfg(test)]
-                id: 0,
-            },
-            profile,
-        )
-    };
+    ensure!(
+        config.profile == crate::browser_stock::PROFILE,
+        "Linux uses only the dedicated Slingring profile; run setup"
+    );
+    #[cfg(target_os = "linux")]
+    let helper = crate::browser_helper::selected(config);
     #[cfg(not(target_os = "linux"))]
-    let (mut cdp, browser_data) = {
+    let helper = true;
+    #[cfg(target_os = "linux")]
+    if helper {
+        crate::browser_linux::preflight()
+            .map_err(|_| failure("linux_browser_environment_unsupported", false, None))?;
+        crate::browser_helper::ensure_copy(&root)
+            .map_err(|_| failure("linux_profile_copy_failed", false, None))?;
+    }
+    let (mut cdp, browser_data) = if !helper {
+        #[cfg(not(target_os = "linux"))]
+        unreachable!("only Linux has a stock Chrome backend");
+        #[cfg(target_os = "linux")]
+        {
+            let (pipe, profile) = crate::browser_stock::open_task(&root, config.browser_headed)
+                .await
+                .map_err(|_| failure("linux_stock_browser_unavailable", false, None))?;
+            (
+                Cdp {
+                    pipe: Some(pipe),
+                    socket: None,
+                    id: 0,
+                },
+                profile,
+            )
+        }
+    } else {
         if let Err(error) = agent(config, &["open", "about:blank"]).await {
             // This is strictly before extension installation and before ChatGPT is
             // opened. A stale runner/socket may be recreated once without any risk
@@ -552,6 +552,9 @@ pub async fn run_authorized(
             progress("browser_retry_cleanup");
             let _ = tokio::time::timeout(Duration::from_secs(20), close(config)).await;
             progress("browser_retry");
+            #[cfg(target_os = "linux")]
+            crate::browser_helper::ensure_copy(&root)
+                .map_err(|_| failure("linux_profile_copy_failed", false, None))?;
             if let Err(error) = agent(config, &["open", "about:blank"]).await {
                 progress(launch_stage(&error, true));
                 return Err(failure("browser_start_failed", false, None));
@@ -848,8 +851,14 @@ pub async fn close(config: &Config) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = config;
-        crate::browser_stock::close_task().await
+        if !crate::browser_helper::selected(config) {
+            return crate::browser_stock::close_task().await;
+        }
+        // Close the named helper session first; the private copy is removed
+        // only after its browser exited, and is recreated on the next launch.
+        let closed = agent(config, &["close"]).await.map(|_| ());
+        let removed = config::root().and_then(|root| crate::browser_helper::remove_copy(&root));
+        closed.and(removed)
     }
     #[cfg(not(target_os = "linux"))]
     agent(config, &["close"]).await.map(|_| ())

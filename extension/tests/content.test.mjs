@@ -43,7 +43,7 @@ test('pause dispatch never calls submission, effort, composer-text, or recovery 
  const url='https://chatgpt.com/c/pause-content';
  const p=new JSDOM('<main></main>',{url,runScripts:'outside-only'}),w=p.window;
  let listener,calls=0;
- w.__slingringDOM=new Proxy({canonicalUrl:()=>url,pauseTask:async target=>{
+ w.__slingringDOM=new Proxy({cloudflareChallenge:()=>false,canonicalUrl:()=>url,pauseTask:async target=>{
   assert.equal(target,url);calls++;return {status:'already_idle',evidence:'completion_controls'};
  }},{get:(object,key)=>{if(!(key in object))throw Error(`forbidden_helper_${String(key)}`);return object[key];}});
  w.chrome={runtime:{id:'test-extension',onMessage:{addListener:fn=>{listener=fn;}},sendMessage:async()=>{}}};
@@ -53,4 +53,17 @@ test('pause dispatch never calls submission, effort, composer-text, or recovery 
  const result=await send({action:'pause',chatgpt_url:url});
  assert.equal(result.ok,true);assert.equal(result.status,'already_idle');assert.equal(calls,1);
  const repeated=await send({action:'pause',chatgpt_url:url});assert.equal(repeated.ok,false);assert.equal(calls,1);p.window.close();
+});
+
+test('a Cloudflare interstitial never reports content readiness; the real page does',async()=>{
+  for(const challenge of [true,false]){
+    const page=new JSDOM('<main></main>',{url:'https://chatgpt.com/',runScripts:'outside-only'});
+    const w=page.window,events=[];
+    w.__slingringDOM={cloudflareChallenge:()=>challenge};
+    w.chrome={runtime:{id:'test-extension',onMessage:{addListener:()=>{}},
+      sendMessage:async message=>{events.push(message.event);return {};}}};
+    w.eval(source);
+    assert.deepEqual(events,challenge?[]:['ready']);
+    page.window.close();
+  }
 });

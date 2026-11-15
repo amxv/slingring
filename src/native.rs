@@ -37,8 +37,11 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 pub fn register(root: &Path, browser_data: &Path) -> Result<()> {
+    // Linux registers either in the exact dedicated stock profile or in this
+    // generation's private helper copy, never in normal Chrome data.
     #[cfg(target_os = "linux")]
-    let data = crate::browser_stock::validate_registration(root, browser_data)?;
+    let data = crate::browser_stock::validate_registration(root, browser_data)
+        .or_else(|_| crate::browser_linux::validate_profile(root, browser_data))?;
     #[cfg(not(target_os = "linux"))]
     let data = browser_data.canonicalize()?;
     #[cfg(not(target_os = "linux"))]

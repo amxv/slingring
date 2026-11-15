@@ -11,7 +11,6 @@ use std::{
     sync::OnceLock,
 };
 
-#[cfg(test)]
 use std::os::unix::fs::DirBuilderExt;
 
 pub(crate) const CHROME: &str = "/opt/google/chrome/chrome";
@@ -61,8 +60,7 @@ fn uid() -> Result<u32> {
     Ok(fs::metadata("/proc/self")?.uid())
 }
 
-#[cfg(test)]
-fn private_directory(path: &Path, create: bool) -> Result<()> {
+pub(crate) fn private_directory(path: &Path, create: bool) -> Result<()> {
     if create {
         match fs::DirBuilder::new().mode(0o700).create(path) {
             Ok(()) => {}
@@ -96,7 +94,6 @@ pub(crate) fn runtime_root(root: &Path) -> Result<PathBuf> {
     )))
 }
 
-#[cfg(test)]
 pub(crate) fn prepare(root: &Path, command: &mut tokio::process::Command) -> Result<()> {
     let directory = runtime_root(root)?;
     private_directory(&directory, true)?;
@@ -111,11 +108,11 @@ pub(crate) fn prepare(root: &Path, command: &mut tokio::process::Command) -> Res
     private_directory(&sockets, true)?;
     command
         .env("TMPDIR", &directory)
-        .env("AGENT_BROWSER_SOCKET_DIR", &sockets);
+        .env("AGENT_BROWSER_SOCKET_DIR", &sockets)
+        .env("AGENT_BROWSER_NAMESPACE", "slingring");
     Ok(())
 }
 
-#[cfg(test)]
 pub(crate) fn validate_profile(root: &Path, profile: &Path) -> Result<PathBuf> {
     let runtime = runtime_root(root)?;
     private_directory(&runtime, false)?;
@@ -232,6 +229,35 @@ fn profile_from_arguments(bytes: &[u8], expected: &Identity, headed: bool) -> Re
         "Linux browser profile missing or ambiguous"
     );
     Ok(PathBuf::from(OsString::from_vec(profiles[0].to_vec())))
+}
+
+/// Verify the helper-launched browser root through `/proc`: same user, system
+/// Chrome Stable, sandbox enabled, configured visibility, and exactly this
+/// state directory's private profile copy. Returns the verified copy.
+pub(crate) fn verify_helper(pid: u32, headed: bool, root: &Path) -> Result<PathBuf> {
+    ensure!(pid > 0, "invalid browser PID");
+    let directory = Path::new("/proc").join(pid.to_string());
+    let before = identity(&directory)?;
+    ensure!(
+        before.uid == uid()?,
+        "Linux browser belongs to another user"
+    );
+    ensure!(
+        before.executable == expected_executable()?,
+        "Linux browser is not the selected Google Chrome executable"
+    );
+    let args = bounded(&directory.join("cmdline"))?;
+    let profile = profile_from_arguments(&args, &before, headed)?;
+    let profile = validate_profile(root, &profile)?;
+    ensure!(
+        profile == crate::browser_helper::copy_path(root)?,
+        "helper browser profile is not this session's private copy"
+    );
+    ensure!(
+        identity(&directory)? == before,
+        "Linux browser identity changed during inspection"
+    );
+    Ok(profile)
 }
 
 pub(crate) fn verify_stock(pid: u32, headed: bool, expected_profile: &Path) -> Result<()> {

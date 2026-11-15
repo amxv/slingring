@@ -244,7 +244,14 @@ pub async fn run(command: Command) -> Result<()> {
             }
             #[cfg(target_os = "linux")]
             {
-                config.browser_binary = crate::browser_stock::PROVIDER.into();
+                // Keep an explicitly selected helper; otherwise stock Chrome.
+                config.browser_binary = if crate::browser_helper::selected(&config) {
+                    crate::browser_helper::resolve(&config.browser_binary)?
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    crate::browser_stock::PROVIDER.into()
+                };
                 config.profile = crate::browser_stock::PROFILE.into();
             }
             config.save(&root)?;
@@ -280,9 +287,10 @@ pub async fn run(command: Command) -> Result<()> {
                 }
                 #[cfg(target_os = "linux")]
                 ProfileAction::Open => {
+                    // Manual sign-in always uses stock Chrome on the dedicated
+                    // profile, whichever backend later runs tasks from it.
                     ensure!(
-                        config.profile == crate::browser_stock::PROFILE
-                            && config.browser_binary == crate::browser_stock::PROVIDER,
+                        config.profile == crate::browser_stock::PROFILE,
                         "run slingring setup before opening the dedicated profile"
                     );
                     crate::browser_stock::manual_profile(&root).await?;
@@ -360,11 +368,23 @@ pub async fn run(command: Command) -> Result<()> {
                         }
                         "browser-binary" => {
                             #[cfg(target_os = "linux")]
-                            ensure!(
-                                value == crate::browser_stock::PROVIDER,
-                                "Linux uses stock Chrome Stable; no alternate binary is accepted"
-                            );
-                            config.browser_binary = value;
+                            {
+                                ensure!(
+                                    status(&root).await?["active_tasks"].as_u64().unwrap_or(0) == 0,
+                                    "Wait for queued tasks to finish before changing the browser backend"
+                                );
+                                config.browser_binary = if value == crate::browser_stock::PROVIDER {
+                                    value
+                                } else {
+                                    crate::browser_helper::resolve(&value)?
+                                        .to_string_lossy()
+                                        .into_owned()
+                                };
+                            }
+                            #[cfg(not(target_os = "linux"))]
+                            {
+                                config.browser_binary = value;
+                            }
                         }
                         "browser-mode" => {
                             config.browser_headed = match value.as_str() {

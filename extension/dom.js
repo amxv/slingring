@@ -624,7 +624,14 @@
     if(users.length!==previousCount+1)return null;
     return startEvidence(expectedPrompt,null);
   }
-  globalThis.__slingringDOM = {LEVELS,visible,normal,composer,composerState,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,signedOutHome,waitFor,ensureChat,
+  // Cloudflare's interstitial shares chatgpt.com URLs and replaces itself with
+  // the real document once it passes. Match only the interstitial's own
+  // markers: ordinary ChatGPT pages also load other challenge-platform scripts.
+  function cloudflareChallenge() {
+    return !!document.querySelector('#challenge-error-text,[name="cf-turnstile-response"],[id^="cf-chl-widget"],'+
+      'script[src*="/cdn-cgi/challenge-platform/"][src*="/chl_page/"]');
+  }
+  globalThis.__slingringDOM = {LEVELS,cloudflareChallenge,visible,normal,composer,composerState,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,signedOutHome,waitFor,ensureChat,
     currentEffort,effortState,powerState,setEffort,ensureEffort,fill,sendButton,uploadSelector,attachmentItems,attachmentCount,watchAttachments,attachmentsUnchanged,releaseAttachments,attachmentsReady,canonicalUrl,startEvidence,
     pauseObservation,pauseTask,followupReady,followupIdle,noAttachments,turnBaseline,conversationLoadFailure,ensureConversationLoaded,messageSendError,recoveredEvidence};
 })();
