@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.7.2 · 15 November 2026
+
+Add an opt-in `agent-browser-browse` backend on Linux for hosts where ChatGPT's Cloudflare check blocks stock Chrome. Previously every task there failed with `chat_mode_unverified`, headless or headed. Select it with `slingring config set browser-binary agent-browser-browse`. It drives system Chrome Stable with the sandbox enabled on a private copy of the dedicated profile. The copy is created per browser session and deleted when the queue drains. Stock Chrome remains the default, and `profile open` still uses it for manual sign-in.
+
+Fix new chats failing with `extension_failed` when ChatGPT first serves a Cloudflare "Just a moment" interstitial that then passes on its own. Slingring now waits for the real page instead of preparing inside the interstitial. Nothing was submitted in the affected runs.
+
 ## 0.7.1 · 15 November 2026
 
 Report `chat_login_required` when the selected Chrome profile opens the signed-out ChatGPT homepage, instead of the generic `chat_mode_unverified`. Slingring allows a short window for authenticated hydration, never clicks login or transfers cookies, and submits nothing. Job status and troubleshooting docs explain how to sign in or select an already-signed-in profile. Thanks to arju-nk.
