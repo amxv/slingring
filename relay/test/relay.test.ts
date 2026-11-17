@@ -1,6 +1,6 @@
 import { webcrypto } from 'node:crypto';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import worker, { Relay, authorize, acceptsJson, MAX_BYTES, MAX_CONTROL_PENDING, WAIT_MS } from '../src/index';
+import worker, { Relay, authorize, acceptsJson, MAX_BYTES, MAX_CONTROL_PENDING, STATUS_WAIT_MS, WAIT_MS } from '../src/index';
 // Node lacks the Workers timing-safe digest primitive.
 import { timingSafeEqual } from 'node:crypto';
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
@@ -201,6 +201,82 @@ describe('pending lifecycle', () => {
     expect((await relay.fetch(req())).status).toBe(429);
     relay.webSocketClose(socket as any);
     expect((await Promise.all([...writes, ...controls])).every(r=>r.status===503)).toBe(true);
+  });
+  const statusLookup = { jsonrpc:'2.0', id:80, method:'tools/call', params:{
+    name:'get_job_status', arguments:{ request_id:'recover-existing' } } };
+  it('recycles an RPC-silent socket despite a positive heartbeat without replaying the lookup', async () => {
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    const lookup = relay.fetch(req(statusLookup));
+    await sent();
+    const stale = socket;
+    const staleId = JSON.parse(stale.frames[0]).id;
+    relay.webSocketMessage(stale as any, 'ping');
+    expect(stale.frames).toHaveLength(2);
+    expect(stale.frames.at(-1)).toBe('pong');
+    await vi.advanceTimersByTimeAsync(STATUS_WAIT_MS);
+    const expired = await lookup;
+    expect(expired.status).toBe(504);
+    expect(expired.headers.get('X-Slingring-Request-Id')).toBe('recover-existing');
+    expect(await expired.json()).toMatchObject({outcome:'unknown', request_id:'recover-existing'});
+    expect(stale.closed).toBe(true);
+    expect(stale.frames).toHaveLength(2);
+    expect((await relay.fetch(req(statusLookup))).status).toBe(503);
+
+    // Rehydrate with the replacement device. Neither a frame from the old
+    // socket nor a stale correlation from the new one may settle its lookup.
+    socket = new Socket();
+    relay = new Relay(context, env);
+    let settled = false;
+    const next = relay.fetch(req(statusLookup)).then(value => { settled = true; return value; });
+    await sent();
+    const freshId = JSON.parse(socket.frames[0]).id;
+    expect(freshId).not.toBe(staleId);
+    relay.webSocketMessage(stale as any, JSON.stringify({type:'rpc_result',id:freshId,response:{wrong:true}}));
+    result({wrong:true}, staleId);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    result({jsonrpc:'2.0',id:80,result:{structuredContent:{outcome:'submitted'}}});
+    expect((await next).status).toBe(200);
+    expect(socket.closed).toBe(false);
+  });
+  it('does not shorten a concurrent mutation or close its socket when a status lookup expires', async () => {
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    let settled = false;
+    const write = relay.fetch(req()).then(value => { settled = true; return value; });
+    await sent();
+    const lookup = relay.fetch(req(statusLookup));
+    await sent(2);
+    await vi.advanceTimersByTimeAsync(STATUS_WAIT_MS);
+    expect((await lookup).status).toBe(504);
+    expect(socket.closed).toBe(false);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(WAIT_MS - STATUS_WAIT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await write).status).toBe(504);
+    expect(socket.closed).toBe(false);
+    expect(socket.frames).toHaveLength(2);
+  });
+  it('does not recycle a socket that answered another RPC during a probe deadline', async () => {
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    const silent = relay.fetch(req(statusLookup));
+    await sent();
+    const answered = relay.fetch(req({jsonrpc:'2.0',id:81,method:'ping'}));
+    await sent(2);
+    result({jsonrpc:'2.0',id:81,result:{}});
+    expect((await answered).status).toBe(200);
+    await vi.advanceTimersByTimeAsync(STATUS_WAIT_MS);
+    expect((await silent).status).toBe(504);
+    expect(socket.closed).toBe(false);
+  });
+  it('does not recycle or shorten a silent generic handshake', async () => {
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    const call = relay.fetch(req({jsonrpc:'2.0',id:1,method:'initialize'}));
+    await sent();
+    await vi.advanceTimersByTimeAsync(STATUS_WAIT_MS);
+    expect(socket.closed).toBe(false);
+    result({jsonrpc:'2.0',id:1,result:{}});
+    expect((await call).status).toBe(200);
   });
   it('returns an accepted device receipt immediately without waiting for job completion', async () => {
     const body = {jsonrpc:'2.0',id:7,method:'tools/call',params:{name:'new_task',arguments:{

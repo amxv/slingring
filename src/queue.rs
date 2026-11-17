@@ -209,6 +209,9 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         | "native_connection_failed" => {
             "Browser or native bridge setup failed before submission. Inspect events.log, verify the pinned browser helper and selected Chrome profile, then diagnose before a new request."
         }
+        "effort_changed_before_send" => {
+            "The requested reasoning effort could not be verified at the final Send check. The browser guard refused to click. The journal still treats any recorded Send authorization conservatively: inspect the exact job and do not automatically retry an uncertain request."
+        }
         "prompt_changed" => {
             "Composer text no longer matches the prepared message. A potentially real draft was preserved. Inspect the composer before a new request; Slingring will not overwrite or automatically retry it."
         }
