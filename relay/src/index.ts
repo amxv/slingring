@@ -9,6 +9,7 @@ export const MAX_BYTES = 256 * 1024;
 export const MAX_PENDING = 32;
 export const MAX_CONTROL_PENDING = 8;
 export const WAIT_MS = 240_000;
+export const STATUS_WAIT_MS = 12_000;
 const encoder = new TextEncoder();
 type JsonObject = Record<string, unknown>;
 function object(value: unknown): value is JsonObject {
@@ -100,8 +101,15 @@ function controlRequest(body: JsonObject): boolean {
   return ['initialize', 'ping', 'tools/list', 'notifications/initialized'].includes(String(body.method)) ||
     body.method === 'tools/call' && object(body.params) && body.params.name === 'get_job_status';
 }
+// Only a correlatable read-only journal lookup diagnoses a silent RPC path.
+// Handshake and extensibility traffic must not recycle device sockets.
+function statusProbe(body: JsonObject): boolean {
+  return body.jsonrpc === '2.0' && Object.hasOwn(body, 'id') && body.method === 'tools/call' &&
+    object(body.params) && body.params.name === 'get_job_status';
+}
 export class Relay {
   private pending = new Map<string, Pending>();
+  private responseVersion = 0;
   private activeSocket: WebSocket | undefined;
   constructor(private ctx: DurableObjectState, private env: Env) {
     this.activeSocket = ctx.getWebSockets('device')[0];
@@ -147,6 +155,8 @@ export class Relay {
     const socket = this.socket();
     if (!socket) return reply(503, { error: 'Device offline' });
     const control = controlRequest(body);
+    const probe = statusProbe(body);
+    const responseVersion = this.responseVersion;
     const pending = [...this.pending.values()].filter(item => item.control === control).length;
     if (pending >= (control ? MAX_CONTROL_PENDING : MAX_PENDING)) return reply(429, {
       error: control ? 'Relay control capacity exceeded; try this read-only lookup later' : 'Relay submission capacity exceeded; this HTTP attempt was not forwarded. Prior outcome for the same request ID may exist; use get_job_status',
@@ -163,8 +173,21 @@ export class Relay {
       ...(key === null ? {} : { idempotency_key: key }) });
     if (encoder.encode(frame).length > MAX_BYTES) return reply(413, { error: 'Relay frame too large' });
     return new Promise<Response>(resolve => {
-      const timer = setTimeout(() => finish(reply(504, { error: 'Device response timeout. The Mac may still complete this job. Do not resubmit.',
-        request_id: receipt, outcome: 'unknown', recovery_tool: 'get_job_status' })), WAIT_MS);
+      const timer = setTimeout(() => {
+        finish(reply(504, {
+          error: probe ? 'Device did not answer the journal lookup. Job outcome remains unknown. Do not resubmit.'
+            : 'Device response timeout. The Mac may still complete this job. Do not resubmit.',
+          request_id: receipt, outcome: 'unknown', recovery_tool: 'get_job_status',
+        }));
+        // Automatic heartbeat pongs do not exercise the Rust RPC path.
+        // Recycle only this socket, never an unrelated replacement, and never
+        // shorten an outstanding write's 240s opportunity for a receipt.
+        if (probe && socket === this.socket() && responseVersion === this.responseVersion &&
+            ![...this.pending.values()].some(item => !item.control)) {
+          this.lost(socket);
+          socket.close(1011, 'Journal RPC unresponsive; reconnect');
+        }
+      }, probe ? STATUS_WAIT_MS : WAIT_MS);
       const finish = (response: Response) => {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -194,9 +217,13 @@ export class Relay {
     }
     const pending = this.pending.get(frame.id);
     if (!pending) return; // Late/unknown IDs cannot settle any other caller.
-    if (pending.notification && frame.response === null) pending.finish(reply(202));
-    else if (!pending.notification && object(frame.response)) pending.finish(reply(200, frame.response));
-    else { this.lost(socket); socket.close(1008, 'Mismatched result'); }
+    if (pending.notification && frame.response === null) {
+      ++this.responseVersion;
+      pending.finish(reply(202));
+    } else if (!pending.notification && object(frame.response)) {
+      ++this.responseVersion;
+      pending.finish(reply(200, frame.response));
+    } else { this.lost(socket); socket.close(1008, 'Mismatched result'); }
   }
   private lost(socket: WebSocket): void {
     if (socket !== this.activeSocket) return;

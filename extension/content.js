@@ -154,6 +154,14 @@
       if (current.count!==baseline.count ||
           baseline.users.some((user,index)=>current.users[index]!==user))
         throw Error('page_changed_before_send');
+      // New chats must retain their requested effort through the last awaited
+      // authorization. This read neither opens the picker nor retries Send.
+      // Follow-ups keep their existing best-effort behavior.
+      if (!task.target && task.requested) {
+        const effort=dom.effortState();
+        if (effort.kind!=='known' || effort.value!==task.requested)
+          throw Error('effort_changed_before_send');
+      }
       submitted=true;
       button.click();
       progress(task.id,'activity_wait');

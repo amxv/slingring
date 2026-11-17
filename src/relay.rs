@@ -169,6 +169,7 @@ mod tests {
         model::{Task, TaskResult},
         queue::{Backend, BrowserFuture},
     };
+    use anyhow::Context;
     use std::sync::Arc;
     use tokio_tungstenite::tungstenite::protocol::Role;
 
@@ -185,6 +186,90 @@ mod tests {
         fn close<'a>(&'a self, _: &'a Config) -> BrowserFuture<'a, ()> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[derive(Default)]
+    struct FinishAfterDisconnect(tokio::sync::Notify);
+    impl Backend for FinishAfterDisconnect {
+        fn run<'a>(
+            &'a self,
+            _: &'a Config,
+            _: &'a Task,
+            id: &'a str,
+        ) -> BrowserFuture<'a, TaskResult> {
+            Box::pin(async move {
+                self.0.notified().await;
+                Ok(TaskResult {
+                    pause_status: None,
+                    requested_effort: None,
+                    verified_effort: None,
+                    effort_verification: Default::default(),
+                    job_id: id.into(),
+                    url: "https://chatgpt.com/c/socket-close-fixture".into(),
+                    reasoning_effort: Some("High".into()),
+                    evidence: "streaming".into(),
+                })
+            })
+        }
+
+        fn close<'a>(&'a self, _: &'a Config) -> BrowserFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_job_can_finish_after_relay_socket_is_closed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (stop, receiver) = watch::channel(false);
+        let backend = Arc::new(FinishAfterDisconnect::default());
+        let (queue, worker) = Queue::open(dir.path().into(), backend.clone(), receiver)?;
+        let (device, relay) = tokio::io::duplex(1024 * 1024);
+        let device = WebSocketStream::from_raw_socket(device, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay, Role::Server, None).await;
+        let runner = tokio::spawn(serve_socket(
+            dir.path().into(),
+            Config::default(),
+            queue.clone(),
+            device,
+        ));
+        let id = "relay-close-fixture";
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+            "name":"new_task","arguments":{"prompt":"local fixture only","request_id":id}}});
+        relay
+            .send(Message::Text(
+                json!({"type":"rpc","id":id,"request":request,
+                "expires_at":crate::queue::now()+230_000})
+                .to_string()
+                .into(),
+            ))
+            .await?;
+        let frame = tokio::time::timeout(Duration::from_secs(10), relay.next())
+            .await?
+            .context("receipt not received")??;
+        let frame: Value = serde_json::from_str(frame.to_text()?)?;
+        assert_eq!(frame["id"], id);
+        assert_eq!(
+            frame["response"]["result"]["structuredContent"]["accepted"],
+            true
+        );
+        assert_eq!(
+            frame["response"]["result"]["structuredContent"]["outcome"],
+            "in_progress"
+        );
+        relay.close(None).await?;
+        tokio::time::timeout(Duration::from_secs(2), runner).await???;
+        assert_eq!(queue.recovery_status(id)["outcome"], "in_progress");
+        backend.0.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while queue.recovery_status(id)["outcome"] == "in_progress" {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        assert_eq!(queue.recovery_status(id)["outcome"], "submitted");
+        stop.send(true)?;
+        worker.await??;
+        Ok(())
     }
 
     #[tokio::test]

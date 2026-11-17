@@ -6,6 +6,12 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.7.4 · 17 November 2026
+
+Check the requested reasoning level again immediately before sending a new chat. If the control changed or can no longer be verified after the final authorization, leave the prepared prompt unsent. Follow-up reasoning overrides remain best effort.
+
+The remote relay now fails an unanswered job-status lookup after 12 seconds and can reconnect a silent device socket when no mutation reply is pending. Existing mutation timeouts stay at 240 seconds, and an unknown outcome is never treated as permission to resend.
+
 ## 0.7.3 · 17 November 2026
 
 Distinguish a persistent ChatGPT browser security check from a tab that never reported ready. Tasks still wait for a real ChatGPT page and never prepare or submit on an interstitial. The job journal now reports the reason without recording browser content.

@@ -4,28 +4,34 @@ import test from 'node:test';
 import {JSDOM} from 'jsdom';
 const source=readFileSync(new URL('../content.js',import.meta.url),'utf8');
 
-test('submission re-queries a React-replaced send button after the native acknowledgement',async()=>{
-  const page=new JSDOM('<main><textarea id="prompt"></textarea><button id="send">Send</button></main>',{url:'https://chatgpt.com/',runScripts:'outside-only'});
+async function submitFixture({ requested='Medium', target=null, afterAck={kind:'known',value:requested} }={}){
+  const page=new JSDOM('<main><textarea id="prompt"></textarea><button id="send">Send</button></main>',{
+    url:target || 'https://chatgpt.com/',runScripts:'outside-only'});
   const w=page.window,d=w.document;
-  let listener,submitted=0;
+  let listener,clicks=0,acked=false;
+  const reads=[];
   const old=d.querySelector('#send');
   old.addEventListener('click',()=>assert.fail('detached stale button was clicked'));
   w.__slingringDOM={
-    ensureChat:async()=>{},setEffort:async()=> 'Medium',ensureEffort:async()=> 'Medium',
-    effortState:()=>({kind:'known',value:'Medium'}),fill:value=>{d.querySelector('#prompt').value=value;},
-    hasDraft:()=>false,noAttachments:()=>true,followupIdle:()=>true,visible:()=>true,stableComposer:async()=>d.querySelector('#prompt'),
+    ensureChat:async()=>{},setEffort:async()=>requested,ensureEffort:async()=>requested,
+    effortState:()=>{reads.push(acked ? 'after-ack' : 'before-ack');return acked ? afterAck : {kind:'known',value:requested};},
+    fill:value=>{d.querySelector('#prompt').value=value;},
+    hasDraft:()=>false,noAttachments:()=>true,followupIdle:()=>true,followupReady:()=>true,conversationLoadFailure:()=>false,
+    visible:()=>true,stableComposer:async()=>d.querySelector('#prompt'),
     promptEquals:(input,value)=>input?.value===value,promptState:value=>d.querySelector('#prompt').value===value?'matches':'prompt_changed',
     composer:()=>d.querySelector('#prompt'),text:e=>e.value.trim(),normal:value=>value.trim(),
     uploadSelector:async()=>null,attachmentsReady:()=>true,sendButton:()=>d.querySelector('#send'),
-    chatVerified:()=>true,currentEffort:()=> 'Medium',canonicalUrl:()=>submitted?'https://chatgpt.com/c/test':null,
-    turnBaseline:()=>({users:[]}),
-    startEvidence:()=>submitted?'thinking':null,
+    chatVerified:()=>true,currentEffort:()=>requested,canonicalUrl:()=>clicks?'https://chatgpt.com/c/test':null,
+    turnBaseline:()=>({count:0,users:[]}),
+    startEvidence:()=>clicks?'thinking':null,
     waitFor:async predicate=>{const value=predicate();if(!value)throw Error('predicate_not_ready');return value;}
   };
   w.chrome={runtime:{id:'test-extension',onMessage:{addListener:fn=>{listener=fn;}},sendMessage:async message=>{
     if(message.event==='will_submit'){
+      await Promise.resolve();
       const next=d.createElement('button');next.id='send';next.textContent='Send';
-      next.addEventListener('click',()=>{submitted++;});old.replaceWith(next);
+      next.addEventListener('click',()=>{clicks++;});old.replaceWith(next);
+      acked=true;
       return {ok:true};
     }
     return {};
@@ -33,10 +39,53 @@ test('submission re-queries a React-replaced send button after the native acknow
   w.eval(source);
   const sender={id:'test-extension',url:'chrome-extension://test-extension/bridge.html'};
   const request=message=>new Promise(resolve=>listener({kind:'slingring',...message},sender,resolve));
-  assert.equal((await request({action:'prepare',id:'task',prompt:'test',effort:'Medium',image_count:0})).ok,true);
-  const result=await request({action:'submit',id:'task'});
-  assert.equal(result.ok,true);assert.equal(result.evidence,'thinking');assert.equal(submitted,1);
-  page.window.close();
+  try {
+    assert.equal((await request({action:'prepare',id:'task',prompt:'test',effort:requested,image_count:0,chatgpt_url:target})).ok,true);
+    const result=await request({action:'submit',id:'task'});
+    return {result,clicks,acked,reads};
+  } finally {page.window.close();}
+}
+
+test('submission re-queries a React-replaced send button after the native acknowledgement',async()=>{
+  const {result,clicks,reads}=await submitFixture();
+  assert.equal(result.ok,true);
+  assert.equal(result.evidence,'thinking');
+  assert.equal(clicks,1);
+  assert.deepEqual(reads,['after-ack']);
+});
+
+for(const afterAck of [{kind:'known',value:'High'},{kind:'missing',value:null},{kind:'ambiguous',value:null},{kind:'unrecognized',value:null}]){
+  test(`new chat refuses Pro Send after acknowledgement if effort is ${afterAck.value || afterAck.kind}`,async()=>{
+    const {result,clicks,acked,reads}=await submitFixture({requested:'Pro',afterAck});
+    assert.equal(acked,true);
+    assert.equal(clicks,0,'must not click Send after losing the requested effort');
+    assert.equal(result.ok,false);
+    assert.equal(result.code,'effort_changed_before_send');
+    assert.equal(result.submitted,false);
+    assert.deepEqual(reads,['after-ack']);
+  });
+}
+
+test('explicit Pro sends when the final readback remains Pro',async()=>{
+  const {result,clicks,reads}=await submitFixture({requested:'Pro'});
+  assert.equal(result.ok,true);
+  assert.equal(result.effort,'Pro');
+  assert.equal(clicks,1);
+  assert.deepEqual(reads,['after-ack']);
+});
+
+test('follow-up overrides remain best effort, and omitted effort does not read the picker at Send',async()=>{
+  const afterAck={kind:'missing',value:null};
+  const details=await submitFixture({target:'https://chatgpt.com/c/existing',requested:'Pro',afterAck});
+  assert.equal(details.result.ok,true);
+  assert.equal(details.clicks,1);
+  assert.deepEqual(details.reads,['before-ack']);
+  for(const target of [null,'https://chatgpt.com/c/existing']){
+    const omitted=await submitFixture({target,requested:null,afterAck});
+    assert.equal(omitted.result.ok,true);
+    assert.equal(omitted.clicks,1);
+    assert.deepEqual(omitted.reads,[]);
+  }
 });
 
 test('pause dispatch never calls submission, effort, composer-text, or recovery helpers',async()=>{
