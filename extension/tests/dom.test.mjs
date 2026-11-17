@@ -297,3 +297,17 @@ test('Cloudflare interstitial markers are detected without flagging ordinary bot
     'https://chatgpt.com/');
   assert.equal(ordinary.api.cloudflareChallenge(),false);ordinary.close();
 });
+
+test('recognizes a title-only security interstitial',()=>{
+  const p=page('<main></main>','https://chatgpt.com/');
+  p.document.title='Just a moment…';
+  assert.equal(p.api.cloudflareChallenge(),true);
+  p.document.title='ChatGPT';
+  assert.equal(p.api.cloudflareChallenge(),false);
+  p.close();
+
+  const chat=page('<textarea id="prompt-textarea"></textarea>','https://chatgpt.com/c/loaded-chat');
+  chat.document.title='Just a moment…';
+  assert.equal(chat.api.cloudflareChallenge(),false);
+  chat.close();
+});

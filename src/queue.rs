@@ -193,6 +193,12 @@ pub fn recovery_status(job: Option<&Job>, request_id: &str) -> serde_json::Value
         "chat_login_required" => {
             "The selected Chrome profile opened the signed-out ChatGPT homepage. No message was submitted. Select a profile already signed in to ChatGPT with 'slingring profile list' and 'slingring profile use NAME'; do not manually export cookies."
         }
+        "chat_security_check" => {
+            "ChatGPT displayed a browser security check and no ready document replaced it before the deadline. Check the dedicated profile in normal Chrome. Slingring does not solve security challenges; check the journal before taking any further action."
+        }
+        "chat_document_timeout" => {
+            "The owned ChatGPT tab did not report a ready document before the deadline. Check whether the dedicated profile can load ChatGPT and inspect the recorded phase and outcome before taking any further action."
+        }
         "browser_start_failed" => {
             "The isolated browser failed to start twice. Inspect events.log for safe launch/retry categories (timeout, spawn, exit, invalid JSON or unsuccessful response); verify the pinned browser helper with slingring browser status and agent-browser-browse doctor."
         }

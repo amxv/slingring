@@ -63,7 +63,7 @@ test('a Cloudflare interstitial never reports content readiness; the real page d
     w.chrome={runtime:{id:'test-extension',onMessage:{addListener:()=>{}},
       sendMessage:async message=>{events.push(message.event);return {};}}};
     w.eval(source);
-    assert.deepEqual(events,challenge?[]:['ready']);
+    assert.deepEqual(events,challenge?['security_check']:['ready']);
     page.window.close();
   }
 });

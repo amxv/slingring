@@ -205,6 +205,6 @@
   // A Cloudflare interstitial is replaced by a new document after it passes.
   // That document's own content script reports readiness instead; preparing
   // inside the interstitial would lose its message channel mid-action.
-  if(!dom.cloudflareChallenge?.())
-    chrome.runtime.sendMessage({kind:"slingring",event:"ready"}).catch(()=>{});
+  const event = dom.cloudflareChallenge?.() ? "security_check" : "ready";
+  chrome.runtime.sendMessage({kind:"slingring",event}).catch(()=>{});
 })();

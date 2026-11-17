@@ -8,6 +8,7 @@ let native;
 let tabId;
 let targetUrl=null;
 let readyUrl=null;
+let interstitialSeen=false;
 let submitted=false;
 let finished=false;
 let previousCount=null;
@@ -46,7 +47,12 @@ function readyFor(url,deadline) {
   const remaining=deadline-Date.now()-5000;
   if(remaining<=0)throw Error('deadline_before_submission');
   readyUrl=url;
-  return next('content_ready',Math.min(60000,remaining));
+  interstitialSeen=false;
+  return next('content_ready',Math.min(60000,remaining)).catch(error=>{
+    if(error.message==='native_timeout')
+      throw Error(interstitialSeen?'chat_security_check':'chat_document_timeout');
+    throw error;
+  });
 }
 async function content(action,data) {
   const reply=await chrome.tabs.sendMessage(tabId,{kind:"slingring",action,id:job,...data});
@@ -56,6 +62,10 @@ async function content(action,data) {
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message?.kind!=="slingring" || sender.id!==chrome.runtime.id || sender.tab?.id!==tabId || sender.frameId!==0 ||
       !sender.url?.startsWith("https://chatgpt.com/"))return false;
+  if(message.event==="security_check") {
+    if(sender.url===readyUrl && waits.has("content_ready")) interstitialSeen=true;
+    return false;
+  }
   if(message.event==="ready") {
     if(sender.url!==readyUrl)return false;
     const wait=waits.get("content_ready");if(wait){waits.delete("content_ready");wait.resolve({});}return false;

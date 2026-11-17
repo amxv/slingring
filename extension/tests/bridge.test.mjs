@@ -7,11 +7,15 @@ const source=readFileSync(new URL('../bridge.js',import.meta.url),'utf8');
 const target='https://chatgpt.com/c/existing-conversation';
 const bootstrap='about:blank#slingring-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,tabUrl=bootstrap,initialBlank=false,
-  submitError=null,recoverError=null,pauseError=null,pauseStatus="stopped",pauseEvidence="completion_controls"}={}) {
+  submitError=null,recoverError=null,pauseError=null,pauseStatus="stopped",pauseEvidence="completion_controls",navigationEvents=null}={}) {
   const page=new JSDOM('<body></body>',{url:'chrome-extension://test-extension/bridge.html#token=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa&job=test-job',runScripts:'outside-only'});
   const w=page.window,events=[],navigations=[],contentRequests=[],removed=[],order=[];
   let nativeListener,runtimeListener,resolve,updatedListener,tabCommitted=!initialBlank;
   let currentUrl=tabUrl;
+  if(navigationEvents){
+    const timer=w.setTimeout.bind(w);
+    w.setTimeout=(fn,ms,...args)=>timer(fn,ms===60000?35:ms,...args);
+  }
   const finished=new Promise(done=>{resolve=done;});
   const post=value=>w.queueMicrotask(()=>nativeListener(value));
   const native={onMessage:{addListener:fn=>{nativeListener=fn;}},onDisconnect:{addListener:()=>{}},postMessage:message=>{
@@ -34,7 +38,8 @@ async function run({task={},resultUrl=target,senderUrl=target,prepareError=null,
     },
     update:async (id,data)=>{
       assert.equal(id,5);currentUrl=data.url;navigations.push(data.url);order.push(`navigate:${data.url}`);
-      w.queueMicrotask(()=>runtimeListener({kind:'slingring',event:'ready'},{...sender,url:data.url},()=>{}));
+      for(const [event,override] of (navigationEvents??[['ready',{}]]))
+        w.queueMicrotask(()=>runtimeListener({kind:'slingring',event},{...sender,url:data.url,...override},()=>{}));
     },
     reload:async id=>{
       assert.equal(id,5);order.push('reload');
@@ -197,4 +202,24 @@ test('refresh without new activity stays uncertain and never resubmits',async()=
 test('pause preserves verified stopped-thinking evidence',async()=>{
  const r=await run({task:{operation:'pause',prompt:''},pauseEvidence:'stopped_thinking'});
  assert.equal(r.events.find(e=>e.type==='paused').evidence,'stopped_thinking');
+});
+
+test('classifies a persistent exact-tab security check without preparing or sending',async()=>{
+  const r=await run({navigationEvents:[['security_check',{}]]});
+  assert.equal(r.terminal.code,'chat_security_check');
+  assert.equal(r.terminal.submitted,false);
+  assert.equal(r.contentRequests.length,0);
+  assert.equal(r.events.some(e=>e.type==='will_submit'),false);
+});
+test('ignores challenge frames and unrelated or redirected tabs when classifying timeouts',async()=>{
+  const r=await run({navigationEvents:[['security_check',{frameId:1}],
+    ['security_check',{tab:{id:42}}],['security_check',{url:'https://chatgpt.com/c/other'}]]});
+  assert.equal(r.terminal.code,'chat_document_timeout');
+  assert.equal(r.terminal.submitted,false);
+  assert.equal(r.contentRequests.length,0);
+});
+test('continues normally when a real document replaces an interstitial',async()=>{
+  const r=await run({navigationEvents:[['security_check',{}],['ready',{}]]});
+  assert.equal(r.terminal.type,'released');
+  assert.deepEqual(r.contentRequests.map(m=>m.action),['prepare','submit']);
 });

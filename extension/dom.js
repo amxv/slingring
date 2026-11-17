@@ -628,7 +628,9 @@
   // the real document once it passes. Match only the interstitial's own
   // markers: ordinary ChatGPT pages also load other challenge-platform scripts.
   function cloudflareChallenge() {
-    return !!document.querySelector('#challenge-error-text,[name="cf-turnstile-response"],[id^="cf-chl-widget"],'+
+    return (/^just a moment[.…]*$/i.test(document.title.trim()) &&
+      !document.querySelector("#prompt-textarea")) ||
+      !!document.querySelector('#challenge-error-text,[name="cf-turnstile-response"],[id^="cf-chl-widget"],'+
       'script[src*="/cdn-cgi/challenge-platform/"][src*="/chl_page/"]');
   }
   globalThis.__slingringDOM = {LEVELS,cloudflareChallenge,visible,normal,composer,composerState,text,editorText,hasDraft,promptEquals,promptState,stableComposer,modes,chatVerified,signedOutHome,waitFor,ensureChat,

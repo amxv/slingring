@@ -6,6 +6,10 @@ category: Reference
 summary: Release status and user-visible changes.
 ---
 
+## 0.7.3 · 17 November 2026
+
+Distinguish a persistent ChatGPT browser security check from a tab that never reported ready. Tasks still wait for a real ChatGPT page and never prepare or submit on an interstitial. The job journal now reports the reason without recording browser content.
+
 ## 0.7.2 · 15 November 2026
 
 Add an opt-in `agent-browser-browse` backend on Linux for hosts where ChatGPT's Cloudflare check blocks stock Chrome. Previously every task there failed with `chat_mode_unverified`, headless or headed. Select it with `slingring config set browser-binary agent-browser-browse`. It drives system Chrome Stable with the sandbox enabled on a private copy of the dedicated profile. The copy is created per browser session and deleted when the queue drains. Stock Chrome remains the default, and `profile open` still uses it for manual sign-in.
